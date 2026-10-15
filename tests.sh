@@ -94,9 +94,9 @@ test_run() {
 
 test_errors() {
 	check "run sur compte inexistant échoue" bash -c '! "$0" run nope 2>/dev/null' "$SCRIPT"
-	check "message compte inexistant" bash -c '"$0" run nope 2>&1 | grep -q "compte inexistant"' "$SCRIPT"
+	check "message compte inexistant" bash -c '"$0" run nope 2>&1 | grep -q "no such account"' "$SCRIPT"
 	check "claude absent du PATH" bash -c \
-		'PATH=$1 "$0" run pro1 2>&1 | grep -q "claude introuvable"' "$SCRIPT" "$SANDBOX/nobin:$BASE_PATH"
+		'PATH=$1 "$0" run pro1 2>&1 | grep -q "claude not found"' "$SCRIPT" "$SANDBOX/nobin:$BASE_PATH"
 	check "commande inconnue échoue" bash -c '! "$0" foo 2>/dev/null' "$SCRIPT"
 	check "add sans nom échoue" bash -c '! "$0" add 2>/dev/null' "$SCRIPT"
 }
@@ -107,14 +107,14 @@ test_menu_gum() {
 	check "menu gum lance claude ici avec le compte choisi" \
 		grep -qF "CONFIG=$(data_dir pro2)" <<<"$out"
 	check "menu gum présente les comptes et les actions de gestion" bash -c \
-		'grep -q -- "--height 12" "$0" && grep -qF "+ Ajouter un compte" "$0" && grep -qF -- "- Supprimer un compte" "$0"' \
+		'grep -q -- "--height 12" "$0" && grep -qF "+ Add an account" "$0" && grep -qF -- "- Remove an account" "$0"' \
 		"$SANDBOX/gum.log"
 	out=$(PATH="$gum_path" with_tty '' "$SCRIPT"; printf 'EXIT=%s' "$?")
 	check "menu gum annulé (Échap) : rien lancé, sortie 0" \
 		bash -c '! grep -q CONFIG= <<<"$0" && grep -q EXIT=0 <<<"$0"' "$out"
-	out=$(PATH="$gum_path" FAKE_CHOICE=Quitter with_tty '' "$SCRIPT")
+	out=$(PATH="$gum_path" FAKE_CHOICE=Quit with_tty '' "$SCRIPT")
 	check "menu gum Quitter : rien lancé" bash -c '! grep -q CONFIG= <<<"$0"' "$out"
-	out=$(PATH="$gum_path" FAKE_CHOICE='+ Ajouter un compte' FAKE_INPUT=pro9 with_tty '' "$SCRIPT")
+	out=$(PATH="$gum_path" FAKE_CHOICE='+ Add an account' FAKE_INPUT=pro9 with_tty '' "$SCRIPT")
 	check "menu gum ajout : compte créé" test -d "$(data_dir pro9)"
 	check "menu gum ajout : claude lancé sur le nouveau compte" \
 		grep -qF "CONFIG=$(data_dir pro9)" <<<"$out"

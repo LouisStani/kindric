@@ -1,10 +1,8 @@
 # claude-accounts
 
-Use multiple Claude Code accounts in separate terminals without running `/logout` and `/login` whenever you switch.
+Run several Claude Code accounts side by side, each in its own terminal, with a single shared setup.
 
-Each account keeps its own credentials, history, and sessions. Working instructions, skills, agents, and plugins stay shared.
-
-## Overview
+No more `/logout` and `/login` every time you switch between your personal and work accounts. Pick an account and Claude starts. Your `CLAUDE.md`, skills, agents, plugins and settings come with it.
 
 ```text
 claude-accounts
@@ -12,22 +10,32 @@ claude-accounts
 
 Choose an account to open Claude in this terminal.
 
-› lystriq
-  louis
+› personal
+  work
   + Add an account
   - Remove an account
   Quit
 ```
 
-## Requirements
+## Why
 
-- [Claude Code](https://docs.anthropic.com/en/docs/claude-code) installed and available on your `PATH`
-- Bash 4 or later
-- [`gum`](https://github.com/charmbracelet/gum), optional: the menu falls back to Bash `select`
+Claude Code keeps one login per configuration directory. Switching accounts means logging out and back in, and you cannot keep two accounts open at once.
+
+claude-accounts gives each account its own directory and links the shared parts back to `~/.claude`. You configure Claude once and every account uses that configuration.
+
+- Keep two accounts open at the same time, in two terminals.
+- Share one `CLAUDE.md` and one set of skills, agents, commands, plugins and themes across all accounts.
+- Create a shared directory later and existing accounts pick it up on their next launch.
+- The script never reads, copies or sends your credentials. It makes no network requests.
+- Install one Bash script. `gum` gives you a nicer menu, but it is optional.
 
 ## Installation
 
-Clone the repository, then install the script on your `PATH`:
+Requirements:
+
+- [Claude Code](https://docs.anthropic.com/en/docs/claude-code) on your `PATH`
+- Bash 4 or later
+- [`gum`](https://github.com/charmbracelet/gum) (optional). Without it, the menu uses Bash `select`.
 
 ```sh
 git clone <URL_DU_DEPOT> claude-accounts
@@ -35,69 +43,58 @@ cd claude-accounts
 install -Dm755 claude-accounts "$HOME/.local/bin/claude-accounts"
 ```
 
-For development, create a symbolic link instead of copying the script:
-
-```sh
-mkdir -p "$HOME/.local/bin"
-ln -s "$(pwd)/claude-accounts" "$HOME/.local/bin/claude-accounts"
-```
-
 Make sure `~/.local/bin` is on your `PATH`.
 
 ## Quick start
 
 ```sh
-# Create two isolated profiles.
 claude-accounts add personal
 claude-accounts add work
 
-# Start Claude Code with a profile.
-claude-accounts run personal
-
-# On the first launch, use /login in Claude Code.
-# Later launches reuse the same account.
+claude-accounts run personal   # first launch: run /login inside Claude
 ```
 
-Run `claude-accounts` to open the interactive dashboard. It lets you launch, add, or remove an account. Invalid names stay within the menu flow: correct the name or cancel with Escape.
-
-You can open both accounts at the same time in separate terminals:
+Each later launch reuses the account you logged in with. Open a second terminal and run the other account at the same time:
 
 ```sh
-claude-accounts run personal
 claude-accounts run work
 ```
+
+Or just run `claude-accounts` to open the menu. From there you can launch, add or remove an account with the arrow keys. Escape cancels.
 
 ## Commands
 
 | Command | Effect |
 | --- | --- |
-| `claude-accounts` | Opens the dashboard and starts Claude in the current terminal. |
-| `claude-accounts add <name>` | Creates a profile and its private directory. |
-| `claude-accounts list` | Prints profile names, one per line. |
-| `claude-accounts remove <name>` | Removes a profile from the list. Its directory is deleted only after confirmation. |
-| `claude-accounts run <name> [args]` | Starts a profile and passes arguments to `claude`, for example `--resume`. |
+| `claude-accounts` | Opens the menu and starts Claude in the current terminal. |
+| `claude-accounts add <name>` | Creates an account and its private directory. |
+| `claude-accounts list` | Prints account names, one per line. |
+| `claude-accounts remove <name>` | Removes an account from the list. Its directory is deleted only after you confirm. |
+| `claude-accounts run <name> [args]` | Starts Claude with this account. Extra arguments go to `claude`, for example `--resume`. |
 
-Names may contain 1 to 32 characters: `a-z`, `0-9`, `_`, and `-`.
+Names use 1 to 32 characters among `a-z`, `0-9`, `_` and `-`.
+
+`add`, `list`, `remove` and `run` work without the menu, so you can use them in scripts and aliases:
+
+```sh
+alias cw='claude-accounts run work'
+```
 
 ## How it works
 
-`claude-accounts` starts Claude Code with a dedicated `CLAUDE_CONFIG_DIR` for each profile.
+Each account gets its own `CLAUDE_CONFIG_DIR`.
 
-| Data | Location |
+| Data | Where it lives |
 | --- | --- |
-| Credentials, sessions, history, and project memory | private to each profile |
-| `CLAUDE.md`, `skills/`, `agents/`, `commands/`, `plugins/`, `themes/` | symbolic links to `~/.claude` |
-| Shared settings | `~/.claude/settings.json`, passed with `--settings` |
+| Credentials, sessions, history, project memory | Private to each account |
+| `CLAUDE.md`, `skills/`, `agents/`, `commands/`, `plugins/`, `themes/` | Symbolic links to `~/.claude` |
+| `settings.json` | Read from `~/.claude/settings.json` and passed with `--settings` |
 
-Links to the shared configuration are checked on every launch. If you later add a shared directory such as `agents/`, it becomes available to existing profiles the next time they start.
-
-Profile directories use `700` permissions, and the account registry uses `600`.
+Links are checked on every launch. Account directories use `700` permissions and the account list uses `600`.
 
 ## Security and billing
 
-The script never reads, copies, or displays credentials. It makes no network requests.
-
-Before starting Claude Code, it removes these environment variables:
+Before starting Claude Code, the script removes these environment variables:
 
 ```text
 ANTHROPIC_API_KEY
@@ -105,14 +102,14 @@ ANTHROPIC_AUTH_TOKEN
 CLAUDE_CODE_OAUTH_TOKEN
 ```
 
-This prevents an API key or token from another account from taking precedence over the selected account.
+A key or token exported in your shell therefore cannot override the account you picked, and you are billed on the account you chose.
 
 ## Development
 
-The tests never use a real Claude account: they create a temporary `HOME`, a fake `claude` executable, and a fake `gum` executable.
+The tests never touch a real Claude account. They run in a temporary `HOME` with fake `claude` and `gum` executables.
 
 ```sh
 ./tests.sh
 ```
 
-Read [CONTRIBUTING.md](CONTRIBUTING.md) before contributing, and [SECURITY.md](SECURITY.md) to report a vulnerability.
+Read [CONTRIBUTING.md](CONTRIBUTING.md) before contributing and [SECURITY.md](SECURITY.md) to report a vulnerability.
