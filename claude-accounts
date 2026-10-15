@@ -1,0 +1,308 @@
+#!/usr/bin/env bash
+# claude-accounts : plusieurs comptes Claude Code, une config commune.
+# Chaque compte = un CLAUDE_CONFIG_DIR à lui (identifiants, historique, sessions).
+# CLAUDE.md, skills, agents, commands, plugins, themes : liens vers ~/.claude.
+# settings.json : chargé via --settings (claude refuse d'écrire à travers un lien).
+# Ce script ne lit jamais d'identifiant et ne fait aucune requête réseau.
+
+set -euo pipefail
+
+readonly SHARED_ENTRIES=(CLAUDE.md skills agents commands plugins themes)
+readonly STRIPPED_ENV=(ANTHROPIC_API_KEY ANTHROPIC_AUTH_TOKEN CLAUDE_CODE_OAUTH_TOKEN)
+readonly MENU_ADD='+ Ajouter un compte'
+readonly MENU_REMOVE='- Supprimer un compte'
+readonly MENU_BACK='Retour'
+readonly MENU_QUIT='Quitter'
+
+die() {
+	printf 'claude-accounts: %s\n' "$*" >&2
+	exit 1
+}
+
+registry_file() {
+	printf '%s\n' "${XDG_CONFIG_HOME:-$HOME/.config}/claude-accounts/accounts"
+}
+
+accounts_root() {
+	printf '%s\n' "${XDG_DATA_HOME:-$HOME/.local/share}/claude-accounts"
+}
+
+shared_root() {
+	printf '%s\n' "$HOME/.claude"
+}
+
+account_dir() {
+	printf '%s/%s\n' "$(accounts_root)" "$1"
+}
+
+is_valid_name() {
+	[[ "$1" =~ ^[a-z0-9_-]{1,32}$ ]]
+}
+
+validate_name() {
+	is_valid_name "$1" ||
+		die "nom invalide « $1 » : 1 à 32 caractères parmi a-z 0-9 _ -"
+}
+
+list_accounts() {
+	local registry
+	registry=$(registry_file)
+	[[ -f "$registry" ]] || return 0
+	grep -v '^$' "$registry" || true
+}
+
+account_exists() {
+	list_accounts | grep -qxF -- "$1"
+}
+
+require_account() {
+	validate_name "$1"
+	account_exists "$1" || die "compte inexistant : $1 (voir: claude-accounts list)"
+	[[ -d "$(account_dir "$1")" ]] ||
+		die "dossier manquant pour $1 : $(account_dir "$1")"
+}
+
+require_claude() {
+	command -v claude >/dev/null 2>&1 || die "claude introuvable dans le PATH"
+}
+
+confirm() {
+	local answer
+	[[ -t 0 ]] || return 1
+	if has_gum; then
+		gum confirm --affirmative 'Supprimer' --negative 'Conserver' "$1"
+		return
+	fi
+	read -r -p "$1 [o/N] " answer || return 1
+	[[ "$answer" =~ ^[oOyY]$ ]]
+}
+
+cmd_add() {
+	local name="$1" dir registry
+	validate_name "$name"
+	account_exists "$name" && die "le compte existe déjà : $name"
+	dir=$(account_dir "$name")
+	registry=$(registry_file)
+	mkdir -p -m 700 "$(accounts_root)" "$(dirname "$registry")"
+	mkdir -m 700 "$dir" 2>/dev/null || [[ -d "$dir" ]] || die "impossible de créer $dir"
+	chmod 700 "$dir"
+	link_shared "$dir"
+	printf '%s\n' "$name" >>"$registry"
+	printf 'Compte « %s » créé : %s\n' "$name" "$dir"
+	printf 'Premier lancement : claude-accounts run %s, puis /login\n' "$name"
+}
+
+cmd_list() {
+	local names
+	names=$(list_accounts)
+	if [[ -z "$names" ]]; then
+		printf 'Aucun compte. Crée-en un : claude-accounts add <nom>\n'
+		return 0
+	fi
+	printf '%s\n' "$names"
+}
+
+remove_from_registry() {
+	local registry tmp
+	registry=$(registry_file)
+	tmp=$(mktemp "$registry.XXXXXX")
+	grep -vxF -- "$1" "$registry" >"$tmp" || true
+	mv -f -- "$tmp" "$registry"
+}
+
+cmd_remove() {
+	local name="$1" dir
+	validate_name "$name"
+	account_exists "$name" || die "compte inexistant : $name"
+	remove_from_registry "$name"
+	printf 'Compte « %s » retiré de la liste.\n' "$name"
+	dir=$(account_dir "$name")
+	[[ -d "$dir" ]] || return 0
+	if confirm "Supprimer aussi $dir (identifiants et historique de ce compte) ?"; then
+		rm -rf -- "$dir"
+		printf 'Dossier supprimé.\n'
+	else
+		printf 'Dossier conservé : %s\n' "$dir"
+	fi
+}
+
+link_shared() {
+	local dir="$1" shared entry
+	shared=$(shared_root)
+	for entry in "${SHARED_ENTRIES[@]}"; do
+		[[ -e "$shared/$entry" ]] || continue
+		if [[ -L "$dir/$entry" || ! -e "$dir/$entry" ]]; then
+			ln -sfn -- "$shared/$entry" "$dir/$entry"
+		else
+			printf 'claude-accounts: %s/%s existe et n est pas un lien, non partagé\n' \
+				"$dir" "$entry" >&2
+		fi
+	done
+}
+
+build_claude_args() {
+	local settings
+	settings="$(shared_root)/settings.json"
+	[[ -f "$settings" ]] && printf '%s\0' --settings "$settings"
+	return 0
+}
+
+cmd_run() {
+	local name="$1" dir var
+	shift
+	require_account "$name"
+	require_claude
+	dir=$(account_dir "$name")
+	link_shared "$dir"
+	local unset_args=() claude_args=()
+	for var in "${STRIPPED_ENV[@]}"; do
+		unset_args+=(-u "$var")
+	done
+	mapfile -d '' claude_args < <(build_claude_args)
+	exec env "${unset_args[@]}" CLAUDE_CONFIG_DIR="$dir" \
+		claude "${claude_args[@]}" "$@"
+}
+
+has_gum() {
+	command -v gum >/dev/null 2>&1
+}
+
+choose_with_select() {
+	local header="$1" choice
+	shift
+	printf '%s\n' "$header" >&2
+	PS3='Choix : '
+	select choice in "$@"; do
+		if [[ -n "$choice" ]]; then
+			printf '%s\n' "$choice"
+			return 0
+		fi
+		printf 'Choix invalide.\n' >&2
+	done
+	return 1
+}
+
+choose_entry() {
+	local header="$1"
+	shift
+	if has_gum; then
+		gum choose \
+			--header "$header" \
+			--height 12 \
+			--cursor '› ' \
+			--cursor.foreground '#89b4fa' \
+			--header.foreground '#a6e3a1' \
+			-- \
+			"$@"
+	else
+		choose_with_select "$header" "$@"
+	fi
+}
+
+read_new_name() {
+	local name
+	if has_gum; then
+		gum input \
+			--header 'Nom du nouveau compte' \
+			--placeholder 'ex. perso ou travail' \
+			--char-limit 32 \
+			--prompt '› '
+	else
+		read -r -p 'Nom du nouveau compte (a-z, 0-9, _ et -) : ' name && printf '%s\n' "$name"
+	fi
+}
+
+show_message() {
+	if has_gum; then
+		gum style --foreground '#f38ba8' "$*" >&2
+	else
+		printf 'claude-accounts: %s\n' "$*" >&2
+	fi
+}
+
+add_from_menu() {
+	local name
+	while :; do
+		name=$(read_new_name) || return 0
+		[[ -n "$name" ]] || return 0
+		if ! is_valid_name "$name"; then
+			show_message 'Nom invalide : utilise 1 à 32 caractères parmi a-z, 0-9, _ et -.'
+			continue
+		fi
+		if account_exists "$name"; then
+			show_message "Le compte « $name » existe déjà."
+			continue
+		fi
+		cmd_add "$name"
+		cmd_run "$name"
+	done
+}
+
+menu_header() {
+	local count="$1" label
+	if ((count == 0)); then
+		label='Aucun compte enregistré'
+	elif ((count == 1)); then
+		label='1 compte prêt à lancer'
+	else
+		label="$count comptes prêts à lancer"
+	fi
+	printf 'claude-accounts\n%s\n\nSélectionne un compte pour ouvrir Claude dans ce terminal.' "$label"
+}
+
+remove_from_menu() {
+	local name
+	(($# > 0)) || return 0
+	name=$(choose_entry $'Supprimer un compte\n\nLes identifiants et l’historique peuvent être conservés.' \
+		"$@" "$MENU_BACK") || return 0
+	[[ "$name" == "$MENU_BACK" ]] && return 0
+	cmd_remove "$name"
+}
+
+cmd_menu() {
+	[[ -t 0 && -t 1 ]] || die "le menu demande un terminal interactif"
+	local names=() choices=() choice
+	while :; do
+		mapfile -t names < <(list_accounts)
+		choices=("${names[@]}" "$MENU_ADD")
+		((${#names[@]} > 0)) && choices+=("$MENU_REMOVE")
+		choices+=("$MENU_QUIT")
+		choice=$(choose_entry "$(menu_header "${#names[@]}")" "${choices[@]}") || return 0
+		case "$choice" in
+		"$MENU_ADD") add_from_menu ;;
+		"$MENU_REMOVE") remove_from_menu "${names[@]}" ;;
+		"$MENU_QUIT") return 0 ;;
+		*) cmd_run "$choice" ;;
+		esac
+	done
+}
+
+usage() {
+	cat <<'EOF'
+Usage :
+  claude-accounts                  tableau de bord : choisit un compte et lance claude ici
+  claude-accounts add <nom>        crée le compte et son dossier (700)
+  claude-accounts list             liste les comptes
+  claude-accounts remove <nom>     retire le compte (dossier supprimé seulement si confirmé)
+  claude-accounts run <nom> [...]  lance claude avec ce compte ici (arguments passés à claude)
+EOF
+}
+
+require_arg() {
+	[[ -n "${1:-}" ]] || { usage >&2; exit 1; }
+}
+
+main() {
+	umask 077
+	case "${1:-}" in
+	'') cmd_menu ;;
+	add) require_arg "${2:-}"; cmd_add "$2" ;;
+	list) cmd_list ;;
+	remove) require_arg "${2:-}"; cmd_remove "$2" ;;
+	run) require_arg "${2:-}"; shift; cmd_run "$@" ;;
+	-h | --help | help) usage ;;
+	*) usage >&2; exit 1 ;;
+	esac
+}
+
+main "$@"

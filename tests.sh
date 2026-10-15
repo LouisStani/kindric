@@ -1,0 +1,160 @@
+#!/usr/bin/env bash
+# Tests de claude-accounts : HOME temporaire, faux claude, faux gum.
+# Aucun vrai compte, aucun identifiant, aucun réseau.
+
+set -uo pipefail
+
+SCRIPT=$(readlink -f -- "$(dirname -- "$0")/claude-accounts")
+TESTS=0
+FAILURES=0
+
+check() {
+	local label="$1"
+	shift
+	TESTS=$((TESTS + 1))
+	if "$@"; then
+		printf 'ok   %s\n' "$label"
+	else
+		FAILURES=$((FAILURES + 1))
+		printf 'FAIL %s\n' "$label"
+	fi
+}
+
+setup() {
+	SANDBOX=$(mktemp -d)
+	export HOME="$SANDBOX/home"
+	unset XDG_CONFIG_HOME XDG_DATA_HOME TERMINAL
+	mkdir -p "$HOME/.claude/skills" "$SANDBOX/bin" "$SANDBOX/nobin"
+	printf '# commun\n' >"$HOME/.claude/CLAUDE.md"
+	printf '{}\n' >"$HOME/.claude/settings.json"
+	cat >"$SANDBOX/bin/claude" <<'EOF'
+#!/usr/bin/env bash
+printf 'CONFIG=%s\n' "$CLAUDE_CONFIG_DIR"
+printf 'APIKEY=%s\n' "${ANTHROPIC_API_KEY:-unset}"
+printf 'ARGS=%s\n' "$*"
+EOF
+	mkdir -p "$SANDBOX/gum"
+	cat >"$SANDBOX/gum/gum" <<EOF
+#!/usr/bin/env bash
+printf '%s\n' "\$*" >>"$SANDBOX/gum.log"
+case "\$1" in
+choose) [[ -n "\${FAKE_CHOICE:-}" ]] || exit 130; printf '%s\n' "\$FAKE_CHOICE" ;;
+input) printf '%s\n' "\${FAKE_INPUT:-}" ;;
+esac
+EOF
+	chmod +x "$SANDBOX/bin/claude" "$SANDBOX/gum/gum"
+	BASE_PATH="/usr/bin:/bin"
+	export PATH="$SANDBOX/bin:$BASE_PATH"
+}
+
+ca() {
+	"$SCRIPT" "$@"
+}
+
+data_dir() {
+	printf '%s\n' "$HOME/.local/share/claude-accounts/$1"
+}
+
+perm_of() {
+	stat -c '%a' -- "$1"
+}
+
+with_tty() {
+	local input="$1"
+	shift
+	printf '%s\n' "$input" | script -qec "$*" /dev/null
+}
+
+test_add_and_list() {
+	ca add pro1 >/dev/null
+	ca add pro2 >/dev/null
+	check "add crée le dossier en 700" test "$(perm_of "$(data_dir pro1)")" = 700
+	check "dossier racine en 700" test "$(perm_of "$HOME/.local/share/claude-accounts")" = 700
+	check "list affiche les deux comptes" test "$(ca list)" = $'pro1\npro2'
+	check "add refuse un doublon" bash -c '! "$0" add pro1 2>/dev/null' "$SCRIPT"
+	check "add refuse un nom dangereux" bash -c '! "$0" add ../x 2>/dev/null' "$SCRIPT"
+	check "CLAUDE.md partagé par lien" test "$(readlink "$(data_dir pro1)/CLAUDE.md")" = "$HOME/.claude/CLAUDE.md"
+	check "skills partagé par lien" test -L "$(data_dir pro1)/skills"
+	check "settings.json non lié" test ! -e "$(data_dir pro1)/settings.json"
+}
+
+test_run() {
+	local out
+	out=$(ANTHROPIC_API_KEY=secret ca run pro2 --resume)
+	check "run passe le bon CLAUDE_CONFIG_DIR" grep -qxF "CONFIG=$(data_dir pro2)" <<<"$out"
+	check "run retire ANTHROPIC_API_KEY" grep -qx 'APIKEY=unset' <<<"$out"
+	check "run charge settings.json commun et passe les arguments" \
+		grep -qxF "ARGS=--settings $HOME/.claude/settings.json --resume" <<<"$out"
+	check "deux comptes, deux dossiers distincts" \
+		test "$(ca run pro1 | sed -n '1p')" != "$(ca run pro2 | sed -n '1p')"
+	mkdir -p "$HOME/.claude/agents"
+	ca run pro1 >/dev/null
+	check "run lie un dossier partagé apparu après add" test -L "$(data_dir pro1)/agents"
+}
+
+test_errors() {
+	check "run sur compte inexistant échoue" bash -c '! "$0" run nope 2>/dev/null' "$SCRIPT"
+	check "message compte inexistant" bash -c '"$0" run nope 2>&1 | grep -q "compte inexistant"' "$SCRIPT"
+	check "claude absent du PATH" bash -c \
+		'PATH=$1 "$0" run pro1 2>&1 | grep -q "claude introuvable"' "$SCRIPT" "$SANDBOX/nobin:$BASE_PATH"
+	check "commande inconnue échoue" bash -c '! "$0" foo 2>/dev/null' "$SCRIPT"
+	check "add sans nom échoue" bash -c '! "$0" add 2>/dev/null' "$SCRIPT"
+}
+
+test_menu_gum() {
+	local out gum_path="$SANDBOX/gum:$SANDBOX/bin:$BASE_PATH"
+	out=$(PATH="$gum_path" FAKE_CHOICE=pro2 with_tty '' "$SCRIPT")
+	check "menu gum lance claude ici avec le compte choisi" \
+		grep -qF "CONFIG=$(data_dir pro2)" <<<"$out"
+	check "menu gum présente les comptes et les actions de gestion" bash -c \
+		'grep -q -- "--height 12" "$0" && grep -qF "+ Ajouter un compte" "$0" && grep -qF -- "- Supprimer un compte" "$0"' \
+		"$SANDBOX/gum.log"
+	out=$(PATH="$gum_path" with_tty '' "$SCRIPT"; printf 'EXIT=%s' "$?")
+	check "menu gum annulé (Échap) : rien lancé, sortie 0" \
+		bash -c '! grep -q CONFIG= <<<"$0" && grep -q EXIT=0 <<<"$0"' "$out"
+	out=$(PATH="$gum_path" FAKE_CHOICE=Quitter with_tty '' "$SCRIPT")
+	check "menu gum Quitter : rien lancé" bash -c '! grep -q CONFIG= <<<"$0"' "$out"
+	out=$(PATH="$gum_path" FAKE_CHOICE='+ Ajouter un compte' FAKE_INPUT=pro9 with_tty '' "$SCRIPT")
+	check "menu gum ajout : compte créé" test -d "$(data_dir pro9)"
+	check "menu gum ajout : claude lancé sur le nouveau compte" \
+		grep -qF "CONFIG=$(data_dir pro9)" <<<"$out"
+	ca remove pro9 </dev/null >/dev/null
+}
+
+test_menu_select() {
+	local out
+	out=$(PATH="$SANDBOX/claude-only:$SANDBOX/sys" with_tty 1 "$SCRIPT" 2>&1)
+	check "menu sans gum : select lance le compte 1 ici" \
+		grep -qF "CONFIG=$(data_dir pro1)" <<<"$out"
+}
+
+test_remove() {
+	ca remove pro2 </dev/null >/dev/null
+	check "remove retire de la liste" test "$(ca list)" = pro1
+	check "remove sans confirmation garde le dossier" test -d "$(data_dir pro2)"
+	ca add pro3 >/dev/null
+	PATH="$SANDBOX/gum:$SANDBOX/bin:$BASE_PATH" with_tty o "$SCRIPT" remove pro3 >/dev/null
+	check "remove confirmé supprime le dossier" test ! -e "$(data_dir pro3)"
+	check "remove sur compte inexistant échoue" bash -c '! "$0" remove nope 2>/dev/null' "$SCRIPT"
+}
+
+make_minimal_path() {
+	local tool
+	mkdir -p "$SANDBOX/claude-only" "$SANDBOX/sys"
+	cp "$SANDBOX/bin/claude" "$SANDBOX/claude-only/claude"
+	for tool in bash env grep mkdir chmod ln mktemp mv rm readlink basename dirname setsid script; do
+		ln -s "$(command -v "$tool")" "$SANDBOX/sys/$tool"
+	done
+}
+
+setup
+make_minimal_path
+test_add_and_list
+test_run
+test_errors
+test_menu_gum
+test_menu_select
+test_remove
+rm -rf -- "$SANDBOX"
+printf '\n%d tests, %d échecs\n' "$TESTS" "$FAILURES"
+((FAILURES == 0))
