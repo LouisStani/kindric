@@ -38,7 +38,7 @@ Requirements:
 - [`gum`](https://github.com/charmbracelet/gum) (optional). Without it, the menu uses Bash `select`.
 
 ```sh
-git clone <URL_DU_DEPOT> claude-accounts
+git clone https://github.com/LouisStani/Claude-Accounts.git
 cd claude-accounts
 install -Dm755 claude-accounts "$HOME/.local/bin/claude-accounts"
 ```
