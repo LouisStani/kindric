@@ -1,21 +1,10 @@
 # claude-accounts
 
+<img src="assets/header.svg" alt="claude-accounts: several claude code accounts side by side, one shared setup. no logout, no login." width="100%">
+
 Run several Claude Code accounts side by side, each in its own terminal, with a single shared setup.
 
 No more `/logout` and `/login` every time you switch between your personal and work accounts. Pick an account and Claude starts. Your `CLAUDE.md`, skills, agents, plugins and settings come with it.
-
-```text
-claude-accounts
-2 accounts ready to launch
-
-Choose an account to open Claude in this terminal.
-
-› personal
-  work
-  + Add an account
-  - Remove an account
-  Quit
-```
 
 ## Why
 
@@ -38,7 +27,7 @@ Requirements:
 - [`gum`](https://github.com/charmbracelet/gum) (optional). Without it, the menu uses Bash `select`.
 
 ```sh
-git clone https://github.com/LouisStani/Claude-Accounts.git
+git clone https://github.com/LouisStani/Claude-Accounts.git claude-accounts
 cd claude-accounts
 install -Dm755 claude-accounts "$HOME/.local/bin/claude-accounts"
 ```
