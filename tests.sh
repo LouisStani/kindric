@@ -29,6 +29,20 @@ setup() {
 	printf '{}\n' >"$HOME/.claude/settings.json"
 	cat >"$SANDBOX/bin/claude" <<'EOF'
 #!/usr/bin/env bash
+if [[ "${1:-} ${2:-}" == 'auth status' ]]; then
+	[[ -f "$CLAUDE_CONFIG_DIR/.fake-broken" ]] && exit 2
+	if [[ -n "${ANTHROPIC_API_KEY:-}" ]]; then
+		printf '{\n  "loggedIn": true,\n  "authMethod": "api_key"\n}\n'
+		exit 0
+	fi
+	if [[ -f "$CLAUDE_CONFIG_DIR/.fake-plan" ]]; then
+		printf '{\n  "loggedIn": true,\n  "subscriptionType": "%s"\n}\n' \
+			"$(<"$CLAUDE_CONFIG_DIR/.fake-plan")"
+		exit 0
+	fi
+	printf '{\n  "loggedIn": false\n}\n'
+	exit 1
+fi
 printf 'CONFIG=%s\n' "$CLAUDE_CONFIG_DIR"
 printf 'APIKEY=%s\n' "${ANTHROPIC_API_KEY:-unset}"
 printf 'ARGS=%s\n' "$*"
@@ -92,6 +106,44 @@ test_run() {
 	check "run lie un dossier partagé apparu après add" test -L "$(data_dir pro1)/agents"
 }
 
+test_status() {
+	local out
+	printf 'pro\n' >"$(data_dir pro1)/.fake-plan"
+	out=$(ca status)
+	check "status : compte connecté avec son offre" grep -qE '^pro1 +logged in +pro$' <<<"$out"
+	check "status : compte neuf déconnecté" grep -qE '^pro2 +logged out$' <<<"$out"
+	out=$(ANTHROPIC_API_KEY=secret ca status)
+	check "status retire ANTHROPIC_API_KEY" grep -qE '^pro2 +logged out$' <<<"$out"
+	touch "$(data_dir pro2)/.fake-broken"
+	out=$(ca status)
+	check "status : erreur de claude = unknown" grep -qE '^pro2 +unknown$' <<<"$out"
+	rm -- "$(data_dir pro2)/.fake-broken"
+	check "status sans claude échoue" bash -c \
+		'PATH=$1 "$0" status 2>&1 | grep -q "claude not found"' "$SCRIPT" "$SANDBOX/nobin:$BASE_PATH"
+}
+
+test_sessions() {
+	local out live other sessions
+	sessions="$(data_dir pro1)/sessions"
+	mkdir -p "$sessions" "$SANDBOX/proc"
+	cp "$(command -v sleep)" "$SANDBOX/proc/claude"
+	"$SANDBOX/proc/claude" 30 &
+	live=$!
+	sleep 30 &
+	other=$!
+	touch "$sessions/$live.json" "$sessions/$other.json" "$sessions/999999999.json"
+	out=$(ca status)
+	check "status compte seulement les sessions claude vivantes" \
+		grep -qE '^pro1 +logged in +pro +1 active$' <<<"$out"
+	check "status : aucun compteur sans session" grep -qE '^pro2 +logged out$' <<<"$out"
+	PATH="$SANDBOX/gum:$SANDBOX/bin:$BASE_PATH" FAKE_CHOICE=Quit with_tty '' "$SCRIPT" >/dev/null
+	check "menu gum : sessions actives affichées" \
+		grep -qF 'pro1  logged in · pro · 1 active' "$SANDBOX/gum.log"
+	kill "$live" "$other"
+	wait "$live" "$other" 2>/dev/null
+	rm -rf -- "$sessions"
+}
+
 test_errors() {
 	check "run sur compte inexistant échoue" bash -c '! "$0" run nope 2>/dev/null' "$SCRIPT"
 	check "message compte inexistant" bash -c '"$0" run nope 2>&1 | grep -q "no such account"' "$SCRIPT"
@@ -109,6 +161,11 @@ test_menu_gum() {
 	check "menu gum présente les comptes et les actions de gestion" bash -c \
 		'grep -q -- "--height 12" "$0" && grep -qF "+ Add an account" "$0" && grep -qF -- "- Remove an account" "$0"' \
 		"$SANDBOX/gum.log"
+	check "menu gum : compte connecté affiché avec son offre" grep -qF 'pro1  logged in · pro' "$SANDBOX/gum.log"
+	check "menu gum : compte déconnecté signalé" grep -qF 'pro2  logged out' "$SANDBOX/gum.log"
+	out=$(PATH="$gum_path" FAKE_CHOICE='pro1  logged in · pro' with_tty '' "$SCRIPT")
+	check "menu gum : choisir un libellé lance le bon compte" \
+		grep -qF "CONFIG=$(data_dir pro1)" <<<"$out"
 	out=$(PATH="$gum_path" with_tty '' "$SCRIPT"; printf 'EXIT=%s' "$?")
 	check "menu gum annulé (Échap) : rien lancé, sortie 0" \
 		bash -c '! grep -q CONFIG= <<<"$0" && grep -q EXIT=0 <<<"$0"' "$out"
@@ -142,7 +199,7 @@ make_minimal_path() {
 	local tool
 	mkdir -p "$SANDBOX/claude-only" "$SANDBOX/sys"
 	cp "$SANDBOX/bin/claude" "$SANDBOX/claude-only/claude"
-	for tool in bash env grep mkdir chmod ln mktemp mv rm readlink basename dirname setsid script; do
+	for tool in bash env grep mkdir chmod ln mktemp mv rm ps readlink basename dirname setsid script; do
 		ln -s "$(command -v "$tool")" "$SANDBOX/sys/$tool"
 	done
 }
@@ -151,6 +208,8 @@ setup
 make_minimal_path
 test_add_and_list
 test_run
+test_status
+test_sessions
 test_errors
 test_menu_gum
 test_menu_select

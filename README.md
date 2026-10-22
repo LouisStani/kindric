@@ -49,7 +49,7 @@ Each later launch reuses the account you logged in with. Open a second terminal 
 claude-accounts run work
 ```
 
-Or just run `claude-accounts` to open the menu. From there you can launch, add or remove an account with the arrow keys. Escape cancels.
+Or just run `claude-accounts` to open the menu. It shows whether each account is logged in, its plan and how many Claude sessions are open on it. From there you can launch, add or remove an account with the arrow keys. Escape cancels.
 
 ## Commands
 
@@ -58,6 +58,7 @@ Or just run `claude-accounts` to open the menu. From there you can launch, add o
 | `claude-accounts` | Opens the menu and starts Claude in the current terminal. |
 | `claude-accounts add <name>` | Creates an account and its private directory. |
 | `claude-accounts list` | Prints account names, one per line. |
+| `claude-accounts status` | Shows whether each account is logged in, its plan (`pro`, `max`…) and its active sessions. |
 | `claude-accounts remove <name>` | Removes an account from the list. Its directory is deleted only after you confirm. |
 | `claude-accounts run <name> [args]` | Starts Claude with this account. Extra arguments go to `claude`, for example `--resume`. |
 
@@ -92,6 +93,10 @@ CLAUDE_CODE_OAUTH_TOKEN
 ```
 
 A key or token exported in your shell therefore cannot override the account you picked, and you are billed on the account you chose.
+
+Login status comes from `claude auth status`, run with the same variables removed. Claude Code reads its own credentials locally; the script only reads the exit code and the plan name.
+
+Active sessions are counted from the `sessions/` directory of each account, keeping only the processes that are still running `claude`. This directory is internal to Claude Code: if its layout changes, the count disappears and nothing else breaks.
 
 ## Development
 

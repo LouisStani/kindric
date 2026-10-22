@@ -62,8 +62,12 @@ require_account() {
 		die "missing directory for $1: $(account_dir "$1")"
 }
 
+has_claude() {
+	command -v claude >/dev/null 2>&1
+}
+
 require_claude() {
-	command -v claude >/dev/null 2>&1 || die "claude not found in PATH"
+	has_claude || die "claude not found in PATH"
 }
 
 confirm() {
@@ -147,20 +151,136 @@ build_claude_args() {
 	return 0
 }
 
+claude_env_args() {
+	local var
+	for var in "${STRIPPED_ENV[@]}"; do
+		printf '%s\0' -u "$var"
+	done
+}
+
 cmd_run() {
-	local name="$1" dir var
+	local name="$1" dir
 	shift
 	require_account "$name"
 	require_claude
 	dir=$(account_dir "$name")
 	link_shared "$dir"
-	local unset_args=() claude_args=()
-	for var in "${STRIPPED_ENV[@]}"; do
-		unset_args+=(-u "$var")
-	done
+	local env_args=() claude_args=()
+	mapfile -d '' env_args < <(claude_env_args)
 	mapfile -d '' claude_args < <(build_claude_args)
-	exec env "${unset_args[@]}" CLAUDE_CONFIG_DIR="$dir" \
+	exec env "${env_args[@]}" CLAUDE_CONFIG_DIR="$dir" \
 		claude "${claude_args[@]}" "$@"
+}
+
+subscription_type() {
+	local pattern='"subscriptionType"[[:space:]]*:[[:space:]]*"([a-z_]+)"'
+	[[ "$1" =~ $pattern ]] && printf '%s' "${BASH_REMATCH[1]}"
+	return 0
+}
+
+is_claude_process() {
+	local comm
+	comm=$(ps -o comm= -p "$1" 2>/dev/null) || return 1
+	[[ "${comm##*/}" == claude ]]
+}
+
+active_sessions() {
+	local file pid count=0
+	for file in "$(account_dir "$1")"/sessions/*.json; do
+		[[ -e "$file" ]] || continue
+		pid=${file##*/}
+		pid=${pid%.json}
+		[[ "$pid" =~ ^[0-9]+$ ]] || continue
+		if is_claude_process "$pid"; then
+			count=$((count + 1))
+		fi
+	done
+	printf '%s\n' "$count"
+}
+
+account_status() {
+	local env_args=() output code=0 state plan='' sessions
+	sessions=$(active_sessions "$1")
+	mapfile -d '' env_args < <(claude_env_args)
+	output=$(env "${env_args[@]}" CLAUDE_CONFIG_DIR="$(account_dir "$1")" \
+		claude auth status --json </dev/null 2>/dev/null) || code=$?
+	case "$code" in
+	0)
+		state=logged-in
+		plan=$(subscription_type "$output")
+		;;
+	1) state=logged-out ;;
+	*) state=unknown ;;
+	esac
+	printf '%s\t%s\t%s\n' "$state" "$sessions" "$plan"
+}
+
+collect_statuses() {
+	local tmp name i=0
+	tmp=$(mktemp -d)
+	for name in "$@"; do
+		account_status "$name" >"$tmp/$i" &
+		i=$((i + 1))
+	done
+	wait
+	i=0
+	for name in "$@"; do
+		printf '%s\t%s\n' "$name" "$(<"$tmp/$i")"
+		i=$((i + 1))
+	done
+	rm -rf -- "$tmp"
+}
+
+name_width() {
+	local name width=0
+	for name in "$@"; do
+		if ((${#name} > width)); then
+			width=${#name}
+		fi
+	done
+	printf '%s\n' "$width"
+}
+
+state_label() {
+	case "$1" in
+	logged-in) printf 'logged in' ;;
+	logged-out) printf 'logged out' ;;
+	*) printf 'unknown' ;;
+	esac
+}
+
+sessions_label() {
+	if (($1 > 0)); then
+		printf '%s active' "$1"
+	fi
+}
+
+strip_trailing_spaces() {
+	printf '%s\n' "${1%"${1##*[! ]}"}"
+}
+
+cmd_status() {
+	local names=() rows=() row name state sessions plan name_w plan_w=0 line
+	mapfile -t names < <(list_accounts)
+	if ((${#names[@]} == 0)); then
+		cmd_list
+		return 0
+	fi
+	require_claude
+	name_w=$(name_width "${names[@]}")
+	mapfile -t rows < <(collect_statuses "${names[@]}")
+	for row in "${rows[@]}"; do
+		IFS=$'\t' read -r name state sessions plan <<<"$row"
+		if ((${#plan} > plan_w)); then
+			plan_w=${#plan}
+		fi
+	done
+	for row in "${rows[@]}"; do
+		IFS=$'\t' read -r name state sessions plan <<<"$row"
+		line=$(printf '%-*s  %-10s  %-*s  %s' "$name_w" "$name" "$(state_label "$state")" \
+			"$plan_w" "$plan" "$(sessions_label "$sessions")")
+		strip_trailing_spaces "$line"
+	done
 }
 
 has_gum() {
@@ -250,6 +370,32 @@ menu_header() {
 	printf 'claude-accounts\n%s\n\nChoose an account to open Claude in this terminal.' "$label"
 }
 
+menu_badge() {
+	local state="$1" sessions="$2" plan="$3" badge
+	case "$state" in
+	logged-in) badge="logged in${plan:+ · $plan}" ;;
+	logged-out) badge='logged out' ;;
+	*) badge='status unknown' ;;
+	esac
+	if ((sessions > 0)); then
+		badge+=" · $sessions active"
+	fi
+	printf '%s' "$badge"
+}
+
+menu_labels() {
+	local width name state sessions plan
+	(($# > 0)) || return 0
+	if ! has_claude; then
+		printf '%s\n' "$@"
+		return 0
+	fi
+	width=$(name_width "$@")
+	while IFS=$'\t' read -r name state sessions plan; do
+		printf '%-*s  %s\n' "$width" "$name" "$(menu_badge "$state" "$sessions" "$plan")"
+	done < <(collect_statuses "$@")
+}
+
 remove_from_menu() {
 	local name
 	(($# > 0)) || return 0
@@ -261,10 +407,11 @@ remove_from_menu() {
 
 cmd_menu() {
 	[[ -t 0 && -t 1 ]] || die "the menu needs an interactive terminal"
-	local names=() choices=() choice
+	local names=() labels=() choices=() choice
 	while :; do
 		mapfile -t names < <(list_accounts)
-		choices=("${names[@]}" "$MENU_ADD")
+		mapfile -t labels < <(menu_labels "${names[@]}")
+		choices=("${labels[@]}" "$MENU_ADD")
 		((${#names[@]} > 0)) && choices+=("$MENU_REMOVE")
 		choices+=("$MENU_QUIT")
 		choice=$(choose_entry "$(menu_header "${#names[@]}")" "${choices[@]}") || return 0
@@ -272,7 +419,7 @@ cmd_menu() {
 		"$MENU_ADD") add_from_menu ;;
 		"$MENU_REMOVE") remove_from_menu "${names[@]}" ;;
 		"$MENU_QUIT") return 0 ;;
-		*) cmd_run "$choice" ;;
+		*) cmd_run "${choice%% *}" ;;
 		esac
 	done
 }
@@ -283,6 +430,7 @@ Usage:
   claude-accounts                   menu: pick an account and start claude here
   claude-accounts add <name>        create the account and its directory (700)
   claude-accounts list              list accounts
+  claude-accounts status            show login status, plan and active sessions of each account
   claude-accounts remove <name>     remove the account (directory deleted only if confirmed)
   claude-accounts run <name> [...]  start claude with this account here (args passed to claude)
 EOF
@@ -298,6 +446,7 @@ main() {
 	'') cmd_menu ;;
 	add) require_arg "${2:-}"; cmd_add "$2" ;;
 	list) cmd_list ;;
+	status) cmd_status ;;
 	remove) require_arg "${2:-}"; cmd_remove "$2" ;;
 	run) require_arg "${2:-}"; shift; cmd_run "$@" ;;
 	-h | --help | help) usage ;;
