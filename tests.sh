@@ -144,6 +144,48 @@ test_sessions() {
 	rm -rf -- "$sessions"
 }
 
+json_true() {
+	jq -e "$1" "$2" >/dev/null
+}
+
+test_shared_mcp() {
+	local out shared="$HOME/.local/share/claude-accounts/.shared-mcp"
+	printf '{"mcpServers":{"alpha":{"type":"stdio","command":"a"},"both":{"type":"stdio","command":"other"}}}\n' \
+		>"$(data_dir pro2)/.claude.json"
+	printf '{"numStartups":1,"mcpServers":{"both":{"type":"stdio","command":"own"}},"projects":{"/p":{"mcpServers":{"proj":{"type":"stdio","command":"own"}}}}}\n' \
+		>"$(data_dir pro1)/.claude.json"
+	ca add pro4 >/dev/null
+	printf '{"mcpServers":{"alpha":{"type":"stdio","command":"z"},"proj":{"type":"stdio","command":"z"}}}\n' \
+		>"$(data_dir pro4)/.claude.json"
+	out=$(ca run pro1 hello)
+	check "run passe les MCP des autres comptes avec --mcp-config=" grep -qxF \
+		"ARGS=--settings $HOME/.claude/settings.json --mcp-config=$shared/pro1.json hello" <<<"$out"
+	check "MCP d'un autre compte partagé, le premier compte gagne" \
+		json_true '.mcpServers.alpha.command == "a"' "$shared/pro1.json"
+	check "MCP déjà présent dans le compte lancé non transmis" \
+		json_true '.mcpServers | has("both") | not' "$shared/pro1.json"
+	check "MCP lié à un projet du compte lancé non transmis" \
+		json_true '.mcpServers | has("proj") | not' "$shared/pro1.json"
+	check "fichier commun en 700" test "$(perm_of "$shared")" = 700
+	printf '{"mcpServers": {' >"$(data_dir pro2)/.claude.json"
+	out=$(ca run pro1 2>&1)
+	check "compte au JSON cassé ignoré avec avertissement" grep -q 'pro2 skipped' <<<"$out"
+	check "compte au JSON cassé : les autres restent partagés" \
+		json_true '.mcpServers.alpha.command == "z"' "$shared/pro1.json"
+	printf '{"mcpServers": {' >"$(data_dir pro1)/.claude.json"
+	out=$(ca run pro1)
+	check "JSON du compte lancé cassé : claude lancé sans --mcp-config" bash -c \
+		'grep -q "^CONFIG=" <<<"$0" && ! grep -q -- --mcp-config <<<"$0"' "$out"
+	printf '{}\n' >"$(data_dir pro1)/.claude.json"
+	out=$(PATH="$SANDBOX/claude-only:$SANDBOX/sys" "$SCRIPT" run pro1)
+	check "sans jq : claude lancé sans --mcp-config" bash -c \
+		'grep -q "^CONFIG=" <<<"$0" && ! grep -q -- --mcp-config <<<"$0"' "$out"
+	ca remove pro4 </dev/null >/dev/null
+	rm -f -- "$(data_dir pro1)/.claude.json" "$(data_dir pro2)/.claude.json"
+	out=$(ca run pro1)
+	check "aucun MCP chez les autres : pas de --mcp-config" bash -c '! grep -q -- --mcp-config <<<"$0"' "$out"
+}
+
 test_errors() {
 	check "run sur compte inexistant échoue" bash -c '! "$0" run nope 2>/dev/null' "$SCRIPT"
 	check "message compte inexistant" bash -c '"$0" run nope 2>&1 | grep -q "no such account"' "$SCRIPT"
@@ -210,6 +252,7 @@ test_add_and_list
 test_run
 test_status
 test_sessions
+test_shared_mcp
 test_errors
 test_menu_gum
 test_menu_select

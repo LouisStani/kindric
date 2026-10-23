@@ -144,10 +144,68 @@ link_shared() {
 	done
 }
 
+has_jq() {
+	command -v jq >/dev/null 2>&1
+}
+
+account_mcp_servers() {
+	jq -ec '.mcpServers // {} | objects' "$(account_dir "$1")/.claude.json" 2>/dev/null
+}
+
+account_all_mcp_servers() {
+	jq -ec '[.mcpServers // {}, (.projects // {} | .[] | .mcpServers // {})] | map(objects) | add // {}' \
+		"$(account_dir "$1")/.claude.json" 2>/dev/null
+}
+
+has_state_file() {
+	[[ -f "$(account_dir "$1")/.claude.json" ]]
+}
+
+foreign_mcp_servers() {
+	local current="$1" name servers own merged='{}'
+	if has_state_file "$current"; then
+		own=$(account_all_mcp_servers "$current") || return 1
+	else
+		own='{}'
+	fi
+	while IFS= read -r name; do
+		[[ "$name" == "$current" ]] && continue
+		has_state_file "$name" || continue
+		if ! servers=$(account_mcp_servers "$name"); then
+			printf 'claude-accounts: MCP servers of %s skipped (unreadable .claude.json)\n' "$name" >&2
+			continue
+		fi
+		merged=$(jq -c --argjson add "$servers" '$add + .' <<<"$merged") || return 1
+	done < <(list_accounts)
+	jq -c --argjson own "$own" \
+		'with_entries(select(.key as $k | $own | has($k) | not))' <<<"$merged"
+}
+
+write_shared_mcp() {
+	local name="$1" servers dir file tmp
+	has_jq || return 1
+	servers=$(foreign_mcp_servers "$name") || return 1
+	[[ "$servers" != '{}' ]] || return 1
+	dir="$(accounts_root)/.shared-mcp"
+	mkdir -p -m 700 "$dir" || return 1
+	file="$dir/$name.json"
+	tmp=$(mktemp "$file.XXXXXX") || return 1
+	if jq -c '{mcpServers: .}' <<<"$servers" >"$tmp" && mv -f -- "$tmp" "$file"; then
+		printf '%s\n' "$file"
+		return 0
+	fi
+	rm -f -- "$tmp"
+	return 1
+}
+
 build_claude_args() {
-	local settings
+	local settings mcp_config
 	settings="$(shared_root)/settings.json"
 	[[ -f "$settings" ]] && printf '%s\0' --settings "$settings"
+	# --mcp-config is variadic: the = form keeps it from eating the next arguments.
+	if mcp_config=$(write_shared_mcp "$1"); then
+		printf '%s\0' "--mcp-config=$mcp_config"
+	fi
 	return 0
 }
 
@@ -167,7 +225,7 @@ cmd_run() {
 	link_shared "$dir"
 	local env_args=() claude_args=()
 	mapfile -d '' env_args < <(claude_env_args)
-	mapfile -d '' claude_args < <(build_claude_args)
+	mapfile -d '' claude_args < <(build_claude_args "$name")
 	exec env "${env_args[@]}" CLAUDE_CONFIG_DIR="$dir" \
 		claude "${claude_args[@]}" "$@"
 }

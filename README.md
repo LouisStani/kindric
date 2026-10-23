@@ -13,7 +13,7 @@ Claude Code keeps one login per configuration directory. Switching accounts mean
 claude-accounts gives each account its own directory and links the shared parts back to `~/.claude`. You configure Claude once and every account uses that configuration.
 
 - Keep two accounts open at the same time, in two terminals.
-- Share one `CLAUDE.md` and one set of skills, agents, commands, plugins and themes across all accounts.
+- Share one `CLAUDE.md` and one set of skills, agents, commands, plugins and themes across all accounts, plus the MCP servers you add to any of them.
 - Create a shared directory later and existing accounts pick it up on their next launch.
 - The script never reads, copies or sends your credentials. It makes no network requests.
 - Install one Bash script. `gum` gives you a nicer menu, but it is optional.
@@ -25,6 +25,7 @@ Requirements:
 - [Claude Code](https://docs.anthropic.com/en/docs/claude-code) on your `PATH`
 - Bash 4 or later
 - [`gum`](https://github.com/charmbracelet/gum) (optional). Without it, the menu uses Bash `select`.
+- [`jq`](https://jqlang.org) (optional). Without it, MCP servers are not shared.
 
 ```sh
 git clone https://github.com/LouisStani/Claude-Accounts.git claude-accounts
@@ -79,8 +80,26 @@ Each account gets its own `CLAUDE_CONFIG_DIR`.
 | Credentials, sessions, history, project memory | Private to each account |
 | `CLAUDE.md`, `skills/`, `agents/`, `commands/`, `plugins/`, `themes/` | Symbolic links to `~/.claude` |
 | `settings.json` | Read from `~/.claude/settings.json` and passed with `--settings` |
+| MCP servers of the other accounts | Merged at launch and passed with `--mcp-config` |
 
 Links are checked on every launch. Account directories use `700` permissions and the account list uses `600`.
+
+## Shared MCP servers
+
+Add an MCP server once, in any account, with the user scope:
+
+```sh
+claude mcp add -s user --transport http sentry https://mcp.sentry.dev/mcp
+```
+
+Every other account gets it on its next launch. Remove it from the account where you added it and it disappears everywhere on the next launch.
+
+At each launch, the script reads the `mcpServers` of the other accounts, merges them into its own file and passes it with `--mcp-config`. It never writes to Claude Code's files.
+
+- A server name the launched account already defines, at any scope, is not passed: the account keeps its own server and its own authentication.
+- If two other accounts define the same name, the first account in `claude-accounts list` wins.
+- If an account's `.claude.json` cannot be read, that account is skipped with a warning. If the launched account's own file cannot be read, or `jq` is missing, Claude starts without shared servers.
+- Headers and environment variables of a server, API keys included, become available to every account.
 
 ## Security and billing
 
