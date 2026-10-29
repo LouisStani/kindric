@@ -87,6 +87,8 @@ alias cw='claude-accounts run work'
 
 Other programs can drive claude-accounts through the commands below. Their output stays stable across all 1.x versions: new fields may be added, existing ones are not renamed or removed.
 
+[claude-sessions](https://github.com/LouisStani/Claude-Sessions) uses them to show the Claude sessions of all your accounts side by side in one terminal, and to let them send each other messages.
+
 | Command | Output |
 | --- | --- |
 | `list` | Account names only, one per line. Nothing on stdout when there are no accounts. |
