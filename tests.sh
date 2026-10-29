@@ -138,9 +138,9 @@ test_status() {
 		'! PATH=$1 "$0" status --json >/dev/null 2>&1' "$SCRIPT" "$SANDBOX/nobin:$BASE_PATH"
 	out=$(ca status --json)
 	check "status --json : compte connecté complet" jq -e --arg d "$(data_dir pro1)" \
-		'.[0] == {name: "pro1", state: "logged-in", sessions: 0, plan: "pro", dir: $d}' <<<"$out"
+		'.[0] == {name: "pro1", state: "logged-in", sessions: 0, plan: "pro", dir: $d, isolated: false}' <<<"$out"
 	check "status --json : compte déconnecté, offre null" jq -e --arg d "$(data_dir pro2)" \
-		'.[1] == {name: "pro2", state: "logged-out", sessions: 0, plan: null, dir: $d}' <<<"$out"
+		'.[1] == {name: "pro2", state: "logged-out", sessions: 0, plan: null, dir: $d, isolated: false}' <<<"$out"
 	check "status refuse une option inconnue" bash -c '! "$0" status --tsv 2>/dev/null' "$SCRIPT"
 }
 
@@ -216,6 +216,43 @@ test_shared_mcp() {
 	rm -f -- "$(data_dir pro1)/.claude.json" "$(data_dir pro2)/.claude.json"
 	out=$(ca run pro1)
 	check "aucun MCP chez les autres : pas de --mcp-config" bash -c '! grep -q -- --mcp-config <<<"$0"' "$out"
+}
+
+test_isolation() {
+	local out shared="$HOME/.local/share/claude-accounts/.shared-mcp"
+	ca add work >/dev/null
+	printf '{"mcpServers":{"secret":{"type":"stdio","command":"w"}}}\n' >"$(data_dir work)/.claude.json"
+	printf '{"mcpServers":{"perso":{"type":"stdio","command":"p"}}}\n' >"$(data_dir pro2)/.claude.json"
+	ca run pro1 >/dev/null
+	check "avant isolement : MCP de work partagé" json_true '.mcpServers | has("secret")' "$shared/pro1.json"
+	check "isolate sur compte inexistant échoue" bash -c '! "$0" isolate nope 2>/dev/null' "$SCRIPT"
+	ca isolate work >/dev/null
+	check "isolate deux fois : pas de doublon" bash -c \
+		'"$0" isolate work >/dev/null && test "$("$0" isolated)" = work' "$SCRIPT"
+	check "isolated --json" test "$(ca isolated --json)" = '["work"]'
+	check "liste des isolés en 600" test "$(perm_of "$HOME/.config/claude-accounts/isolated")" = 600
+	ca run pro1 >/dev/null
+	check "MCP d'un compte isolé jamais donné" json_true '.mcpServers | has("secret") | not' "$shared/pro1.json"
+	check "MCP des autres comptes toujours partagés" json_true '.mcpServers | has("perso")' "$shared/pro1.json"
+	out=$(ca run work)
+	check "compte isolé lancé avec un fichier MCP" grep -qF -- "--mcp-config=$shared/work.json" <<<"$out"
+	check "compte isolé ne reçoit aucun MCP" json_true '.mcpServers == {}' "$shared/work.json"
+	rm -f -- "$(data_dir pro2)/.claude.json"
+	out=$(ca run pro1)
+	check "plus rien à partager : ancien fichier vidé, pas réutilisé" bash -c \
+		'jq -e ".mcpServers == {}" "$1" >/dev/null && ! grep -q -- --mcp-config <<<"$0"' "$out" "$shared/pro1.json"
+	check "status --json : champ isolated" bash -c \
+		'"$0" status --json | jq -e "map(select(.isolated) | .name) == [\"work\"]" >/dev/null' "$SCRIPT"
+	check "status texte : isolated" bash -c '"$0" status | grep -qE "^work .*  isolated$"' "$SCRIPT"
+	PATH="$SANDBOX/gum:$SANDBOX/bin:$BASE_PATH" FAKE_CHOICE=Quit with_tty '' "$SCRIPT" >/dev/null
+	check "menu : compte isolé signalé" grep -qF 'work  logged out · isolated' "$SANDBOX/gum.log"
+	ca unisolate work >/dev/null
+	check "unisolate : plus isolé" test -z "$(ca isolated)"
+	check "unisolate sur compte non isolé : sans effet" bash -c '"$0" unisolate work >/dev/null' "$SCRIPT"
+	ca isolate work >/dev/null
+	ca remove work --delete-dir >/dev/null
+	check "remove retire aussi de la liste des isolés" test -z "$(ca isolated)"
+	rm -f -- "$(data_dir pro1)/.claude.json"
 }
 
 test_errors() {
@@ -311,6 +348,7 @@ test_status
 test_status_json_escaping
 test_sessions
 test_shared_mcp
+test_isolation
 test_errors
 test_version
 test_menu_gum

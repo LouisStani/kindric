@@ -7,7 +7,7 @@
 
 set -euo pipefail
 
-readonly VERSION='1.1.0'
+readonly VERSION='1.2.0'
 readonly SHARED_ENTRIES=(CLAUDE.md skills agents commands plugins themes)
 readonly STRIPPED_ENV=(ANTHROPIC_API_KEY ANTHROPIC_AUTH_TOKEN CLAUDE_CODE_OAUTH_TOKEN)
 readonly MENU_ADD='+ Add an account'
@@ -54,6 +54,21 @@ list_accounts() {
 
 account_exists() {
 	list_accounts | grep -qxF -- "$1"
+}
+
+isolated_file() {
+	printf '%s\n' "${XDG_CONFIG_HOME:-$HOME/.config}/claude-accounts/isolated"
+}
+
+list_isolated() {
+	local file
+	file=$(isolated_file)
+	[[ -f "$file" ]] || return 0
+	grep -v '^$' "$file" || true
+}
+
+is_isolated() {
+	list_isolated | grep -qxF -- "$1"
 }
 
 require_account() {
@@ -141,12 +156,58 @@ cmd_list() {
 	fi
 }
 
+remove_line() {
+	local file="$1" tmp
+	[[ -f "$file" ]] || return 0
+	tmp=$(mktemp "$file.XXXXXX")
+	grep -vxF -- "$2" "$file" >"$tmp" || true
+	mv -f -- "$tmp" "$file"
+}
+
 remove_from_registry() {
-	local registry tmp
-	registry=$(registry_file)
-	tmp=$(mktemp "$registry.XXXXXX")
-	grep -vxF -- "$1" "$registry" >"$tmp" || true
-	mv -f -- "$tmp" "$registry"
+	remove_line "$(registry_file)" "$1"
+	remove_line "$(isolated_file)" "$1"
+}
+
+require_existing_account() {
+	validate_name "$1"
+	account_exists "$1" || die "no such account: $1 (see: claude-accounts list)"
+}
+
+cmd_isolate() {
+	local name="$1" file
+	require_existing_account "$name"
+	if is_isolated "$name"; then
+		printf 'Account "%s" is already isolated.\n' "$name"
+		return 0
+	fi
+	file=$(isolated_file)
+	mkdir -p -m 700 "$(dirname "$file")"
+	printf '%s\n' "$name" >>"$file"
+	printf 'Account "%s" isolated: it no longer gives or receives MCP servers.\n' "$name"
+	printf 'Restart the sessions already running, on this account and on the others, to apply it.\n'
+}
+
+cmd_unisolate() {
+	local name="$1"
+	require_existing_account "$name"
+	if ! is_isolated "$name"; then
+		printf 'Account "%s" is not isolated.\n' "$name"
+		return 0
+	fi
+	remove_line "$(isolated_file)" "$name"
+	printf 'Account "%s" shares MCP servers again from its next launch.\n' "$name"
+}
+
+cmd_isolated() {
+	local names=() json=0
+	wants_json "$@" && json=1
+	mapfile -t names < <(list_isolated)
+	if ((json)); then
+		json_names "${names[@]}"
+	elif ((${#names[@]} > 0)); then
+		printf '%s\n' "${names[@]}"
+	fi
 }
 
 dir_choice() {
@@ -170,8 +231,7 @@ cmd_remove() {
 	local name="$1" dir choice
 	shift
 	choice=$(dir_choice "$@") || { usage >&2; exit 1; }
-	validate_name "$name"
-	account_exists "$name" || die "no such account: $name (see: claude-accounts list)"
+	require_existing_account "$name"
 	remove_from_registry "$name"
 	printf 'Account "%s" removed from the list.\n' "$name"
 	dir=$(account_dir "$name")
@@ -224,6 +284,7 @@ foreign_mcp_servers() {
 	fi
 	while IFS= read -r name; do
 		[[ "$name" == "$current" ]] && continue
+		is_isolated "$name" && continue
 		has_state_file "$name" || continue
 		if ! servers=$(account_mcp_servers "$name"); then
 			printf 'claude-accounts: MCP servers of %s skipped (unreadable .claude.json)\n' "$name" >&2
@@ -235,21 +296,40 @@ foreign_mcp_servers() {
 		'with_entries(select(.key as $k | $own | has($k) | not))' <<<"$merged"
 }
 
-write_shared_mcp() {
-	local name="$1" servers dir file tmp
-	has_jq || return 1
-	servers=$(foreign_mcp_servers "$name") || return 1
-	[[ "$servers" != '{}' ]] || return 1
-	dir="$(accounts_root)/.shared-mcp"
-	mkdir -p -m 700 "$dir" || return 1
-	file="$dir/$name.json"
+shared_mcp_file() {
+	printf '%s/.shared-mcp/%s.json\n' "$(accounts_root)" "$1"
+}
+
+write_mcp_file() {
+	local file="$1" content="$2" tmp
+	mkdir -p -m 700 "$(dirname "$file")" || return 1
 	tmp=$(mktemp "$file.XXXXXX") || return 1
-	if jq -c '{mcpServers: .}' <<<"$servers" >"$tmp" && mv -f -- "$tmp" "$file"; then
-		printf '%s\n' "$file"
+	if printf '%s\n' "$content" >"$tmp" && mv -f -- "$tmp" "$file"; then
 		return 0
 	fi
 	rm -f -- "$tmp"
 	return 1
+}
+
+# Background sessions keep the --mcp-config path they started with, and Claude Code
+# refuses to start if that file is missing: an emptied file is rewritten, never deleted.
+write_shared_mcp() {
+	local name="$1" servers file content
+	file=$(shared_mcp_file "$name")
+	if is_isolated "$name"; then
+		write_mcp_file "$file" '{"mcpServers":{}}' || return 1
+		printf '%s\n' "$file"
+		return 0
+	fi
+	has_jq || return 1
+	servers=$(foreign_mcp_servers "$name") || return 1
+	if [[ "$servers" == '{}' ]]; then
+		[[ -f "$file" ]] && write_mcp_file "$file" '{"mcpServers":{}}'
+		return 1
+	fi
+	content=$(jq -c '{mcpServers: .}' <<<"$servers") || return 1
+	write_mcp_file "$file" "$content" || return 1
+	printf '%s\n' "$file"
 }
 
 build_claude_args() {
@@ -379,13 +459,22 @@ json_or_null() {
 	fi
 }
 
+json_bool() {
+	if "$@"; then
+		printf 'true'
+	else
+		printf 'false'
+	fi
+}
+
 status_json() {
 	local name state sessions plan sep=''
 	printf '['
 	while IFS=$'\t' read -r name state sessions plan; do
-		printf '%s{"name":%s,"state":%s,"sessions":%s,"plan":%s,"dir":%s}' "$sep" \
+		printf '%s{"name":%s,"state":%s,"sessions":%s,"plan":%s,"dir":%s,"isolated":%s}' "$sep" \
 			"$(json_string "$name")" "$(json_string "$state")" "$sessions" \
-			"$(json_or_null "$plan")" "$(json_string "$(account_dir "$name")")"
+			"$(json_or_null "$plan")" "$(json_string "$(account_dir "$name")")" \
+			"$(json_bool is_isolated "$name")"
 		sep=','
 	done < <(collect_statuses "$@")
 	printf ']\n'
@@ -417,7 +506,9 @@ cmd_status() {
 		IFS=$'\t' read -r name state sessions plan <<<"$row"
 		line=$(printf '%-*s  %-10s  %-*s  %s' "$name_w" "$name" "$(state_label "$state")" \
 			"$plan_w" "$plan" "$(sessions_label "$sessions")")
-		strip_trailing_spaces "$line"
+		line=$(strip_trailing_spaces "$line")
+		is_isolated "$name" && line+='  isolated'
+		printf '%s\n' "$line"
 	done
 }
 
@@ -509,7 +600,7 @@ menu_header() {
 }
 
 menu_badge() {
-	local state="$1" sessions="$2" plan="$3" badge
+	local name="$1" state="$2" sessions="$3" plan="$4" badge
 	case "$state" in
 	logged-in) badge="logged in${plan:+ · $plan}" ;;
 	logged-out) badge='logged out' ;;
@@ -517,6 +608,9 @@ menu_badge() {
 	esac
 	if ((sessions > 0)); then
 		badge+=" · $sessions active"
+	fi
+	if is_isolated "$name"; then
+		badge+=' · isolated'
 	fi
 	printf '%s' "$badge"
 }
@@ -530,7 +624,7 @@ menu_labels() {
 	fi
 	width=$(name_width "$@")
 	while IFS=$'\t' read -r name state sessions plan; do
-		printf '%-*s  %s\n' "$width" "$name" "$(menu_badge "$state" "$sessions" "$plan")"
+		printf '%-*s  %s\n' "$width" "$name" "$(menu_badge "$name" "$state" "$sessions" "$plan")"
 	done < <(collect_statuses "$@")
 }
 
@@ -572,6 +666,9 @@ Usage:
   claude-accounts remove <name> [--delete-dir|--keep-dir]
                                     remove the account (directory deleted only if confirmed)
   claude-accounts run <name> [...]  start claude with this account here (args passed to claude)
+  claude-accounts isolate <name>    stop sharing MCP servers with and from this account
+  claude-accounts unisolate <name>  share MCP servers again
+  claude-accounts isolated [--json] list isolated accounts
   claude-accounts --version         print the version
 EOF
 }
@@ -589,6 +686,9 @@ main() {
 	status) shift; cmd_status "$@" ;;
 	remove) require_arg "${2:-}"; shift; cmd_remove "$@" ;;
 	run) require_arg "${2:-}"; shift; cmd_run "$@" ;;
+	isolate) require_arg "${2:-}"; cmd_isolate "$2" ;;
+	unisolate) require_arg "${2:-}"; cmd_unisolate "$2" ;;
+	isolated) shift; cmd_isolated "$@" ;;
 	-V | --version) printf 'claude-accounts %s\n' "$VERSION" ;;
 	-h | --help | help) usage ;;
 	*) usage >&2; exit 1 ;;

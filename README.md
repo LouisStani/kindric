@@ -73,6 +73,9 @@ Or just run `claude-accounts` to open the menu. It shows whether each account is
 | `claude-accounts status [--json]` | Shows whether each account is logged in, its plan (`pro`, `max`…) and its active sessions. |
 | `claude-accounts remove <name> [--delete-dir \| --keep-dir]` | Removes an account from the list. Its directory is deleted only after you confirm, or as the option says. |
 | `claude-accounts run <name> [args]` | Starts Claude with this account. Extra arguments go to `claude`, for example `--resume`. |
+| `claude-accounts isolate <name>` | Stops sharing MCP servers with and from this account. See [Isolated accounts](#isolated-accounts). |
+| `claude-accounts unisolate <name>` | Shares MCP servers again from the next launch. |
+| `claude-accounts isolated [--json]` | Lists isolated accounts. |
 | `claude-accounts --version` | Prints the installed version. |
 
 Names use 1 to 32 characters among `a-z`, `0-9`, `_` and `-`.
@@ -97,12 +100,13 @@ Other programs can drive claude-accounts through the commands below. Their outpu
 | `remove <name> --delete-dir` | Removes the account and deletes its directory, without asking. |
 | `remove <name> --keep-dir` | Removes the account and keeps its directory, without asking. |
 | `run <name> [args]` | Replaces itself with `claude` running on this account. |
-| `--version` | `claude-accounts 1.1.0` |
+| `isolated --json` | `["work"]`, or `[]` |
+| `--version` | `claude-accounts 1.2.0` |
 
 ```json
 [
-  {"name": "personal", "state": "logged-in", "sessions": 1, "plan": "pro", "dir": "/home/me/.local/share/claude-accounts/personal"},
-  {"name": "work", "state": "logged-out", "sessions": 0, "plan": null, "dir": "/home/me/.local/share/claude-accounts/work"}
+  {"name": "personal", "state": "logged-in", "sessions": 1, "plan": "pro", "dir": "/home/me/.local/share/claude-accounts/personal", "isolated": false},
+  {"name": "work", "state": "logged-out", "sessions": 0, "plan": null, "dir": "/home/me/.local/share/claude-accounts/work", "isolated": true}
 ]
 ```
 
@@ -110,6 +114,7 @@ Other programs can drive claude-accounts through the commands below. Their outpu
 - `sessions` is the number of running Claude sessions on the account.
 - `plan` is the subscription type reported by Claude Code, or `null`.
 - `dir` is the account's `CLAUDE_CONFIG_DIR`.
+- `isolated` is `true` for an isolated account (since 1.2.0).
 
 On error, the exit code is not 0 and stderr explains why: one line starting with `claude-accounts:`, or the usage text for an unknown command or option. The JSON is written by the script itself: `jq` is not needed.
 
@@ -141,7 +146,21 @@ At each launch, the script reads the `mcpServers` of the other accounts, merges 
 - A server name the launched account already defines, at any scope, is not passed: the account keeps its own server and its own authentication.
 - If two other accounts define the same name, the first account in `claude-accounts list` wins.
 - If an account's `.claude.json` cannot be read, that account is skipped with a warning. If the launched account's own file cannot be read, or `jq` is missing, Claude starts without shared servers.
-- Headers and environment variables of a server, API keys included, become available to every account.
+- Headers and environment variables of a server, API keys included, become available to every account. Isolate an account to keep it out of this.
+
+## Isolated accounts
+
+Keep a work account apart from your personal ones:
+
+```sh
+claude-accounts isolate work
+```
+
+An isolated account gives its MCP servers to no other account and receives none from them. Its own servers, added in that account, still work. It keeps the shared `CLAUDE.md`, skills, agents, commands, plugins, themes and settings.
+
+Isolation applies from the next launch. Sessions already running keep the servers they loaded: restart them, on the isolated account and on the others.
+
+[claude-sessions](https://github.com/LouisStani/Claude-Sessions) also keeps isolated accounts out of its messages between sessions.
 
 ## Security and billing
 
