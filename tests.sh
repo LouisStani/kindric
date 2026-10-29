@@ -161,7 +161,17 @@ test_sessions() {
 	local out live other sessions
 	sessions="$(data_dir pro1)/sessions"
 	mkdir -p "$sessions" "$SANDBOX/proc"
-	cp "$(command -v sleep)" "$SANDBOX/proc/claude"
+	# A script, not a copy of sleep: some systems ship sleep as a multi-call coreutils
+	# binary that refuses to run under another name. A script's process is named after
+	# its file, so it shows up as "claude".
+	cat >"$SANDBOX/proc/claude" <<'FAKE'
+#!/bin/sh
+trap 'kill "$child" 2>/dev/null; exit 0' TERM
+sleep "$1" &
+child=$!
+wait "$child"
+FAKE
+	chmod +x "$SANDBOX/proc/claude"
 	"$SANDBOX/proc/claude" 30 &
 	live=$!
 	sleep 30 &
