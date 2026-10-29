@@ -1,10 +1,12 @@
 #!/usr/bin/env bash
-# Tests de claude-accounts : HOME temporaire, faux claude, faux gum.
+# Tests de claude-accounts : HOME temporaire, faux claude.
 # Aucun vrai compte, aucun identifiant, aucun réseau.
 
 set -uo pipefail
+# A permissive umask, so that only the tool itself can make its files private.
+umask 022
 
-SCRIPT=$(readlink -f -- "$(dirname -- "$0")/claude-accounts")
+SCRIPT=$(readlink -f -- "${CA_BIN:-$(dirname -- "$0")/target/release/claude-accounts}")
 TESTS=0
 FAILURES=0
 
@@ -47,16 +49,7 @@ printf 'CONFIG=%s\n' "$CLAUDE_CONFIG_DIR"
 printf 'APIKEY=%s\n' "${ANTHROPIC_API_KEY:-unset}"
 printf 'ARGS=%s\n' "$*"
 EOF
-	mkdir -p "$SANDBOX/gum"
-	cat >"$SANDBOX/gum/gum" <<EOF
-#!/usr/bin/env bash
-printf '%s\n' "\$*" >>"$SANDBOX/gum.log"
-case "\$1" in
-choose) [[ -n "\${FAKE_CHOICE:-}" ]] || exit 130; printf '%s\n' "\$FAKE_CHOICE" ;;
-input) printf '%s\n' "\${FAKE_INPUT:-}" ;;
-esac
-EOF
-	chmod +x "$SANDBOX/bin/claude" "$SANDBOX/gum/gum"
+	chmod +x "$SANDBOX/bin/claude"
 	BASE_PATH="/usr/bin:/bin"
 	export PATH="$SANDBOX/bin:$BASE_PATH"
 }
@@ -71,6 +64,18 @@ data_dir() {
 
 perm_of() {
 	stat -c '%a' -- "$1"
+}
+
+# Types raw keys into the program, in a pseudo-terminal (no newline added).
+with_keys() {
+	local keys="$1"
+	shift
+	printf '%s' "$keys" | script -qec "$*" /dev/null
+}
+
+# Menu screen as text: opens the menu and quits it.
+menu_screen() {
+	with_keys $'quit\r' "$SCRIPT"
 }
 
 with_tty() {
@@ -168,9 +173,7 @@ test_sessions() {
 	check "status --json : sessions est un nombre" bash -c \
 		'"$0" status --json | jq -e ".[0].sessions == 1" >/dev/null' "$SCRIPT"
 	check "status : aucun compteur sans session" grep -qE '^pro2 +logged out$' <<<"$out"
-	PATH="$SANDBOX/gum:$SANDBOX/bin:$BASE_PATH" FAKE_CHOICE=Quit with_tty '' "$SCRIPT" >/dev/null
-	check "menu gum : sessions actives affichées" \
-		grep -qF 'pro1  logged in · pro · 1 active' "$SANDBOX/gum.log"
+	check "menu : sessions actives affichées" grep -qF 'pro1  logged in · pro · 1 active' <<<"$(menu_screen)"
 	kill "$live" "$other"
 	wait "$live" "$other" 2>/dev/null
 	rm -rf -- "$sessions"
@@ -210,8 +213,8 @@ test_shared_mcp() {
 		'grep -q "^CONFIG=" <<<"$0" && ! grep -q -- --mcp-config <<<"$0"' "$out"
 	printf '{}\n' >"$(data_dir pro1)/.claude.json"
 	out=$(PATH="$SANDBOX/claude-only:$SANDBOX/sys" "$SCRIPT" run pro1)
-	check "sans jq : claude lancé sans --mcp-config" bash -c \
-		'grep -q "^CONFIG=" <<<"$0" && ! grep -q -- --mcp-config <<<"$0"' "$out"
+	check "sans jq : MCP partagés quand même (plus besoin de jq)" \
+		grep -qF -- "--mcp-config=$shared/pro1.json" <<<"$out"
 	ca remove pro4 </dev/null >/dev/null
 	rm -f -- "$(data_dir pro1)/.claude.json" "$(data_dir pro2)/.claude.json"
 	out=$(ca run pro1)
@@ -244,8 +247,7 @@ test_isolation() {
 	check "status --json : champ isolated" bash -c \
 		'"$0" status --json | jq -e "map(select(.isolated) | .name) == [\"work\"]" >/dev/null' "$SCRIPT"
 	check "status texte : isolated" bash -c '"$0" status | grep -qE "^work .*  isolated$"' "$SCRIPT"
-	PATH="$SANDBOX/gum:$SANDBOX/bin:$BASE_PATH" FAKE_CHOICE=Quit with_tty '' "$SCRIPT" >/dev/null
-	check "menu : compte isolé signalé" grep -qF 'work  logged out · isolated' "$SANDBOX/gum.log"
+	check "menu : compte isolé signalé" grep -qF 'work  logged out · isolated' <<<"$(menu_screen)"
 	ca unisolate work >/dev/null
 	check "unisolate : plus isolé" test -z "$(ca isolated)"
 	check "unisolate sur compte non isolé : sans effet" bash -c '"$0" unisolate work >/dev/null' "$SCRIPT"
@@ -271,36 +273,25 @@ test_version() {
 	check "--help mentionne --version" bash -c '"$0" --help | grep -q -- "--version"' "$SCRIPT"
 }
 
-test_menu_gum() {
-	local out gum_path="$SANDBOX/gum:$SANDBOX/bin:$BASE_PATH"
-	out=$(PATH="$gum_path" FAKE_CHOICE=pro2 with_tty '' "$SCRIPT")
-	check "menu gum lance claude ici avec le compte choisi" \
-		grep -qF "CONFIG=$(data_dir pro2)" <<<"$out"
-	check "menu gum présente les comptes et les actions de gestion" bash -c \
-		'grep -q -- "--height 12" "$0" && grep -qF "+ Add an account" "$0" && grep -qF -- "- Remove an account" "$0"' \
-		"$SANDBOX/gum.log"
-	check "menu gum : compte connecté affiché avec son offre" grep -qF 'pro1  logged in · pro' "$SANDBOX/gum.log"
-	check "menu gum : compte déconnecté signalé" grep -qF 'pro2  logged out' "$SANDBOX/gum.log"
-	out=$(PATH="$gum_path" FAKE_CHOICE='pro1  logged in · pro' with_tty '' "$SCRIPT")
-	check "menu gum : choisir un libellé lance le bon compte" \
-		grep -qF "CONFIG=$(data_dir pro1)" <<<"$out"
-	out=$(PATH="$gum_path" with_tty '' "$SCRIPT"; printf 'EXIT=%s' "$?")
-	check "menu gum annulé (Échap) : rien lancé, sortie 0" \
-		bash -c '! grep -q CONFIG= <<<"$0" && grep -q EXIT=0 <<<"$0"' "$out"
-	out=$(PATH="$gum_path" FAKE_CHOICE=Quit with_tty '' "$SCRIPT")
-	check "menu gum Quitter : rien lancé" bash -c '! grep -q CONFIG= <<<"$0"' "$out"
-	out=$(PATH="$gum_path" FAKE_CHOICE='+ Add an account' FAKE_INPUT=pro9 with_tty '' "$SCRIPT")
-	check "menu gum ajout : compte créé" test -d "$(data_dir pro9)"
-	check "menu gum ajout : claude lancé sur le nouveau compte" \
-		grep -qF "CONFIG=$(data_dir pro9)" <<<"$out"
-	ca remove pro9 </dev/null >/dev/null
-}
-
-test_menu_select() {
+test_menu_keys() {
 	local out
-	out=$(PATH="$SANDBOX/claude-only:$SANDBOX/sys" with_tty 1 "$SCRIPT" 2>&1)
-	check "menu sans gum : select lance le compte 1 ici" \
-		grep -qF "CONFIG=$(data_dir pro1)" <<<"$out"
+	out=$(with_keys $'pro2\r' "$SCRIPT")
+	check "menu : lance claude ici avec le compte choisi" grep -qF "CONFIG=$(data_dir pro2)" <<<"$out"
+	check "menu : présente les comptes et les actions de gestion" bash -c \
+		'grep -qF "+ Add an account" <<<"$0" && grep -qF -- "- Remove an account" <<<"$0"' "$out"
+	check "menu : compte connecté affiché avec son offre" grep -qF 'pro1  logged in · pro' <<<"$out"
+	check "menu : compte déconnecté signalé" grep -qF 'pro2  logged out' <<<"$out"
+	out=$(with_keys $'\x1b' "$SCRIPT"; printf 'EXIT=%s' "$?")
+	check "menu annulé (Échap) : rien lancé, sortie 0" \
+		bash -c '! grep -q CONFIG= <<<"$0" && grep -q EXIT=0 <<<"$0"' "$out"
+	out=$(with_keys $'quit\r' "$SCRIPT")
+	check "menu Quit : rien lancé" bash -c '! grep -q CONFIG= <<<"$0"' "$out"
+	out=$(with_keys $'add\rpro9\r' "$SCRIPT")
+	check "menu ajout : compte créé" test -d "$(data_dir pro9)"
+	check "menu ajout : claude lancé sur le nouveau compte" grep -qF "CONFIG=$(data_dir pro9)" <<<"$out"
+	ca remove pro9 --delete-dir >/dev/null
+	out=$(PATH="$SANDBOX/claude-only:$SANDBOX/sys" with_keys $'pro1\r' "$SCRIPT" 2>&1)
+	check "menu sans gum ni jq : lance le compte choisi" grep -qF "CONFIG=$(data_dir pro1)" <<<"$out"
 }
 
 test_remove() {
@@ -308,7 +299,7 @@ test_remove() {
 	check "remove retire de la liste" test "$(ca list)" = pro1
 	check "remove sans confirmation garde le dossier" test -d "$(data_dir pro2)"
 	ca add pro3 >/dev/null
-	PATH="$SANDBOX/gum:$SANDBOX/bin:$BASE_PATH" with_tty o "$SCRIPT" remove pro3 >/dev/null
+	with_tty o "$SCRIPT" remove pro3 >/dev/null
 	check "remove confirmé supprime le dossier" test ! -e "$(data_dir pro3)"
 	check "remove sur compte inexistant échoue" bash -c '! "$0" remove nope 2>/dev/null' "$SCRIPT"
 	check "remove sur compte inexistant : message en anglais" bash -c \
@@ -351,8 +342,7 @@ test_shared_mcp
 test_isolation
 test_errors
 test_version
-test_menu_gum
-test_menu_select
+test_menu_keys
 test_remove
 rm -rf -- "$SANDBOX"
 printf '\n%d tests, %d échecs\n' "$TESTS" "$FAILURES"

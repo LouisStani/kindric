@@ -15,36 +15,46 @@ claude-accounts gives each account its own directory and links the shared parts 
 - Keep two accounts open at the same time, in two terminals.
 - Share one `CLAUDE.md` and one set of skills, agents, commands, plugins and themes across all accounts, plus the MCP servers you add to any of them.
 - Create a shared directory later and existing accounts pick it up on their next launch.
-- The script never reads, copies or sends your credentials. It makes no network requests.
-- Install one Bash script. `gum` gives you a nicer menu, but it is optional.
+- claude-accounts never reads, copies or sends your credentials. It makes no network requests.
+- One self-contained binary for Linux, macOS and Windows. Nothing else to install.
 
 ## Installation
 
-Requirements:
+You need [Claude Code](https://docs.anthropic.com/en/docs/claude-code) on your `PATH`.
 
-- [Claude Code](https://docs.anthropic.com/en/docs/claude-code) on your `PATH`
-- Bash 4 or later
-- [`gum`](https://github.com/charmbracelet/gum) (optional). Without it, the menu uses Bash `select`.
-- [`jq`](https://jqlang.org) (optional). Without it, MCP servers are not shared.
-
-Download the script from the latest release:
+**Linux and macOS.** Download the binary for your system from the latest release:
 
 ```sh
+# x86_64-unknown-linux-gnu, aarch64-unknown-linux-gnu, x86_64-apple-darwin or aarch64-apple-darwin
+target=x86_64-unknown-linux-gnu
 curl -fLo "$HOME/.local/bin/claude-accounts" --create-dirs \
-  https://github.com/LouisStani/Claude-Accounts/releases/latest/download/claude-accounts
+  "https://github.com/LouisStani/Claude-Accounts/releases/latest/download/claude-accounts-$target"
 chmod +x "$HOME/.local/bin/claude-accounts"
 claude-accounts --version
 ```
 
 Make sure `~/.local/bin` is on your `PATH`. Run the same commands again to update.
 
-Or install from source:
+**Windows** (PowerShell):
+
+```powershell
+$dir = "$env:LOCALAPPDATA\Programs\claude-accounts"
+New-Item -ItemType Directory -Force $dir | Out-Null
+Invoke-WebRequest -OutFile "$dir\claude-accounts.exe" `
+  https://github.com/LouisStani/Claude-Accounts/releases/latest/download/claude-accounts-x86_64-pc-windows-msvc.exe
+$userPath = [Environment]::GetEnvironmentVariable('Path', 'User')
+[Environment]::SetEnvironmentVariable('Path', "$userPath;$dir", 'User')
+```
+
+Open a new terminal, then run `claude-accounts --version`. Windows support is new: it passes the automated tests but has not been used day to day yet. Please report any problem.
+
+**From source**, with Rust installed:
 
 ```sh
-git clone https://github.com/LouisStani/Claude-Accounts.git claude-accounts
-cd claude-accounts
-install -Dm755 claude-accounts "$HOME/.local/bin/claude-accounts"
+cargo install --locked --git https://github.com/LouisStani/Claude-Accounts
 ```
+
+**Upgrading from 1.x.** Version 2 reads the same files: your accounts work as they are. Replace the old `claude-accounts` script with the binary. Bash, `jq` and `gum` are no longer needed.
 
 ## Quick start
 
@@ -61,7 +71,7 @@ Each later launch reuses the account you logged in with. Open a second terminal 
 claude-accounts run work
 ```
 
-Or just run `claude-accounts` to open the menu. It shows whether each account is logged in, its plan and how many Claude sessions are open on it. From there you can launch, add or remove an account with the arrow keys. Escape cancels.
+Or just run `claude-accounts` to open the menu. It shows whether each account is logged in, its plan and how many Claude sessions are open on it. Type to filter, use the arrow keys and Enter to launch, add or remove an account. Escape cancels.
 
 ## Commands
 
@@ -101,7 +111,7 @@ Other programs can drive claude-accounts through the commands below. Their outpu
 | `remove <name> --keep-dir` | Removes the account and keeps its directory, without asking. |
 | `run <name> [args]` | Replaces itself with `claude` running on this account. |
 | `isolated --json` | `["work"]`, or `[]` |
-| `--version` | `claude-accounts 1.2.1` |
+| `--version` | `claude-accounts 2.0.0` |
 
 ```json
 [
@@ -116,7 +126,7 @@ Other programs can drive claude-accounts through the commands below. Their outpu
 - `dir` is the account's `CLAUDE_CONFIG_DIR`.
 - `isolated` is `true` for an isolated account (since 1.2.0).
 
-On error, the exit code is not 0 and stderr explains why: one line starting with `claude-accounts:`, or the usage text for an unknown command or option. The JSON is written by the script itself: `jq` is not needed.
+On error, the exit code is not 0 and stderr explains why: one line starting with `claude-accounts:`, or the usage text for an unknown command or option. `jq` is not needed.
 
 ## How it works
 
@@ -125,11 +135,13 @@ Each account gets its own `CLAUDE_CONFIG_DIR`.
 | Data | Where it lives |
 | --- | --- |
 | Credentials, sessions, history, project memory | Private to each account |
-| `CLAUDE.md`, `skills/`, `agents/`, `commands/`, `plugins/`, `themes/` | Symbolic links to `~/.claude` |
+| `CLAUDE.md`, `skills/`, `agents/`, `commands/`, `plugins/`, `themes/` | Symbolic links to `~/.claude` (see Windows below) |
 | `settings.json` | Read from `~/.claude/settings.json` and passed with `--settings` |
 | MCP servers of the other accounts | Merged at launch and passed with `--mcp-config` |
 
-Links are checked on every launch. Account directories use `700` permissions and the account list uses `600`.
+Links are checked on every launch. On Linux and macOS, account directories use `700` permissions and the account list uses `600`.
+
+On Windows, a symbolic link needs developer mode. Without it, folders are shared through junctions and `CLAUDE.md` is copied, then refreshed from `~/.claude` at each launch. If you edit that copy inside an account, it is no longer refreshed and claude-accounts warns you: copy your changes to `~/.claude/CLAUDE.md`. Accounts live in `%APPDATA%\claude-accounts`.
 
 ## Shared MCP servers
 
@@ -141,11 +153,11 @@ claude mcp add -s user --transport http sentry https://mcp.sentry.dev/mcp
 
 Every other account gets it on its next launch. Remove it from the account where you added it and it disappears everywhere on the next launch.
 
-At each launch, the script reads the `mcpServers` of the other accounts, merges them into its own file and passes it with `--mcp-config`. It never writes to Claude Code's files.
+At each launch, claude-accounts reads the `mcpServers` of the other accounts, merges them into its own file and passes it with `--mcp-config`. It never writes to Claude Code's files.
 
 - A server name the launched account already defines, at any scope, is not passed: the account keeps its own server and its own authentication.
 - If two other accounts define the same name, the first account in `claude-accounts list` wins.
-- If an account's `.claude.json` cannot be read, that account is skipped with a warning. If the launched account's own file cannot be read, or `jq` is missing, Claude starts without shared servers.
+- If an account's `.claude.json` cannot be read, that account is skipped with a warning. If the launched account's own file cannot be read, Claude starts without shared servers.
 - Headers and environment variables of a server, API keys included, become available to every account. Isolate an account to keep it out of this.
 
 ## Isolated accounts
@@ -164,7 +176,7 @@ Isolation applies from the next launch. Sessions already running keep the server
 
 ## Security and billing
 
-Before starting Claude Code, the script removes these environment variables:
+Before starting Claude Code, claude-accounts removes these environment variables:
 
 ```text
 ANTHROPIC_API_KEY
@@ -174,17 +186,21 @@ CLAUDE_CODE_OAUTH_TOKEN
 
 A key or token exported in your shell therefore cannot override the account you picked, and you are billed on the account you chose.
 
-Login status comes from `claude auth status`, run with the same variables removed. Claude Code reads its own credentials locally; the script only reads the exit code and the plan name.
+Login status comes from `claude auth status`, run with the same variables removed. Claude Code reads its own credentials locally; claude-accounts only reads the exit code and the plan name.
 
 Active sessions are counted from the `sessions/` directory of each account, keeping only the processes that are still running `claude`. This directory is internal to Claude Code: if its layout changes, the count disappears and nothing else breaks.
 
 ## Development
 
-The tests never touch a real Claude account. They run in a temporary `HOME` with fake `claude` and `gum` executables.
+The tests never touch a real Claude account. They run in a temporary `HOME` with a fake `claude` executable.
 
 ```sh
-./tests.sh
+cargo test
+cargo clippy --all-targets
+cargo build --release && ./tests.sh   # Linux: the full command-line contract
 ```
+
+On macOS and Windows, the CI runs `ci/smoke.sh` and `ci/smoke.ps1` instead of `tests.sh`, which needs GNU tools.
 
 Read [CONTRIBUTING.md](CONTRIBUTING.md) before contributing and [SECURITY.md](SECURITY.md) to report a vulnerability.
 
