@@ -69,9 +69,9 @@ Or just run `claude-accounts` to open the menu. It shows whether each account is
 | --- | --- |
 | `claude-accounts` | Opens the menu and starts Claude in the current terminal. |
 | `claude-accounts add <name>` | Creates an account and its private directory. |
-| `claude-accounts list` | Prints account names, one per line. |
-| `claude-accounts status` | Shows whether each account is logged in, its plan (`pro`, `max`…) and its active sessions. |
-| `claude-accounts remove <name>` | Removes an account from the list. Its directory is deleted only after you confirm. |
+| `claude-accounts list [--json]` | Prints account names, one per line. |
+| `claude-accounts status [--json]` | Shows whether each account is logged in, its plan (`pro`, `max`…) and its active sessions. |
+| `claude-accounts remove <name> [--delete-dir \| --keep-dir]` | Removes an account from the list. Its directory is deleted only after you confirm, or as the option says. |
 | `claude-accounts run <name> [args]` | Starts Claude with this account. Extra arguments go to `claude`, for example `--resume`. |
 | `claude-accounts --version` | Prints the installed version. |
 
@@ -82,6 +82,34 @@ Names use 1 to 32 characters among `a-z`, `0-9`, `_` and `-`.
 ```sh
 alias cw='claude-accounts run work'
 ```
+
+## Scripting
+
+Other programs can drive claude-accounts through the commands below. Their output stays stable across all 1.x versions: new fields may be added, existing ones are not renamed or removed.
+
+| Command | Output |
+| --- | --- |
+| `list` | Account names only, one per line. Nothing on stdout when there are no accounts. |
+| `list --json` | `["personal","work"]`, or `[]` |
+| `status --json` | An array of accounts, see below. `[]` when there are no accounts. |
+| `remove <name> --delete-dir` | Removes the account and deletes its directory, without asking. |
+| `remove <name> --keep-dir` | Removes the account and keeps its directory, without asking. |
+| `run <name> [args]` | Replaces itself with `claude` running on this account. |
+| `--version` | `claude-accounts 1.1.0` |
+
+```json
+[
+  {"name": "personal", "state": "logged-in", "sessions": 1, "plan": "pro", "dir": "/home/me/.local/share/claude-accounts/personal"},
+  {"name": "work", "state": "logged-out", "sessions": 0, "plan": null, "dir": "/home/me/.local/share/claude-accounts/work"}
+]
+```
+
+- `state` is `logged-in`, `logged-out` or `unknown` (Claude Code did not answer).
+- `sessions` is the number of running Claude sessions on the account.
+- `plan` is the subscription type reported by Claude Code, or `null`.
+- `dir` is the account's `CLAUDE_CONFIG_DIR`.
+
+On error, the exit code is not 0 and stderr explains why: one line starting with `claude-accounts:`, or the usage text for an unknown command or option. The JSON is written by the script itself: `jq` is not needed.
 
 ## How it works
 

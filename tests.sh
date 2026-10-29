@@ -79,9 +79,21 @@ with_tty() {
 	printf '%s\n' "$input" | script -qec "$*" /dev/null
 }
 
+test_list_empty() {
+	check "list sans compte : stdout vide" test -z "$(ca list 2>/dev/null)"
+	check "list sans compte : indication sur stderr" bash -c \
+		'"$0" list 2>&1 >/dev/null | grep -q "No accounts"' "$SCRIPT"
+	check "list --json sans compte : []" test "$(ca list --json)" = '[]'
+	check "status --json sans compte : [] même sans claude" test \
+		"$(PATH="$SANDBOX/nobin:$BASE_PATH" ca status --json)" = '[]'
+}
+
 test_add_and_list() {
 	ca add pro1 >/dev/null
 	ca add pro2 >/dev/null
+	check "list --json : tableau JSON des noms" bash -c \
+		'"$0" list --json | jq -e ". == [\"pro1\",\"pro2\"]" >/dev/null' "$SCRIPT"
+	check "list refuse une option inconnue" bash -c '! "$0" list --tsv 2>/dev/null' "$SCRIPT"
 	check "add crée le dossier en 700" test "$(perm_of "$(data_dir pro1)")" = 700
 	check "dossier racine en 700" test "$(perm_of "$HOME/.local/share/claude-accounts")" = 700
 	check "list affiche les deux comptes" test "$(ca list)" = $'pro1\npro2'
@@ -117,9 +129,27 @@ test_status() {
 	touch "$(data_dir pro2)/.fake-broken"
 	out=$(ca status)
 	check "status : erreur de claude = unknown" grep -qE '^pro2 +unknown$' <<<"$out"
+	check "status --json : erreur de claude = unknown" bash -c \
+		'"$0" status --json | jq -e ".[1].state == \"unknown\"" >/dev/null' "$SCRIPT"
 	rm -- "$(data_dir pro2)/.fake-broken"
 	check "status sans claude échoue" bash -c \
 		'PATH=$1 "$0" status 2>&1 | grep -q "claude not found"' "$SCRIPT" "$SANDBOX/nobin:$BASE_PATH"
+	check "status --json sans claude échoue" bash -c \
+		'! PATH=$1 "$0" status --json >/dev/null 2>&1' "$SCRIPT" "$SANDBOX/nobin:$BASE_PATH"
+	out=$(ca status --json)
+	check "status --json : compte connecté complet" jq -e --arg d "$(data_dir pro1)" \
+		'.[0] == {name: "pro1", state: "logged-in", sessions: 0, plan: "pro", dir: $d}' <<<"$out"
+	check "status --json : compte déconnecté, offre null" jq -e --arg d "$(data_dir pro2)" \
+		'.[1] == {name: "pro2", state: "logged-out", sessions: 0, plan: null, dir: $d}' <<<"$out"
+	check "status refuse une option inconnue" bash -c '! "$0" status --tsv 2>/dev/null' "$SCRIPT"
+}
+
+test_status_json_escaping() {
+	local weird="$SANDBOX/a\"b\\c"$'\t'"d" out
+	XDG_DATA_HOME="$weird" XDG_CONFIG_HOME="$SANDBOX/cfg-weird" ca add esc >/dev/null
+	out=$(XDG_DATA_HOME="$weird" XDG_CONFIG_HOME="$SANDBOX/cfg-weird" ca status --json)
+	check "status --json échappe \" \\ et tabulation dans dir" \
+		jq -e --arg d "$weird/claude-accounts/esc" '.[0].dir == $d' <<<"$out"
 }
 
 test_sessions() {
@@ -135,6 +165,8 @@ test_sessions() {
 	out=$(ca status)
 	check "status compte seulement les sessions claude vivantes" \
 		grep -qE '^pro1 +logged in +pro +1 active$' <<<"$out"
+	check "status --json : sessions est un nombre" bash -c \
+		'"$0" status --json | jq -e ".[0].sessions == 1" >/dev/null' "$SCRIPT"
 	check "status : aucun compteur sans session" grep -qE '^pro2 +logged out$' <<<"$out"
 	PATH="$SANDBOX/gum:$SANDBOX/bin:$BASE_PATH" FAKE_CHOICE=Quit with_tty '' "$SCRIPT" >/dev/null
 	check "menu gum : sessions actives affichées" \
@@ -242,6 +274,23 @@ test_remove() {
 	PATH="$SANDBOX/gum:$SANDBOX/bin:$BASE_PATH" with_tty o "$SCRIPT" remove pro3 >/dev/null
 	check "remove confirmé supprime le dossier" test ! -e "$(data_dir pro3)"
 	check "remove sur compte inexistant échoue" bash -c '! "$0" remove nope 2>/dev/null' "$SCRIPT"
+	check "remove sur compte inexistant : message en anglais" bash -c \
+		'"$0" remove nope 2>&1 | grep -q "no such account: nope"' "$SCRIPT"
+	ca add pro5 >/dev/null
+	ca add pro6 >/dev/null
+	ca remove pro5 --keep-dir </dev/null >/dev/null
+	check "remove --keep-dir : retiré de la liste" bash -c '! "$0" list | grep -qx pro5' "$SCRIPT"
+	check "remove --keep-dir : dossier gardé sans question" test -d "$(data_dir pro5)"
+	ca remove pro6 --delete-dir </dev/null >/dev/null
+	check "remove --delete-dir : dossier supprimé sans terminal" test ! -e "$(data_dir pro6)"
+	ca add pro7 >/dev/null
+	check "remove refuse les deux options ensemble" bash -c \
+		'! "$0" remove pro7 --keep-dir --delete-dir 2>/dev/null' "$SCRIPT"
+	check "deux options refusées : compte et dossier intacts" bash -c \
+		'"$0" list | grep -qx pro7 && test -d "$1"' "$SCRIPT" "$(data_dir pro7)"
+	check "remove refuse une option inconnue" bash -c '! "$0" remove pro7 --force 2>/dev/null' "$SCRIPT"
+	check "option inconnue refusée : compte et dossier intacts" bash -c \
+		'"$0" list | grep -qx pro7 && test -d "$1"' "$SCRIPT" "$(data_dir pro7)"
 }
 
 make_minimal_path() {
@@ -255,9 +304,11 @@ make_minimal_path() {
 
 setup
 make_minimal_path
+test_list_empty
 test_add_and_list
 test_run
 test_status
+test_status_json_escaping
 test_sessions
 test_shared_mcp
 test_errors
