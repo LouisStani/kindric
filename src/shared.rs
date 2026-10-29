@@ -78,7 +78,7 @@ mod platform {
 mod platform {
     use super::*;
     use std::collections::BTreeMap;
-    use std::os::windows::fs::{symlink_dir, symlink_file};
+    use std::os::windows::fs::{FileTypeExt, symlink_dir, symlink_file};
 
     const COPIES: &str = ".claude-accounts-copies.json";
 
@@ -117,9 +117,15 @@ mod platform {
         Ok(Existing::Other)
     }
 
+    /// A link to a directory is removed like a directory on Windows: `remove_file`
+    /// fails on it with "Access is denied". `is_dir()` is false for such a link.
     pub fn remove(destination: &Path) -> io::Result<()> {
-        let metadata = fs::symlink_metadata(destination)?;
-        if metadata.is_dir() { fs::remove_dir(destination) } else { fs::remove_file(destination) }
+        let file_type = fs::symlink_metadata(destination)?.file_type();
+        if file_type.is_symlink_dir() || file_type.is_dir() {
+            fs::remove_dir(destination)
+        } else {
+            fs::remove_file(destination)
+        }
     }
 
     pub fn create(account_dir: &Path, entry: &str, source: &Path, destination: &Path) -> io::Result<()> {
@@ -137,6 +143,10 @@ mod platform {
     }
 }
 
+fn with_path(path: &Path) -> impl FnOnce(io::Error) -> io::Error + '_ {
+    move |error| io::Error::new(error.kind(), format!("{}: {error}", path.display()))
+}
+
 /// Shares every entry of `shared_root` that exists, and returns warnings for entries
 /// left alone.
 pub fn link_shared(shared_root: &Path, account_dir: &Path) -> io::Result<Vec<String>> {
@@ -147,11 +157,14 @@ pub fn link_shared(shared_root: &Path, account_dir: &Path) -> io::Result<Vec<Str
             continue;
         }
         let destination = account_dir.join(entry);
-        match decide(platform::existing(account_dir, entry, &destination)?) {
-            Action::Create => platform::create(account_dir, entry, &source, &destination)?,
+        let existing = platform::existing(account_dir, entry, &destination).map_err(with_path(&destination))?;
+        match decide(existing) {
+            Action::Create => {
+                platform::create(account_dir, entry, &source, &destination).map_err(with_path(&destination))?;
+            },
             Action::Recreate => {
-                platform::remove(&destination)?;
-                platform::create(account_dir, entry, &source, &destination)?;
+                platform::remove(&destination).map_err(with_path(&destination))?;
+                platform::create(account_dir, entry, &source, &destination).map_err(with_path(&destination))?;
             },
             Action::Keep => {},
             Action::WarnEdited => warnings.push(format!(
