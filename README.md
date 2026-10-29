@@ -101,7 +101,7 @@ Other programs can drive claude-accounts through the commands below. Their outpu
 | `remove <name> --keep-dir` | Removes the account and keeps its directory, without asking. |
 | `run <name> [args]` | Replaces itself with `claude` running on this account. |
 | `isolated --json` | `["work"]`, or `[]` |
-| `--version` | `claude-accounts 1.2.0` |
+| `--version` | `claude-accounts 1.2.1` |
 
 ```json
 [
@@ -187,3 +187,9 @@ The tests never touch a real Claude account. They run in a temporary `HOME` with
 ```
 
 Read [CONTRIBUTING.md](CONTRIBUTING.md) before contributing and [SECURITY.md](SECURITY.md) to report a vulnerability.
+
+## License
+
+Since version 1.2.1, claude-accounts is licensed under [CC BY-NC-SA 4.0](LICENSE). You can use, change and share it for non-commercial purposes, if you credit the author and share your changes under the same license.
+
+Commercial use, including use inside a company, is not allowed by this license. To ask for it, open an issue. Versions up to 1.2.0 were released under the Apache License 2.0 and keep that license.

@@ -7,7 +7,7 @@
 
 set -euo pipefail
 
-readonly VERSION='1.2.0'
+readonly VERSION='1.2.1'
 readonly SHARED_ENTRIES=(CLAUDE.md skills agents commands plugins themes)
 readonly STRIPPED_ENV=(ANTHROPIC_API_KEY ANTHROPIC_AUTH_TOKEN CLAUDE_CODE_OAUTH_TOKEN)
 readonly MENU_ADD='+ Add an account'
