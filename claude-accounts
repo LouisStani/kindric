@@ -7,6 +7,7 @@
 
 set -euo pipefail
 
+readonly VERSION='1.0.0'
 readonly SHARED_ENTRIES=(CLAUDE.md skills agents commands plugins themes)
 readonly STRIPPED_ENV=(ANTHROPIC_API_KEY ANTHROPIC_AUTH_TOKEN CLAUDE_CODE_OAUTH_TOKEN)
 readonly MENU_ADD='+ Add an account'
@@ -491,6 +492,7 @@ Usage:
   claude-accounts status            show login status, plan and active sessions of each account
   claude-accounts remove <name>     remove the account (directory deleted only if confirmed)
   claude-accounts run <name> [...]  start claude with this account here (args passed to claude)
+  claude-accounts --version         print the version
 EOF
 }
 
@@ -507,6 +509,7 @@ main() {
 	status) cmd_status ;;
 	remove) require_arg "${2:-}"; cmd_remove "$2" ;;
 	run) require_arg "${2:-}"; shift; cmd_run "$@" ;;
+	-V | --version) printf 'claude-accounts %s\n' "$VERSION" ;;
 	-h | --help | help) usage ;;
 	*) usage >&2; exit 1 ;;
 	esac

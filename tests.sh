@@ -195,6 +195,13 @@ test_errors() {
 	check "add sans nom échoue" bash -c '! "$0" add 2>/dev/null' "$SCRIPT"
 }
 
+test_version() {
+	local pattern='^claude-accounts [0-9]+\.[0-9]+\.[0-9]+$'
+	check "--version affiche nom et version x.y.z" bash -c '[[ $("$0" --version) =~ $1 ]]' "$SCRIPT" "$pattern"
+	check "-V équivaut à --version" bash -c '[[ $("$0" -V) == $("$0" --version) ]]' "$SCRIPT"
+	check "--help mentionne --version" bash -c '"$0" --help | grep -q -- "--version"' "$SCRIPT"
+}
+
 test_menu_gum() {
 	local out gum_path="$SANDBOX/gum:$SANDBOX/bin:$BASE_PATH"
 	out=$(PATH="$gum_path" FAKE_CHOICE=pro2 with_tty '' "$SCRIPT")
@@ -254,6 +261,7 @@ test_status
 test_sessions
 test_shared_mcp
 test_errors
+test_version
 test_menu_gum
 test_menu_select
 test_remove

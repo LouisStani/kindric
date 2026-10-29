@@ -27,13 +27,24 @@ Requirements:
 - [`gum`](https://github.com/charmbracelet/gum) (optional). Without it, the menu uses Bash `select`.
 - [`jq`](https://jqlang.org) (optional). Without it, MCP servers are not shared.
 
+Download the script from the latest release:
+
+```sh
+curl -fLo "$HOME/.local/bin/claude-accounts" --create-dirs \
+  https://github.com/LouisStani/Claude-Accounts/releases/latest/download/claude-accounts
+chmod +x "$HOME/.local/bin/claude-accounts"
+claude-accounts --version
+```
+
+Make sure `~/.local/bin` is on your `PATH`. Run the same commands again to update.
+
+Or install from source:
+
 ```sh
 git clone https://github.com/LouisStani/Claude-Accounts.git claude-accounts
 cd claude-accounts
 install -Dm755 claude-accounts "$HOME/.local/bin/claude-accounts"
 ```
-
-Make sure `~/.local/bin` is on your `PATH`.
 
 ## Quick start
 
@@ -62,6 +73,7 @@ Or just run `claude-accounts` to open the menu. It shows whether each account is
 | `claude-accounts status` | Shows whether each account is logged in, its plan (`pro`, `max`…) and its active sessions. |
 | `claude-accounts remove <name>` | Removes an account from the list. Its directory is deleted only after you confirm. |
 | `claude-accounts run <name> [args]` | Starts Claude with this account. Extra arguments go to `claude`, for example `--resume`. |
+| `claude-accounts --version` | Prints the installed version. |
 
 Names use 1 to 32 characters among `a-z`, `0-9`, `_` and `-`.
 
