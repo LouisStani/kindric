@@ -119,12 +119,16 @@ async fn new_session(app: AppHandle, shared: State<'_, Shared>, account: String,
     Ok(created)
 }
 
-/// What the welcome screen shows: Claude Code, claude-accounts and the messages server. It
-/// runs two programs, so off the window's thread.
+/// The list of the welcome screen, for the accounts and sessions shown now. It runs two
+/// programs, so off the window's thread.
 #[tauri::command]
-async fn welcome_checks(shared: State<'_, Shared>) -> Result<checks::Checks, String> {
+async fn welcome_checks(shared: State<'_, Shared>) -> Result<Vec<checks::Line>, String> {
     let _span = shared.trace.span("welcome_checks");
-    tauri::async_runtime::spawn_blocking(checks::run).await.map_err(|error| error.to_string())?
+    let (accounts, sessions) = {
+        let view = shared.view.lock().unwrap_or_else(PoisonError::into_inner);
+        (view.accounts.clone(), view.sessions.len())
+    };
+    tauri::async_runtime::spawn_blocking(move || checks::run(accounts, sessions)).await.map_err(|error| error.to_string())?
 }
 
 /// The project the new session runs in offers its account first at the next Ctrl+N.

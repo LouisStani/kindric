@@ -16,7 +16,14 @@
     <ol id="chips"></ol>
     <p id="status"></p>
   </header>
-  <main id="panes"></main>
+  <div id="work">
+    <main id="panes"></main>
+    <section id="welcome" hidden>
+      <h1>get started</h1>
+      <ol id="welcome-list" class="checks"></ol>
+      <p class="muted">F1 shows this list again</p>
+    </section>
+  </div>
   <div id="tip" hidden></div>
   <dialog id="new-session">
     <form id="new-form">
@@ -61,6 +68,8 @@
     <ol id="messages-list"></ol>
   </dialog>
   <dialog id="help">
+    <h1>get started</h1>
+    <ol id="help-checks" class="checks"></ol>
     <h1>shortcuts</h1>
     <div id="help-list"></div>
   </dialog>

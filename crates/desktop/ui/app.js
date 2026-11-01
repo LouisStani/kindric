@@ -2,6 +2,7 @@ import { DirectoryField } from "./directories.js";
 import { Panes, sameSession } from "./panes.js";
 import { applyTheme, nextTheme, THEMES } from "./themes.js";
 import { mark, startTrace, traced } from "./trace.js";
+import { checkItems, hasToDo } from "./welcome.js";
 
 const { invoke } = window.__TAURI__.core;
 const { listen } = window.__TAURI__.event;
@@ -10,6 +11,9 @@ let lastView = { loaded: false, accounts: [], sessions: [], errors: [] };
 let currentTheme = "ember";
 const picker = { rows: [], selected: 0, query: 0 };
 const status = { notice: "", timer: null };
+// The welcome list, null until checked; what it was checked for; one check at a time, and
+// one more after it when asked meanwhile.
+const welcome = { lines: null, checkedFor: "", running: false, again: false };
 
 function element(tag, className, text) {
   const node = document.createElement(tag);
@@ -182,6 +186,60 @@ function render(view) {
   mark("render sessions", start);
   restoreTab();
   if (document.getElementById("messages").open) loadMessages();
+  // An account or a session more or less can tick a line of the welcome list.
+  const checkFor = JSON.stringify([view.accounts, view.sessions.length]);
+  if (view.loaded && checkFor !== welcome.checkedFor) {
+    welcome.checkedFor = checkFor;
+    checkSetup();
+  }
+  placeWelcome();
+}
+
+// The checks run two programs: one at a time.
+async function checkSetup() {
+  if (welcome.running) {
+    welcome.again = true;
+    return;
+  }
+  welcome.running = true;
+  try {
+    welcome.lines = await invoke("welcome_checks");
+  } catch (error) {
+    setStatus(`${error}`);
+  } finally {
+    welcome.running = false;
+  }
+  drawChecks();
+  placeWelcome();
+  if (welcome.again) {
+    welcome.again = false;
+    checkSetup();
+  }
+}
+
+// Drawn again only when checked again, so that a "copied" or a selection stays meanwhile.
+function drawChecks() {
+  if (welcome.lines === null) return;
+  for (const id of ["welcome-list", "help-checks"]) {
+    document.getElementById(id).replaceChildren(...checkItems(welcome.lines, startFromChecks));
+  }
+}
+
+// The welcome screen covers the panes while something is left to do and no pane of the
+// visible tab shows a session.
+function placeWelcome() {
+  const empty = panes.state !== null && panes.tabEmpty(panes.activeTab());
+  document.getElementById("welcome").hidden = !(hasToDo(welcome.lines) && empty);
+}
+
+function startFromChecks() {
+  document.getElementById("help").close();
+  openNewSessionForm();
+}
+
+// Back from a terminal where a command of the list was run: check again.
+function checkOnReturn() {
+  if (!document.getElementById("welcome").hidden || document.getElementById("help").open) checkSetup();
 }
 
 // Tabs whose session is being opened again, so that a render meanwhile does not open it twice.
@@ -582,7 +640,7 @@ const SHORTCUTS = [
   { group: "tabs", keys: "ctrl+shift+l", help: "next tab", run: () => panes.tabStep(1) },
   { group: "tabs", keys: "ctrl+shift+#", help: "tab n", run: (digit) => panes.goTab(digit) },
   { group: "app", keys: "ctrl+shift+e", help: "next theme", run: cycleTheme },
-  { group: "app", keys: "f1", help: "these shortcuts", run: openHelp },
+  { group: "app", keys: "f1", help: "what is left to set up, and these shortcuts", run: openHelp },
 ];
 // The keys of `shortcut` on this system.
 function keysOf(shortcut) {
@@ -630,7 +688,9 @@ function openHelp() {
     return section;
   });
   document.getElementById("help-list").replaceChildren(...sections);
+  if (welcome.lines === null) document.getElementById("help-checks").replaceChildren(element("li", "muted", "checking…"));
   document.getElementById("help").showModal();
+  checkSetup();
 }
 
 // "ctrl+shift+t", "alt+3", "f2": how a shortcut is named in the trace.
@@ -661,6 +721,7 @@ const sessionDirectory = directoryField("new-form");
 const projectDirectory = directoryField("project-form");
 
 document.addEventListener("keydown", onKey);
+window.addEventListener("focus", checkOnReturn);
 new ResizeObserver(fitChips).observe(document.getElementById("chips"));
 document.getElementById("new-form").addEventListener("submit", startNewSession);
 document.getElementById("project-form").addEventListener("submit", addProject);
