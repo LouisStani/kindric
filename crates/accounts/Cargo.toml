@@ -1,0 +1,27 @@
+[package]
+name = "claude-accounts"
+version = "2.0.0"
+edition = "2024"
+description = "Several Claude Code accounts side by side, one shared setup"
+license = "CC-BY-NC-SA-4.0"
+repository = "https://github.com/LouisStani/Claude-Accounts"
+publish = false
+
+[lib]
+name = "claude_accounts"
+path = "src/lib.rs"
+
+[[bin]]
+name = "claude-accounts"
+path = "src/main.rs"
+
+[dependencies]
+dialoguer = { version = "0.12", default-features = false, features = ["fuzzy-select"] }
+dirs = "7"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+sysinfo = { version = "0.40", default-features = false, features = ["system"] }
+
+[target.'cfg(windows)'.dependencies]
+junction = "2"
+windows-sys = { version = "0.61", features = ["Win32_System_Console"] }
