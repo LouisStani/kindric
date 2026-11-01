@@ -89,11 +89,55 @@ pub struct Line {
     pub copy: Vec<String>,
     /// Offers to start a session.
     pub start: bool,
+    /// Offers to run the commands of `copy` for you: `add_messages_server`.
+    pub add: bool,
 }
 
 impl Line {
     fn new(state: State, text: impl Into<String>, copy: Vec<String>) -> Self {
-        Self { state, text: text.into(), copy, start: false }
+        Self { state, text: text.into(), copy, start: false, add: false }
+    }
+}
+
+/// Where the messages server is missing: an account of claude-accounts, which shares it with
+/// its other accounts, or `default`.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Side {
+    Account(String),
+    Default,
+}
+
+const ADD_ARGS: [&str; 8] = ["mcp", "add", "-s", "user", MESSAGES_SERVER, "--", "claude-sessions", "mcp"];
+
+impl Side {
+    /// `claude-accounts run <account> mcp add …`, or `claude mcp add …` without
+    /// `CLAUDE_CONFIG_DIR` on `default`, as its sessions run. Claude Code writes its own file.
+    pub fn command(&self) -> Command {
+        let mut command = match self {
+            Side::Account(account) => {
+                let mut command = Command::new(LAUNCHER);
+                command.args(["run", account]);
+                command
+            },
+            Side::Default => {
+                let mut command = Command::new("claude");
+                for variable in accounts::default_removed_env() {
+                    command.env_remove(variable);
+                }
+                command
+            },
+        };
+        command.args(ADD_ARGS).stdin(Stdio::null());
+        command
+    }
+
+    /// The command as typed in a terminal.
+    pub fn shown(&self) -> String {
+        let program = match self {
+            Side::Account(account) => format!("{LAUNCHER} run {account}"),
+            Side::Default => "claude".into(),
+        };
+        format!("{program} {}", ADD_ARGS.join(" "))
     }
 }
 
@@ -198,30 +242,54 @@ fn launcher_line(launcher: &Result<String, String>, registry: bool) -> Line {
     }
 }
 
-/// One command per side that lacks the server: an account of claude-accounts, `default`.
+/// `default` carries messages and the app lists it, so it is logged in.
+fn default_side(messages: &MessagesCheck, accounts: &[String]) -> bool {
+    messages.default_carries && accounts.iter().any(|account| account == DEFAULT_ACCOUNT)
+}
+
+/// The sides that lack the server, among those that carry messages.
+pub fn missing_sides(messages: &MessagesCheck, accounts: &[String]) -> Vec<Side> {
+    let mut sides = Vec::new();
+    if let Some(account) = &messages.account
+        && !messages.accounts
+    {
+        sides.push(Side::Account(account.clone()));
+    }
+    if default_side(messages, accounts) && !messages.default {
+        sides.push(Side::Default);
+    }
+    sides
+}
+
+/// One command per side that lacks the server, and the offer to run them.
 fn messages_line(messages: &MessagesCheck, accounts: &[String]) -> Line {
-    let default_side = messages.default_carries && accounts.iter().any(|account| account == DEFAULT_ACCOUNT);
-    if messages.account.is_none() && !default_side {
+    if messages.account.is_none() && !default_side(messages, accounts) {
         return if accounts.is_empty() {
             Line::new(State::ToDo, "messages between sessions: an account first", Vec::new())
         } else {
             Line::new(State::Optional, "messages between sessions: every account is isolated", Vec::new())
         };
     }
-    let add = format!("mcp add -s user {MESSAGES_SERVER} -- claude-sessions mcp");
-    let mut copy = Vec::new();
-    if let Some(account) = &messages.account
-        && !messages.accounts
-    {
-        copy.push(format!("{LAUNCHER} run {account} {add}"));
-    }
-    if default_side && !messages.default {
-        copy.push(format!("claude {add}"));
-    }
+    let copy: Vec<String> = missing_sides(messages, accounts).iter().map(Side::shown).collect();
     if copy.is_empty() {
         return Line::new(State::Ok, "messages between sessions", copy);
     }
-    Line::new(State::ToDo, "messages between sessions: run once, sessions started after get them", copy)
+    let text = "messages between sessions: add the server once, sessions started after get them";
+    Line { add: true, ..Line::new(State::ToDo, text, copy) }
+}
+
+/// Runs the command of every side that lacks the server, for the accounts the app lists;
+/// stops at the first that fails, with what it said.
+pub fn add_messages_server(accounts: &[String]) -> Result<(), String> {
+    let paths = accounts::paths().map_err(|error| error.to_string())?;
+    for side in missing_sides(&check_messages(&paths)?, accounts) {
+        let output = side.command().output().map_err(|error| format!("{}: {error}", side.shown()))?;
+        if !output.status.success() {
+            let said = format!("{}{}", String::from_utf8_lossy(&output.stderr), String::from_utf8_lossy(&output.stdout));
+            return Err(format!("{}: {}", side.shown(), said.trim()));
+        }
+    }
+    Ok(())
 }
 
 fn session_line(sessions: usize) -> Line {
@@ -406,6 +474,9 @@ mod tests {
         let line = &lines(&both)[3];
         assert_eq!(line.state, State::ToDo);
         assert_eq!(line.copy, [format!("claude-accounts run louis {add}"), format!("claude {add}")]);
+        assert!(line.add);
+        assert!(lines(&found()).iter().all(|line| !line.add), "nothing to add");
+        assert!(!lines(&Found { accounts: Vec::new(), messages: messages(None, false, true, false), ..found() })[3].add, "no account yet");
 
         let default_only = Found { messages: messages(None, false, true, false), accounts: vec!["default".into()], ..found() };
         assert_eq!(lines(&default_only)[3].copy, [format!("claude {add}")]);
@@ -418,6 +489,36 @@ mod tests {
 
         let none = Found { messages: messages(None, false, false, false), accounts: vec!["work".into()], ..found() };
         assert_eq!(states(&none)[3], State::Optional);
+    }
+
+    fn parts(command: &Command) -> Vec<String> {
+        std::iter::once(command.get_program()).chain(command.get_args()).map(|part| part.to_string_lossy().into_owned()).collect()
+    }
+
+    #[test]
+    fn the_command_run_is_the_one_shown() {
+        let account = Side::Account("louis".into());
+        assert_eq!(parts(&account.command()).join(" "), account.shown());
+        assert_eq!(parts(&account.command())[..3], ["claude-accounts", "run", "louis"]);
+        assert!(account.command().get_envs().next().is_none(), "claude-accounts sets the account up");
+
+        let default = Side::Default.command();
+        assert_eq!(parts(&default).join(" "), Side::Default.shown());
+        assert_eq!(Side::Default.shown(), "claude mcp add -s user claude-sessions -- claude-sessions mcp");
+        let removed: Vec<_> = default.get_envs().filter(|(_, value)| value.is_none()).map(|(name, _)| name).collect();
+        assert!(removed.contains(&std::ffi::OsStr::new("CLAUDE_CONFIG_DIR")));
+        assert!(removed.contains(&std::ffi::OsStr::new("ANTHROPIC_API_KEY")));
+    }
+
+    #[test]
+    fn only_the_sides_without_the_server_are_added() {
+        let accounts = ["default".to_string(), "louis".to_string()];
+        let sides = |account, has_it, default| missing_sides(&messages(account, has_it, true, default), &accounts);
+        assert_eq!(sides(Some("louis"), false, false), [Side::Account("louis".into()), Side::Default]);
+        assert_eq!(sides(Some("louis"), true, false), [Side::Default]);
+        assert_eq!(sides(Some("louis"), false, true), [Side::Account("louis".into())]);
+        assert_eq!(sides(None, false, true), []);
+        assert_eq!(missing_sides(&messages(None, false, true, false), &["louis".to_string()]), [], "default logged out");
     }
 
     #[test]
