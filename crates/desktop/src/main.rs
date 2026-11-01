@@ -20,7 +20,7 @@ use std::time::{Duration, Instant};
 use claude_sessions_core::attach::{attach_command, stop_command};
 use claude_sessions_core::launcher::{self, Request, resolve_directory};
 use claude_sessions_core::mailbox::Mailbox;
-use claude_sessions_core::{accounts, mailbox, refresher};
+use claude_sessions_core::{accounts, checks, mailbox, refresher};
 use serde::Serialize;
 use serde::de::DeserializeOwned;
 use tauri::ipc::{Channel, InvokeResponseBody};
@@ -117,6 +117,14 @@ async fn new_session(app: AppHandle, shared: State<'_, Shared>, account: String,
         created.warnings.push(error);
     }
     Ok(created)
+}
+
+/// What the welcome screen shows: Claude Code, claude-accounts and the messages server. It
+/// runs two programs, so off the window's thread.
+#[tauri::command]
+async fn welcome_checks(shared: State<'_, Shared>) -> Result<checks::Checks, String> {
+    let _span = shared.trace.span("welcome_checks");
+    tauri::async_runtime::spawn_blocking(checks::run).await.map_err(|error| error.to_string())?
 }
 
 /// The project the new session runs in offers its account first at the next Ctrl+N.
@@ -653,6 +661,7 @@ fn main() -> ExitCode {
             current_list,
             filter_sessions,
             new_session,
+            welcome_checks,
             known_directories,
             complete_directory,
             tabs,
