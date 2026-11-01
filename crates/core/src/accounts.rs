@@ -126,7 +126,8 @@ fn launcher_output(args: &[&str]) -> io::Result<String> {
     String::from_utf8(output.stdout).map_err(io::Error::other)
 }
 
-pub fn check_launcher_version() -> io::Result<()> {
+/// The version line of claude-accounts, `claude-accounts 2.0.0`, when it is recent enough.
+pub fn check_launcher_version() -> io::Result<String> {
     let output = launcher_output(&["--version"])?;
     let version = parse_version(&output)
         .ok_or_else(|| io::Error::other(format!("unexpected version output: {}", output.trim())))?;
@@ -137,7 +138,7 @@ pub fn check_launcher_version() -> io::Result<()> {
             output.trim()
         )));
     }
-    Ok(())
+    Ok(output.trim().to_string())
 }
 
 fn library_error(error: claude_accounts::Error) -> io::Error {

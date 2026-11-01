@@ -371,11 +371,121 @@ ol, ul {
   box-shadow: none;
 }
 
+#work {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  position: relative;
+}
+
 #panes {
   flex: 1;
   min-height: 0;
   display: flex;
   padding: var(--gap);
+}
+
+/* Over the panes rather than instead of them: a terminal opened while hidden would measure
+   its cells wrong. */
+#welcome {
+  position: absolute;
+  inset: 0;
+  overflow: auto;
+  display: grid;
+  align-content: center;
+  justify-content: center;
+  grid-template-columns: min(680px, 100%);
+  padding: 24px;
+  background: var(--background);
+}
+
+#welcome[hidden] {
+  display: none;
+}
+
+#welcome p {
+  margin: 20px 0 0;
+}
+
+.checks {
+  display: grid;
+  gap: 12px;
+  margin: 0;
+  padding: 0;
+}
+
+#help-checks {
+  margin-bottom: 20px;
+}
+
+.check {
+  display: grid;
+  grid-template-columns: 9ch minmax(0, 1fr);
+  gap: 6px 12px;
+  align-items: baseline;
+}
+
+.check-state {
+  font-weight: 700;
+}
+
+.check.ok .check-state {
+  color: var(--done);
+}
+
+.check.to-do .check-state {
+  color: var(--waiting);
+}
+
+.check.warning .check-state {
+  color: var(--error);
+}
+
+.check.optional .check-state, .check.optional .check-text {
+  color: var(--faint);
+}
+
+.check-text {
+  color: var(--muted);
+}
+
+.check.to-do .check-text, .check.warning .check-text {
+  color: var(--text);
+}
+
+.check-copy {
+  grid-column: 2;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.check-copy code {
+  flex: 1;
+  min-width: 0;
+  padding: 5px 8px;
+  font: 12px/1.4 var(--font);
+  color: var(--terminal-text);
+  background: var(--terminal);
+  border: var(--stroke) solid var(--line);
+  border-radius: var(--radius);
+  overflow-wrap: anywhere;
+}
+
+.check-copy button, .check-start {
+  font-size: 12px;
+  padding: 4px 10px;
+  cursor: pointer;
+}
+
+.check-start {
+  grid-column: 2;
+  justify-self: start;
+  font-weight: 700;
+  color: var(--on-active);
+  background: var(--active);
+  border-color: var(--active);
 }
 
 .tab-page {
