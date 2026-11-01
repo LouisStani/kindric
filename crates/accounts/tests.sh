@@ -104,6 +104,10 @@ test_add_and_list() {
 	check "list affiche les deux comptes" test "$(ca list)" = $'pro1\npro2'
 	check "add refuse un doublon" bash -c '! "$0" add pro1 2>/dev/null' "$SCRIPT"
 	check "add refuse un nom dangereux" bash -c '! "$0" add ../x 2>/dev/null' "$SCRIPT"
+	check "add refuse le nom réservé default" bash -c \
+		'out=$("$0" add default 2>&1); status=$?; test "$status" -ne 0 && grep -q reserved <<<"$out"' "$SCRIPT"
+	check "default refusé : ni listé ni créé" bash -c \
+		'test "$("$0" list)" = "$(printf "pro1\npro2")" && test ! -e "$1"' "$SCRIPT" "$(data_dir default)"
 	check "CLAUDE.md partagé par lien" test "$(readlink "$(data_dir pro1)/CLAUDE.md")" = "$HOME/.claude/CLAUDE.md"
 	check "skills partagé par lien" test -L "$(data_dir pro1)/skills"
 	check "settings.json non lié" test ! -e "$(data_dir pro1)/settings.json"
@@ -239,6 +243,9 @@ test_isolation() {
 	ca run pro1 >/dev/null
 	check "avant isolement : MCP de work partagé" json_true '.mcpServers | has("secret")' "$shared/pro1.json"
 	check "isolate sur compte inexistant échoue" bash -c '! "$0" isolate nope 2>/dev/null' "$SCRIPT"
+	check "isolate default sans compte de ce nom" bash -c \
+		'"$0" isolate default >/dev/null && test "$("$0" isolated --json)" = "[\"default\"]"' "$SCRIPT"
+	check "unisolate default" bash -c '"$0" unisolate default >/dev/null && test -z "$("$0" isolated)"' "$SCRIPT"
 	ca isolate work >/dev/null
 	check "isolate deux fois : pas de doublon" bash -c \
 		'"$0" isolate work >/dev/null && test "$("$0" isolated)" = work' "$SCRIPT"

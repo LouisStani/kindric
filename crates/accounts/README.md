@@ -90,7 +90,7 @@ Or just run `claude-accounts` to open the menu. It shows whether each account is
 | `claude-accounts isolated [--json]` | Lists isolated accounts. |
 | `claude-accounts --version` | Prints the installed version. |
 
-Names use 1 to 32 characters among `a-z`, `0-9`, `_` and `-`.
+Names use 1 to 32 characters among `a-z`, `0-9`, `_` and `-`. `default` is reserved: claude-sessions uses it for Claude Code's own configuration, `~/.claude`.
 
 `add`, `list`, `remove` and `run` work without the menu, so you can use them in scripts and aliases:
 
@@ -174,7 +174,7 @@ An isolated account gives its MCP servers to no other account and receives none 
 
 Isolation applies from the next launch. Sessions already running keep the servers they loaded: restart them, on the isolated account and on the others.
 
-[claude-sessions](https://github.com/LouisStani/Claude-Sessions) also keeps isolated accounts out of its messages between sessions.
+[claude-sessions](https://github.com/LouisStani/Claude-Sessions) also keeps isolated accounts out of its messages between sessions. It shows Claude Code's own configuration, `~/.claude`, as an account named `default`: `claude-accounts isolate default` keeps it out of messages too, although it is not an account of this list. claude-accounts shares no MCP servers with it either way.
 
 ## Security and billing
 
