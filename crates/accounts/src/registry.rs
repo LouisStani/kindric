@@ -4,6 +4,10 @@ use crate::error::{Result, fail};
 use crate::files;
 use crate::paths::Paths;
 
+/// Claude Code's own configuration, `~/.claude`: claude-sessions shows it as an account
+/// of this name, so no account may take it.
+pub const DEFAULT_ACCOUNT: &str = "default";
+
 pub fn is_valid_name(name: &str) -> bool {
     (1..=32).contains(&name.len()) && name.bytes().all(|byte| matches!(byte, b'a'..=b'z' | b'0'..=b'9' | b'_' | b'-'))
 }

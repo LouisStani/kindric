@@ -18,6 +18,9 @@ pub struct Created {
 /// name to the list. An existing directory of the same name is reused, as in 1.x.
 pub fn add(paths: &Paths, name: &str) -> Result<Created> {
     registry::validate_name(name)?;
+    if name == registry::DEFAULT_ACCOUNT {
+        return fail(format!("'{name}' is reserved for Claude Code's own configuration (~/.claude)"));
+    }
     if registry::account_exists(paths, name)? {
         return fail(format!("account already exists: {name}"));
     }
