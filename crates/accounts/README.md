@@ -2,6 +2,8 @@
 
 <img src="assets/header.svg" alt="claude-accounts: several claude code accounts side by side, one shared setup. no logout, no login." width="100%">
 
+claude-accounts lives in the [claude-sessions](https://github.com/LouisStani/Claude-Sessions) repository, in `crates/accounts`. Its binaries are attached to that repository's releases.
+
 Run several Claude Code accounts side by side, each in its own terminal, with a single shared setup.
 
 No more `/logout` and `/login` every time you switch between your personal and work accounts. Pick an account and Claude starts. Your `CLAUDE.md`, skills, agents, plugins and settings come with it.
@@ -28,7 +30,7 @@ You need [Claude Code](https://docs.anthropic.com/en/docs/claude-code) on your `
 # x86_64-unknown-linux-gnu, aarch64-unknown-linux-gnu, x86_64-apple-darwin or aarch64-apple-darwin
 target=x86_64-unknown-linux-gnu
 curl -fLo "$HOME/.local/bin/claude-accounts" --create-dirs \
-  "https://github.com/LouisStani/Claude-Accounts/releases/latest/download/claude-accounts-$target"
+  "https://github.com/LouisStani/Claude-Sessions/releases/latest/download/claude-accounts-$target"
 chmod +x "$HOME/.local/bin/claude-accounts"
 claude-accounts --version
 ```
@@ -41,7 +43,7 @@ Make sure `~/.local/bin` is on your `PATH`. Run the same commands again to updat
 $dir = "$env:LOCALAPPDATA\Programs\claude-accounts"
 New-Item -ItemType Directory -Force $dir | Out-Null
 Invoke-WebRequest -OutFile "$dir\claude-accounts.exe" `
-  https://github.com/LouisStani/Claude-Accounts/releases/latest/download/claude-accounts-x86_64-pc-windows-msvc.exe
+  https://github.com/LouisStani/Claude-Sessions/releases/latest/download/claude-accounts-x86_64-pc-windows-msvc.exe
 $userPath = [Environment]::GetEnvironmentVariable('Path', 'User')
 [Environment]::SetEnvironmentVariable('Path', "$userPath;$dir", 'User')
 ```
@@ -51,7 +53,7 @@ Open a new terminal, then run `claude-accounts --version`. Windows support is ne
 **From source**, with Rust installed:
 
 ```sh
-cargo install --locked --git https://github.com/LouisStani/Claude-Accounts
+cargo install --locked --git https://github.com/LouisStani/Claude-Sessions claude-accounts
 ```
 
 **Upgrading from 1.x.** Version 2 reads the same files: your accounts work as they are. Replace the old `claude-accounts` script with the binary. Bash, `jq` and `gum` are no longer needed.
@@ -197,15 +199,15 @@ The tests never touch a real Claude account. They run in a temporary `HOME` with
 ```sh
 cargo test
 cargo clippy --all-targets
-cargo build --release && ./tests.sh   # Linux: the full command-line contract
+cargo build --release -p claude-accounts && ./tests.sh   # Linux: the full command-line contract
 ```
 
 On macOS and Windows, the CI runs `ci/smoke.sh` and `ci/smoke.ps1` instead of `tests.sh`, which needs GNU tools.
 
-Read [CONTRIBUTING.md](CONTRIBUTING.md) before contributing and [SECURITY.md](SECURITY.md) to report a vulnerability.
+Read [CONTRIBUTING.md](../../CONTRIBUTING.md) before contributing and [SECURITY.md](../../SECURITY.md) to report a vulnerability.
 
 ## License
 
-Since version 1.2.1, claude-accounts is licensed under [CC BY-NC-SA 4.0](LICENSE). You can use, change and share it for non-commercial purposes, if you credit the author and share your changes under the same license.
+Since version 1.2.1, claude-accounts is licensed under [CC BY-NC-SA 4.0](../../LICENSE). You can use, change and share it for non-commercial purposes, if you credit the author and share your changes under the same license.
 
 Commercial use, including use inside a company, is not allowed by this license. To ask for it, open an issue. Versions up to 1.2.0 were released under the Apache License 2.0 and keep that license.
