@@ -208,6 +208,4 @@ Read [CONTRIBUTING.md](../../CONTRIBUTING.md) before contributing and [SECURITY.
 
 ## License
 
-Since version 1.2.1, claude-accounts is licensed under [CC BY-NC-SA 4.0](../../LICENSE). You can use, change and share it for non-commercial purposes, if you credit the author and share your changes under the same license.
-
-Commercial use, including use inside a company, is not allowed by this license. To ask for it, open an issue. Versions up to 1.2.0 were released under the Apache License 2.0 and keep that license.
+claude-accounts is licensed under the [GNU General Public License v3.0 only](../../LICENSE) (`GPL-3.0-only`). You can use it for any purpose, including inside a company, change it and share it. If you distribute it, changed or not, you must share its source code under the same license. Versions 1.2.1 to 2.0.0 were released under CC BY-NC-SA 4.0, and versions up to 1.2.0 under the Apache License 2.0; they keep their license.
