@@ -6,7 +6,7 @@ set -uo pipefail
 # A permissive umask, so that only the tool itself can make its files private.
 umask 022
 
-SCRIPT=$(readlink -f -- "${CA_BIN:-$(dirname -- "$0")/target/release/claude-accounts}")
+SCRIPT=$(readlink -f -- "${CA_BIN:-$(dirname -- "$0")/../../target/release/claude-accounts}")
 TESTS=0
 FAILURES=0
 

@@ -1,2 +1,5 @@
 /target
 /crates/desktop/gen/
+.DS_Store
+*.swp
+*.swo

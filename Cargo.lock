@@ -427,7 +427,6 @@ dependencies = [
 [[package]]
 name = "claude-accounts"
 version = "2.0.0"
-source = "git+https://github.com/LouisStani/Claude-Accounts?tag=v2.0.0#87039351854687900c8c47b5916fc5d4de0deee1"
 dependencies = [
  "dialoguer",
  "dirs",
