@@ -63,7 +63,7 @@ claude mcp add -s user claude-sessions -- claude-sessions mcp
 
 Sessions started after this have it; sessions already running do not.
 
-The desktop app checks all of this itself. While something is left to set up and no pane of the visible tab shows a session, it lists, in place of the panes: Claude Code (a version older than 2.1.312, the one it was tested with, gets a warning), an account, claude-accounts (needed only for its own accounts), the messages server on each side that lacks it, and a first session. Each missing step comes with the command to copy. F1 shows the same list.
+The desktop app checks all of this itself. While something is left to set up and no pane of the visible tab shows a session, it lists, in place of the panes: Claude Code (a version older than 2.1.312, the one it was tested with, gets a warning), an account, claude-accounts (needed only for its own accounts), the messages server on each side that lacks it, and a first session. Each missing step comes with the command to copy. For the messages server, an "add" button runs these commands for you (Claude Code writes its own configuration, the app never edits it), skipping isolated accounts; if one fails, its error shows under the button. F1 shows the same list.
 
 ## Usage
 

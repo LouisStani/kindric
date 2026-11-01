@@ -403,7 +403,7 @@ ol, ul {
   display: none;
 }
 
-#welcome p {
+#welcome > p {
   margin: 20px 0 0;
 }
 
@@ -473,19 +473,39 @@ ol, ul {
   overflow-wrap: anywhere;
 }
 
-.check-copy button, .check-start {
+.check-copy button, .check-action {
   font-size: 12px;
   padding: 4px 10px;
   cursor: pointer;
 }
 
-.check-start {
+.check-action {
   grid-column: 2;
   justify-self: start;
   font-weight: 700;
   color: var(--on-active);
   background: var(--active);
   border-color: var(--active);
+}
+
+.check-action:disabled {
+  cursor: default;
+  color: var(--faint);
+  background: transparent;
+  border-color: var(--line);
+}
+
+.check-error {
+  grid-column: 2;
+  margin: 0;
+  font-size: 12px;
+  color: var(--error);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.check-error[hidden] {
+  display: none;
 }
 
 .tab-page {

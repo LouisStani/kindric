@@ -221,8 +221,20 @@ async function checkSetup() {
 function drawChecks() {
   if (welcome.lines === null) return;
   for (const id of ["welcome-list", "help-checks"]) {
-    document.getElementById(id).replaceChildren(...checkItems(welcome.lines, startFromChecks));
+    document.getElementById(id).replaceChildren(...checkItems(welcome.lines, { onStart: startFromChecks, onAdd: addMessagesServer }));
   }
+}
+
+// The list comes back checked again; sessions already running do not get the server.
+async function addMessagesServer() {
+  try {
+    welcome.lines = await invoke("add_messages_server");
+  } catch (error) {
+    return `${error}`;
+  }
+  drawChecks();
+  placeWelcome();
+  return null;
 }
 
 // The welcome screen covers the panes while something is left to do and no pane of the

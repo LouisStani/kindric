@@ -124,11 +124,28 @@ async fn new_session(app: AppHandle, shared: State<'_, Shared>, account: String,
 #[tauri::command]
 async fn welcome_checks(shared: State<'_, Shared>) -> Result<Vec<checks::Line>, String> {
     let _span = shared.trace.span("welcome_checks");
-    let (accounts, sessions) = {
-        let view = shared.view.lock().unwrap_or_else(PoisonError::into_inner);
-        (view.accounts.clone(), view.sessions.len())
-    };
+    let (accounts, sessions) = shown_now(&shared);
     tauri::async_runtime::spawn_blocking(move || checks::run(accounts, sessions)).await.map_err(|error| error.to_string())?
+}
+
+/// The "add" button of the welcome list: adds the messages server where it is missing, then
+/// returns the list checked again.
+#[tauri::command]
+async fn add_messages_server(shared: State<'_, Shared>) -> Result<Vec<checks::Line>, String> {
+    let _span = shared.trace.span("add_messages_server");
+    let (accounts, sessions) = shown_now(&shared);
+    tauri::async_runtime::spawn_blocking(move || {
+        checks::add_messages_server(&accounts)?;
+        checks::run(accounts, sessions)
+    })
+    .await
+    .map_err(|error| error.to_string())?
+}
+
+/// The accounts listed and the number of sessions, which the welcome list depends on.
+fn shown_now(shared: &Shared) -> (Vec<String>, usize) {
+    let view = shared.view.lock().unwrap_or_else(PoisonError::into_inner);
+    (view.accounts.clone(), view.sessions.len())
 }
 
 /// The project the new session runs in offers its account first at the next Ctrl+N.
@@ -666,6 +683,7 @@ fn main() -> ExitCode {
             filter_sessions,
             new_session,
             welcome_checks,
+            add_messages_server,
             known_directories,
             complete_directory,
             tabs,
