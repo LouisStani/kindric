@@ -62,6 +62,9 @@ impl Pane {
         for (name, value) in &command.env {
             builder.env(name, value);
         }
+        for name in &command.env_remove {
+            builder.env_remove(name);
+        }
         let child = pair.slave.spawn_command(builder).map_err(pty_error)?;
         drop(pair.slave);
         let reader = pair.master.try_clone_reader().map_err(pty_error)?;
@@ -122,7 +125,12 @@ mod tests {
     /// `sh` and `stty` exist on every Unix; Windows gets its own test below.
     #[cfg(unix)]
     fn shell(script: &str) -> AttachCommand {
-        AttachCommand { program: "sh".into(), args: vec!["-c".into(), script.into()], env: Vec::new() }
+        AttachCommand {
+            program: "sh".into(),
+            args: vec!["-c".into(), script.into()],
+            env: Vec::new(),
+            env_remove: Vec::new(),
+        }
     }
 
     fn open(command: &AttachCommand, columns: u16, rows: u16) -> (Pane, Receiver<Seen>) {
@@ -175,6 +183,17 @@ mod tests {
         assert!(exited(&seen));
     }
 
+    /// How the implicit `default` drops `CLAUDE_CONFIG_DIR`; `HOME` is always inherited on Unix.
+    #[test]
+    #[cfg(unix)]
+    fn removed_variables_are_not_inherited() {
+        let mut command = shell("printf '[%s]' \"${HOME-unset}\"");
+        command.env_remove = vec!["HOME".into()];
+        let (_pane, seen) = open(&command, 80, 24);
+        let text = wait_for(&seen, "]");
+        assert!(text.contains("[unset]"), "{text:?}");
+    }
+
     #[test]
     #[cfg(unix)]
     fn typed_input_reaches_the_program() {
@@ -220,8 +239,12 @@ mod tests {
     #[test]
     #[cfg(windows)]
     fn windows_output_arrives_then_the_end_is_reported() {
-        let command =
-            AttachCommand { program: "cmd".into(), args: vec!["/C".into(), "echo ready".into()], env: Vec::new() };
+        let command = AttachCommand {
+            program: "cmd".into(),
+            args: vec!["/C".into(), "echo ready".into()],
+            env: Vec::new(),
+            env_remove: Vec::new(),
+        };
         let (mut pane, seen) = open(&command, 80, 24);
         // ConPTY first asks where the cursor is and holds the output until a terminal
         // answers; in the app, xterm.js answers by itself.

@@ -3,9 +3,11 @@
 use std::ffi::OsString;
 use std::fs;
 use std::path::{Path, PathBuf, is_separator};
-use std::process::Stdio;
+use std::process::{Command, Stdio};
 
 use claude_accounts::{Paths, launch, mcp};
+
+use crate::accounts;
 
 #[derive(Debug, PartialEq, Eq)]
 pub struct Request {
@@ -85,38 +87,67 @@ fn library_error(error: claude_accounts::Error) -> String {
     error.to_string()
 }
 
-/// Starts a background session the way `claude-accounts run <account> --bg` does: shared
-/// MCP servers (none for an isolated account), shared settings, billing variables removed.
-pub fn launch(request: &Request) -> Result<Launched, String> {
-    let paths = Paths::from_env().map_err(library_error)?;
-    launch::require_account(&paths, &request.account).map_err(library_error)?;
-    launch::require_claude().map_err(library_error)?;
-    let shared = mcp::prepare(&paths, &request.account).map_err(library_error)?;
+fn background_args(name: &str) -> Vec<OsString> {
     let mut args: Vec<OsString> = vec!["--bg".into()];
-    if !request.name.is_empty() {
+    if !name.is_empty() {
         args.push("-n".into());
-        args.push(request.name.clone().into());
+        args.push(name.into());
     }
-    let prepared =
-        launch::prepare(&paths, &request.account, shared.file.as_deref(), &args).map_err(library_error)?;
-    let mut command = prepared.command;
-    let output = command
-        .current_dir(&request.directory)
-        .stdin(Stdio::null())
-        .output()
-        .map_err(|error| format!("claude: {error}"))?;
+    args
+}
+
+/// Runs `claude --bg …` in `directory` and reads the short id it prints.
+fn run_backgrounded(mut command: Command, directory: &Path) -> Result<String, String> {
+    let output =
+        command.current_dir(directory).stdin(Stdio::null()).output().map_err(|error| format!("claude: {error}"))?;
     let text = format!("{}{}", String::from_utf8_lossy(&output.stdout), String::from_utf8_lossy(&output.stderr));
     if !output.status.success() {
         return Err(format!("cannot start the session: {}", text.trim()));
     }
-    let short_id = parse_backgrounded_id(&text).ok_or_else(|| format!("no session id in: {}", text.trim()))?;
+    parse_backgrounded_id(&text).ok_or_else(|| format!("no session id in: {}", text.trim()))
+}
+
+/// Starts a background session the way `claude-accounts run <account> --bg` does: shared
+/// MCP servers (none for an isolated account), shared settings, billing variables removed.
+pub fn launch(request: &Request) -> Result<Launched, String> {
+    let paths = Paths::from_env().map_err(library_error)?;
+    if accounts::is_implicit(&paths, &request.account).map_err(|error| error.to_string())? {
+        return launch_default(request);
+    }
+    launch::require_account(&paths, &request.account).map_err(library_error)?;
+    launch::require_claude().map_err(library_error)?;
+    let shared = mcp::prepare(&paths, &request.account).map_err(library_error)?;
+    let args = background_args(&request.name);
+    let prepared =
+        launch::prepare(&paths, &request.account, shared.file.as_deref(), &args).map_err(library_error)?;
+    let short_id = run_backgrounded(prepared.command, &request.directory)?;
     let warnings = shared.warnings.into_iter().chain(prepared.warnings).collect();
     Ok(Launched { short_id, warnings })
+}
+
+/// `claude --bg` on the implicit `default`: Claude Code reads its own settings and MCP
+/// servers there, so only the environment is cleaned.
+fn launch_default(request: &Request) -> Result<Launched, String> {
+    let claude = launch::require_claude().map_err(library_error)?;
+    let mut command = Command::new(claude);
+    for variable in accounts::default_removed_env() {
+        command.env_remove(variable);
+    }
+    command.args(background_args(&request.name));
+    let short_id = run_backgrounded(command, &request.directory)?;
+    Ok(Launched { short_id, warnings: Vec::new() })
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_session_is_named_only_when_a_name_is_given() {
+        let args = |name: &str| background_args(name).into_iter().map(|arg| arg.into_string().unwrap()).collect::<Vec<_>>();
+        assert_eq!(args(""), ["--bg"]);
+        assert_eq!(args("api"), ["--bg", "-n", "api"]);
+    }
 
     #[test]
     fn backgrounded_id_is_read_from_the_first_line() {

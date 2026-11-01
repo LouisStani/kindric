@@ -273,6 +273,12 @@ fn reassign(app: &AppHandle, shared: &Shared, tabs: &Tabs) {
     let _ = app.emit("sessions", &view);
 }
 
+/// Whether `account` is Claude Code's own configuration rather than an account of
+/// claude-accounts: its sessions run with `claude` alone.
+fn implicit_default(account: &str) -> Result<bool, String> {
+    accounts::paths().and_then(|paths| accounts::is_implicit(&paths, account)).map_err(|error| error.to_string())
+}
+
 /// The full id of the background session `short_id` of `account`.
 fn session_id_of(shared: &Shared, account: &str, short_id: &str) -> Result<String, String> {
     let view = shared.view.lock().unwrap_or_else(PoisonError::into_inner);
@@ -309,11 +315,13 @@ fn rename_session(app: AppHandle, shared: State<'_, Shared>, account: String, sh
 async fn hide_session(app: AppHandle, shared: State<'_, Shared>, account: String, short_id: String) -> Result<Tabs, String> {
     let _span = shared.trace.span("hide_session");
     let session_id = session_id_of(&shared, &account, &short_id)?;
+    let implicit = implicit_default(&account)?;
     let (stop_account, stop_id) = (account.clone(), short_id.clone());
-    let stopped = tauri::async_runtime::spawn_blocking(move || stop_command(&stop_account, &stop_id).output())
-        .await
-        .map_err(|error| error.to_string())?
-        .map_err(|error| format!("cannot run claude-accounts: {error}"))?;
+    let stopped =
+        tauri::async_runtime::spawn_blocking(move || stop_command(&stop_account, &stop_id, implicit).output())
+            .await
+            .map_err(|error| error.to_string())?
+            .map_err(|error| format!("cannot stop {short_id}: {error}"))?;
     if !stopped.status.success() {
         let reason = String::from_utf8_lossy(&stopped.stderr).trim().to_string();
         return Err(format!("cannot stop {short_id}: {reason}"));
@@ -436,6 +444,7 @@ fn open_session(
     output: Channel<InvokeResponseBody>,
 ) -> Result<Opened, String> {
     let _span = shared.trace.span("open_session");
+    let implicit = implicit_default(&account)?;
     let mut workspace = shared.workspace();
     let key = SessionKey { account: account.clone(), short_id: short_id.clone() };
     match workspace.tabs.show(pane, key) {
@@ -453,7 +462,7 @@ fn open_session(
     let traced = app.clone();
     let mut first_output = Some((Instant::now(), format!("attach {short_id} first output")));
     let opened = Pane::open(
-        &attach_command(&account, &short_id),
+        &attach_command(&account, &short_id, implicit),
         columns,
         rows,
         move |bytes| {
