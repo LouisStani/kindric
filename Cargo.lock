@@ -439,7 +439,7 @@ dependencies = [
 
 [[package]]
 name = "claude-sessions"
-version = "0.4.0"
+version = "0.4.1"
 dependencies = [
  "alacritty_terminal",
  "claude-sessions-core",
@@ -448,7 +448,7 @@ dependencies = [
 
 [[package]]
 name = "claude-sessions-core"
-version = "0.4.0"
+version = "0.4.1"
 dependencies = [
  "claude-accounts",
  "notify",
@@ -458,7 +458,7 @@ dependencies = [
 
 [[package]]
 name = "claude-sessions-desktop"
-version = "0.4.0"
+version = "0.4.1"
 dependencies = [
  "claude-sessions-core",
  "portable-pty",
