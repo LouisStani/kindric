@@ -75,7 +75,9 @@ impl Pane {
         events: Sender<AppEvent>,
     ) -> io::Result<Self> {
         let listener = Listener { key, events };
-        let options = launcher_options(&attach_command(account, short_id));
+        // The terminal interface never shows the implicit `default`: its pty cannot remove
+        // `CLAUDE_CONFIG_DIR`.
+        let options = launcher_options(&attach_command(account, short_id, false));
         let pty = tty::new(&options, size.window_size(), 0)?;
         let term = Term::new(Config::default(), &size, listener.clone());
         let term = Arc::new(FairMutex::new(term));

@@ -178,6 +178,18 @@ fn is_implicit_default(account: &str, implicit_default: bool) -> bool {
     implicit_default && account == DEFAULT_ACCOUNT
 }
 
+/// Whether `account` is the implicit `default`: that name, and no account of
+/// claude-accounts that took it.
+pub fn is_implicit(paths: &Paths, account: &str) -> io::Result<bool> {
+    Ok(account == DEFAULT_ACCOUNT && !registry::account_exists(paths, account).map_err(library_error)?)
+}
+
+/// What `claude` must not inherit on the implicit `default`: `CLAUDE_CONFIG_DIR`, so that
+/// it reads `~/.claude` and `~/.claude.json`, and the billing variables.
+pub fn default_removed_env() -> Vec<&'static str> {
+    std::iter::once("CLAUDE_CONFIG_DIR").chain(launch::STRIPPED_ENV).collect()
+}
+
 /// Where an account keeps Claude Code's files: `~/.claude` for the implicit `default`.
 pub fn dir_of(paths: &Paths, account: &str, implicit_default: bool) -> PathBuf {
     if is_implicit_default(account, implicit_default) {

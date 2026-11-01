@@ -3,28 +3,52 @@
 
 use std::process::Command;
 
-use crate::accounts::LAUNCHER;
+use crate::accounts::{LAUNCHER, default_removed_env};
 
 pub struct AttachCommand {
     pub program: String,
     pub args: Vec<String>,
     /// Claude Code draws in colour only when the terminal says it can.
     pub env: Vec<(String, String)>,
+    /// Variables the program must not inherit.
+    pub env_remove: Vec<String>,
+}
+
+fn colours() -> Vec<(String, String)> {
+    vec![("TERM".into(), "xterm-256color".into()), ("COLORTERM".into(), "truecolor".into())]
 }
 
 /// `claude-accounts run <account> attach <short_id>`: claude-accounts sets the account up,
-/// then Claude Code attaches. Ending this process only detaches; the session keeps running.
-pub fn attach_command(account: &str, short_id: &str) -> AttachCommand {
+/// then Claude Code attaches. On the implicit `default`, `claude attach <short_id>` without
+/// `CLAUDE_CONFIG_DIR`. Ending this process only detaches; the session keeps running.
+pub fn attach_command(account: &str, short_id: &str, implicit_default: bool) -> AttachCommand {
+    if implicit_default {
+        return AttachCommand {
+            program: "claude".into(),
+            args: ["attach", short_id].map(String::from).to_vec(),
+            env: colours(),
+            env_remove: default_removed_env().into_iter().map(String::from).collect(),
+        };
+    }
     AttachCommand {
         program: LAUNCHER.into(),
         args: ["run", account, "attach", short_id].map(String::from).to_vec(),
-        env: vec![("TERM".into(), "xterm-256color".into()), ("COLORTERM".into(), "truecolor".into())],
+        env: colours(),
+        env_remove: Vec::new(),
     }
 }
 
-/// `claude-accounts run <account> stop <short_id>`: the session stops and keeps its
-/// conversation; `attach` starts it again.
-pub fn stop_command(account: &str, short_id: &str) -> Command {
+/// `claude-accounts run <account> stop <short_id>`, or `claude stop <short_id>` on the
+/// implicit `default`: the session stops and keeps its conversation; `attach` starts it again.
+pub fn stop_command(account: &str, short_id: &str, implicit_default: bool) -> Command {
+    if implicit_default {
+        let mut command = Command::new("claude");
+        for variable in default_removed_env() {
+            command.env_remove(variable);
+        }
+        command.args(["stop", short_id]);
+        return command;
+    }
     let mut command = Command::new(LAUNCHER);
     command.args(["run", account, "stop", short_id]);
     command
@@ -36,17 +60,37 @@ mod tests {
 
     #[test]
     fn attaches_through_claude_accounts_with_colours() {
-        let command = attach_command("lystriq", "378ce649");
+        let command = attach_command("lystriq", "378ce649", false);
         assert_eq!(command.program, "claude-accounts");
         assert_eq!(command.args, ["run", "lystriq", "attach", "378ce649"]);
         assert!(command.env.contains(&("TERM".into(), "xterm-256color".into())));
         assert!(command.env.contains(&("COLORTERM".into(), "truecolor".into())));
+        assert!(command.env_remove.is_empty());
+    }
+
+    #[test]
+    fn the_implicit_default_attaches_with_claude_alone() {
+        let command = attach_command("default", "378ce649", true);
+        assert_eq!(command.program, "claude");
+        assert_eq!(command.args, ["attach", "378ce649"]);
+        assert!(command.env.contains(&("COLORTERM".into(), "truecolor".into())));
+        assert!(command.env_remove.contains(&"CLAUDE_CONFIG_DIR".to_string()));
+        assert!(command.env_remove.contains(&"ANTHROPIC_API_KEY".to_string()));
     }
 
     #[test]
     fn stops_through_claude_accounts() {
-        let command = stop_command("lystriq", "378ce649");
+        let command = stop_command("lystriq", "378ce649", false);
         assert_eq!(command.get_program(), "claude-accounts");
         assert_eq!(command.get_args().collect::<Vec<_>>(), ["run", "lystriq", "stop", "378ce649"]);
+    }
+
+    #[test]
+    fn the_implicit_default_stops_with_claude_alone() {
+        let command = stop_command("default", "378ce649", true);
+        assert_eq!(command.get_program(), "claude");
+        assert_eq!(command.get_args().collect::<Vec<_>>(), ["stop", "378ce649"]);
+        let removed: Vec<_> = command.get_envs().filter(|(_, value)| value.is_none()).map(|(name, _)| name).collect();
+        assert!(removed.contains(&std::ffi::OsStr::new("CLAUDE_CONFIG_DIR")));
     }
 }
