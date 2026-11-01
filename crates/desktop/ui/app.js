@@ -625,14 +625,48 @@ function onPickerKey(event) {
   }
 }
 
+// Ctrl+Shift+C: the selection of the active pane, to the clipboard. Ctrl+C stays with
+// Claude Code, which interrupts with it.
+async function copySelection() {
+  const text = panes.active().terminal.getSelection();
+  if (!text) {
+    setStatus("nothing selected in this pane");
+    return;
+  }
+  try {
+    await navigator.clipboard.writeText(text);
+  } catch (error) {
+    setStatus(`cannot copy: ${error}`);
+  }
+}
+
+// Ctrl+Shift+V: text from the clipboard, as a paste into the session of the active pane.
+// Ctrl+V stays with Claude Code, which reads images from the clipboard itself.
+async function pasteText() {
+  const view = panes.active();
+  if (!view.current || view.current.ended) {
+    setStatus("no session in this pane to paste into");
+    return;
+  }
+  let text;
+  try {
+    text = await navigator.clipboard.readText();
+  } catch (error) {
+    setStatus(`cannot paste: ${error}`);
+    return;
+  }
+  if (text) view.terminal.paste(text);
+}
+
 // A Mac takes Cmd for the app and leaves Ctrl to the terminal.
-const MAC = /Mac/.test(navigator.platform || navigator.userAgent);
+const MAC =/Mac/.test(navigator.platform || navigator.userAgent);
 // How the app's modifier is written in notices.
 const CONTROL = MAC ? "cmd" : "ctrl";
 
 // Keys the app keeps for itself, like `command_for` in the terminal interface; F1 lists
 // them from here, so the help cannot drift. "ctrl" is Cmd on a Mac, "#" a digit from 1 to 9,
 // which `run` gets; `mac` replaces keys a Mac keeps for itself (Cmd+H hides the app).
+// `pane` keys act only from a pane: elsewhere, in a form, the field gets them.
 const SHORTCUTS = [
   { group: "sessions", keys: "ctrl+n", help: "start a new session", run: openNewSessionForm },
   { group: "sessions", keys: "ctrl+p", help: "find a session of this tab", run: openPicker },
@@ -646,6 +680,8 @@ const SHORTCUTS = [
   { group: "panes", keys: "ctrl+shift+w", help: "close the pane (the session keeps running)", run: () => panes.close() },
   { group: "panes", keys: "ctrl+h", mac: "ctrl+bracketleft", help: "previous pane", run: () => panes.step(-1) },
   { group: "panes", keys: "ctrl+l", mac: "ctrl+bracketright", help: "next pane", run: () => panes.step(1) },
+  { group: "panes", keys: "ctrl+shift+c", mac: "ctrl+c", pane: true, help: "copy the selection", run: copySelection },
+  { group: "panes", keys: "ctrl+shift+v", mac: "ctrl+v", pane: true, help: "paste text (ctrl+v: an image, for Claude Code)", run: pasteText },
   { group: "tabs", keys: "ctrl+shift+t", help: "add a project", run: openProjectForm },
   { group: "tabs", keys: "ctrl+shift+x", help: "remove this project (its sessions keep running)", run: closeTab },
   { group: "tabs", keys: "ctrl+shift+h", help: "previous tab", run: () => panes.tabStep(-1) },
@@ -715,6 +751,7 @@ function keyName(event) {
 function onKey(event) {
   const shortcut = shortcutFor(event);
   if (!shortcut) return;
+  if (shortcut.pane && !document.activeElement?.closest("#panes")) return;
   event.preventDefault();
   if (document.querySelector("dialog[open]")) return;
   traced(`key ${keyName(event)}`, shortcut.run);
