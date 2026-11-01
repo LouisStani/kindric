@@ -5,7 +5,7 @@ use std::thread;
 
 use alacritty_terminal::event::Event as TermEvent;
 use alacritty_terminal::term::TermMode;
-use claude_sessions_core::accounts::{SessionInfo, Snapshot};
+use claude_sessions_core::accounts::{self, SessionInfo, Snapshot};
 use claude_sessions_core::launcher;
 use ratatui::crossterm::event::{Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use ratatui::layout::Rect;
@@ -128,7 +128,7 @@ impl App {
             AppEvent::Snapshot(result) => {
                 match result {
                     Ok((snapshot, unread)) => {
-                        self.snapshot = Some(snapshot);
+                        self.snapshot = Some(accounts::without_implicit_default(snapshot));
                         self.unread = unread;
                     },
                     Err(error) => self.status = Some(format!("session list unavailable: {error}")),

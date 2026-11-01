@@ -1,10 +1,11 @@
 use std::collections::BTreeMap;
 use std::io;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::thread;
 use std::time::{Duration, Instant};
 
+pub use claude_accounts::registry::DEFAULT_ACCOUNT;
 use claude_accounts::{Paths, launch, registry};
 use serde::Deserialize;
 
@@ -162,17 +163,79 @@ pub fn messaging_sessions(sessions: Vec<SessionInfo>) -> Vec<SessionInfo> {
     sessions.into_iter().filter(|session| !session.isolated).collect()
 }
 
-/// `claude agents --json` on one account, with the environment rules of
-/// `claude-accounts run`. The shared configuration is not linked again here: relinking
-/// removes then recreates the links, and this runs at every refresh.
-fn account_sessions(paths: &Paths, account: &str) -> io::Result<Vec<SessionInfo>> {
-    let dir = launch::require_account(paths, account).map_err(library_error)?;
-    let claude = launch::require_claude().map_err(library_error)?;
+/// `default` joins the accounts, first, when Claude Code's own configuration is logged in
+/// and no account of claude-accounts took the name (older versions allowed it). The flag
+/// says whether it was added.
+pub fn with_default(mut accounts: Vec<String>, logged_in: bool) -> (Vec<String>, bool) {
+    let added = logged_in && !accounts.iter().any(|account| account == DEFAULT_ACCOUNT);
+    if added {
+        accounts.insert(0, DEFAULT_ACCOUNT.to_string());
+    }
+    (accounts, added)
+}
+
+fn is_implicit_default(account: &str, implicit_default: bool) -> bool {
+    implicit_default && account == DEFAULT_ACCOUNT
+}
+
+/// Where an account keeps Claude Code's files: `~/.claude` for the implicit `default`.
+pub fn dir_of(paths: &Paths, account: &str, implicit_default: bool) -> PathBuf {
+    if is_implicit_default(account, implicit_default) {
+        return paths.shared_root.clone();
+    }
+    paths.account_dir(account)
+}
+
+/// `claude` with the billing variables removed, as `claude-accounts run` does.
+fn claude_command(claude: PathBuf) -> Command {
     let mut command = Command::new(claude);
     for variable in launch::STRIPPED_ENV {
         command.env_remove(variable);
     }
-    let output = command.env("CLAUDE_CONFIG_DIR", &dir).args(["agents", "--json"]).stdin(Stdio::null()).output()?;
+    command.stdin(Stdio::null());
+    command
+}
+
+pub fn parse_logged_in(json: &str) -> bool {
+    #[derive(Deserialize)]
+    struct AuthStatus {
+        #[serde(rename = "loggedIn", default)]
+        logged_in: bool,
+    }
+    serde_json::from_str::<AuthStatus>(json).is_ok_and(|status| status.logged_in)
+}
+
+/// Whether Claude Code's own configuration (`~/.claude`) is logged in, from `claude auth
+/// status --json` without `CLAUDE_CONFIG_DIR`. It exits with 1 when logged out but still
+/// prints its JSON. Any failure counts as logged out.
+pub fn default_logged_in() -> bool {
+    let Ok(claude) = launch::require_claude() else {
+        return false;
+    };
+    let mut command = claude_command(claude);
+    command.env_remove("CLAUDE_CONFIG_DIR").args(["auth", "status", "--json"]);
+    command.output().is_ok_and(|output| parse_logged_in(&String::from_utf8_lossy(&output.stdout)))
+}
+
+/// `claude agents --json` on one account, with the environment rules of
+/// `claude-accounts run`. The shared configuration is not linked again here: relinking
+/// removes then recreates the links, and this runs at every refresh. The implicit
+/// `default` runs without `CLAUDE_CONFIG_DIR`: setting it to `~/.claude` would make Claude
+/// Code read `~/.claude/.claude.json` instead of its real `~/.claude.json`.
+fn account_sessions(paths: &Paths, account: &str, implicit_default: bool) -> io::Result<Vec<SessionInfo>> {
+    let dir = if is_implicit_default(account, implicit_default) {
+        paths.shared_root.clone()
+    } else {
+        launch::require_account(paths, account).map_err(library_error)?
+    };
+    let claude = launch::require_claude().map_err(library_error)?;
+    let mut command = claude_command(claude);
+    if is_implicit_default(account, implicit_default) {
+        command.env_remove("CLAUDE_CONFIG_DIR");
+    } else {
+        command.env("CLAUDE_CONFIG_DIR", &dir);
+    }
+    let output = command.args(["agents", "--json"]).output()?;
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
         return Err(io::Error::other(format!("claude agents --json: {}", stderr.trim())));
@@ -193,6 +256,22 @@ pub struct Snapshot {
     pub errors: Vec<String>,
     /// How long `claude agents --json` took, by account.
     pub timings: Vec<(String, Duration)>,
+    /// `default` in `accounts` is Claude Code's own configuration, not an account of
+    /// claude-accounts (see `with_default`).
+    pub implicit_default: bool,
+}
+
+/// The snapshot without the implicit `default`, for the terminal interface: its panes
+/// cannot remove `CLAUDE_CONFIG_DIR`, so they could not attach to its sessions.
+pub fn without_implicit_default(mut snapshot: Snapshot) -> Snapshot {
+    if snapshot.implicit_default {
+        snapshot.accounts.retain(|account| account != DEFAULT_ACCOUNT);
+        snapshot.sessions.retain(|session| session.account != DEFAULT_ACCOUNT);
+        snapshot.timings.retain(|(account, _)| account != DEFAULT_ACCOUNT);
+        snapshot.errors.retain(|error| !error.starts_with(&format!("{DEFAULT_ACCOUNT}: ")));
+        snapshot.implicit_default = false;
+    }
+    snapshot
 }
 
 pub fn sort_sessions(sessions: &mut [SessionInfo]) {
@@ -219,7 +298,7 @@ pub fn registered(paths: &Paths) -> io::Result<(Vec<String>, Vec<String>)> {
 }
 
 /// Queries `accounts` in parallel.
-pub fn query_accounts(paths: &Paths, accounts: &[String]) -> Vec<Queried> {
+pub fn query_accounts(paths: &Paths, accounts: &[String], implicit_default: bool) -> Vec<Queried> {
     let handles: Vec<_> = accounts
         .iter()
         .cloned()
@@ -227,7 +306,7 @@ pub fn query_accounts(paths: &Paths, accounts: &[String]) -> Vec<Queried> {
             let paths = paths.clone();
             thread::spawn(move || {
                 let start = Instant::now();
-                let found = account_sessions(&paths, &account).map_err(|error| error.to_string());
+                let found = account_sessions(&paths, &account, implicit_default).map_err(|error| error.to_string());
                 (start.elapsed(), found)
             })
         })
@@ -261,17 +340,20 @@ pub fn assemble(
     }
     mark_isolated(&mut sessions, &isolated);
     sort_sessions(&mut sessions);
-    Snapshot { accounts, isolated, sessions, errors, timings }
+    Snapshot { accounts, isolated, sessions, errors, timings, implicit_default: false }
 }
 
-/// Sessions of every account, accounts queried in parallel.
+/// Sessions of every account, `default` included when logged in, accounts queried in parallel.
 pub fn snapshot() -> io::Result<Snapshot> {
     let paths = paths()?;
-    let (accounts, isolated) = registered(&paths)?;
-    let queried = query_accounts(&paths, &accounts);
+    let (registry, isolated) = registered(&paths)?;
+    let (accounts, implicit_default) = with_default(registry, default_logged_in());
+    let queried = query_accounts(&paths, &accounts, implicit_default);
     let timings = queried.iter().map(|query| (query.account.clone(), query.took)).collect();
     let found = queried.into_iter().map(|query| (query.account, query.found)).collect();
-    Ok(assemble(accounts, isolated, &found, timings))
+    let mut snapshot = assemble(accounts, isolated, &found, timings);
+    snapshot.implicit_default = implicit_default;
+    Ok(snapshot)
 }
 
 #[cfg(test)]
@@ -345,6 +427,56 @@ mod tests {
         assert_eq!(snapshot.sessions.len(), 8, "only the accounts registered count");
         assert_eq!(snapshot.sessions[0].account, "louis");
         assert!(snapshot.sessions.iter().all(|s| s.isolated == (s.account == "pro")));
+    }
+
+    #[test]
+    fn auth_status_says_whether_default_is_logged_in() {
+        assert!(parse_logged_in("{\n  \"loggedIn\": true,\n  \"authMethod\": \"claude.ai\"\n}"));
+        assert!(!parse_logged_in("{\n  \"loggedIn\": false,\n  \"authMethod\": \"none\"\n}"));
+        assert!(!parse_logged_in("{}"));
+        assert!(!parse_logged_in(""));
+        assert!(!parse_logged_in("not json"));
+    }
+
+    #[test]
+    fn default_comes_first_only_when_logged_in_and_not_taken() {
+        let registry = ["louis", "lystriq"].map(String::from).to_vec();
+        assert_eq!(with_default(registry.clone(), false), (registry.clone(), false));
+        let (accounts, added) = with_default(registry.clone(), true);
+        assert!(added);
+        assert_eq!(accounts, ["default", "louis", "lystriq"]);
+        let taken = ["louis", "default"].map(String::from).to_vec();
+        assert_eq!(with_default(taken.clone(), true), (taken, false), "an account named default wins");
+    }
+
+    #[test]
+    fn the_implicit_default_lives_in_the_shared_configuration() {
+        let paths = Paths::from_roots("/c".into(), "/d".into(), "/h".into());
+        assert_eq!(dir_of(&paths, "default", true), PathBuf::from("/h/.claude"));
+        assert_eq!(dir_of(&paths, "default", false), PathBuf::from("/d/claude-accounts/default"));
+        assert_eq!(dir_of(&paths, "louis", true), PathBuf::from("/d/claude-accounts/louis"));
+    }
+
+    #[test]
+    fn the_terminal_interface_drops_only_the_implicit_default() {
+        let mut sessions = parse_agents("default", AGENTS).unwrap();
+        sessions.extend(parse_agents("louis", AGENTS).unwrap());
+        let snapshot = Snapshot {
+            accounts: ["default", "louis"].map(String::from).to_vec(),
+            sessions,
+            errors: vec!["default: claude agents --json: no".to_string(), "louis: slow".to_string()],
+            timings: vec![("default".to_string(), Duration::ZERO), ("louis".to_string(), Duration::ZERO)],
+            implicit_default: true,
+            ..Snapshot::default()
+        };
+        let kept = without_implicit_default(snapshot.clone());
+        assert_eq!(kept.accounts, ["louis"]);
+        assert!(kept.sessions.iter().all(|s| s.account == "louis"));
+        assert_eq!(kept.sessions.len(), 4);
+        assert_eq!(kept.errors, ["louis: slow"]);
+        assert_eq!(kept.timings.len(), 1);
+        let registered = Snapshot { implicit_default: false, ..snapshot.clone() };
+        assert_eq!(without_implicit_default(registered.clone()), registered, "an account named default stays");
     }
 
     #[test]

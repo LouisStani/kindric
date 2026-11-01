@@ -67,6 +67,8 @@ struct Refresher {
     /// What each account gave when it was last queried.
     known: BTreeMap<String, Found>,
     account_dirs: Vec<(String, PathBuf)>,
+    /// Checked again at each full refresh only: `claude auth status` takes about 0.2 s.
+    default_logged_in: bool,
 }
 
 impl Refresher {
@@ -81,6 +83,7 @@ impl Refresher {
             watched_accounts: Vec::new(),
             known: BTreeMap::new(),
             account_dirs: Vec::new(),
+            default_logged_in: false,
         }
     }
 
@@ -118,17 +121,25 @@ impl Refresher {
 
     fn refresh(&mut self, change: &Change) -> Update {
         let paths = accounts::paths().map_err(|error| error.to_string())?;
-        let (registered, isolated) = accounts::registered(&paths).map_err(|error| error.to_string())?;
+        if *change == Change::Full {
+            self.default_logged_in = accounts::default_logged_in();
+        }
+        let (registry, isolated) = accounts::registered(&paths).map_err(|error| error.to_string())?;
+        let (registered, implicit_default) = accounts::with_default(registry, self.default_logged_in);
         let asked = to_query(change, &registered, &self.known);
-        let queried = accounts::query_accounts(&paths, &asked);
+        let queried = accounts::query_accounts(&paths, &asked, implicit_default);
         self.known.retain(|account, _| registered.contains(account));
         let mut timings = Vec::new();
         for query in queried {
             timings.push((query.account.clone(), query.took));
             self.known.insert(query.account, query.found);
         }
-        self.account_dirs = registered.iter().map(|account| (account.clone(), paths.account_dir(account))).collect();
+        self.account_dirs = registered
+            .iter()
+            .map(|account| (account.clone(), accounts::dir_of(&paths, account, implicit_default)))
+            .collect();
         let mut snapshot = accounts::assemble(registered, isolated, &self.known, timings);
+        snapshot.implicit_default = implicit_default;
         if let Err(error) = &self.watcher {
             snapshot.errors.push(error.clone());
         }
