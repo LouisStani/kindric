@@ -4,7 +4,7 @@ use crate::error::{Result, fail};
 use crate::files;
 use crate::paths::Paths;
 
-/// Claude Code's own configuration, `~/.claude`: claude-sessions shows it as an account
+/// Claude Code's own configuration, `~/.claude`: kindric shows it as an account
 /// of this name, so no account may take it.
 pub const DEFAULT_ACCOUNT: &str = "default";
 

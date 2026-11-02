@@ -1,5 +1,5 @@
 // Timings of the page, written by Rust to trace.log when the app runs with
-// CLAUDE_SESSIONS_TRACE (see trace.rs). Off, nothing is measured or sent.
+// KINDRIC_TRACE (see trace.rs). Off, nothing is measured or sent.
 
 const { invoke } = window.__TAURI__.core;
 

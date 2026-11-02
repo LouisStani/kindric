@@ -176,7 +176,7 @@ mod tests {
 
     /// `a/`, `Alpha/`, `b/`, `.cache/` and a file `a.txt`, in a fresh folder.
     fn tree(label: &str) -> PathBuf {
-        let root = std::env::temp_dir().join(format!("claude-sessions-complete-{label}-{}", std::process::id()));
+        let root = std::env::temp_dir().join(format!("kindric-complete-{label}-{}", std::process::id()));
         let _ = fs::remove_dir_all(&root);
         for folder in ["a", "Alpha", "b", ".cache"] {
             fs::create_dir_all(root.join(folder)).unwrap();
@@ -236,7 +236,7 @@ mod tests {
     fn typed_directory_is_expanded_and_must_exist() {
         let home = std::env::temp_dir();
         assert_eq!(resolve_directory(" ~ ", &home), Ok(home.clone()));
-        let missing = resolve_directory("~/no-such-dir-claude-sessions", &home);
-        assert_eq!(missing, Err(format!("no such directory: {}", home.join("no-such-dir-claude-sessions").display())));
+        let missing = resolve_directory("~/no-such-dir-kindric", &home);
+        assert_eq!(missing, Err(format!("no such directory: {}", home.join("no-such-dir-kindric").display())));
     }
 }

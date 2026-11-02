@@ -1,5 +1,5 @@
 [package]
-name = "claude-sessions"
+name = "kindric"
 description = "Several Claude Code sessions, across several accounts, side by side"
 version.workspace = true
 edition.workspace = true
@@ -8,5 +8,5 @@ publish.workspace = true
 
 [dependencies]
 alacritty_terminal = { version = "0.26", default-features = false }
-claude-sessions-core = { path = "../core" }
+kindric-core = { path = "../core" }
 ratatui = "0.30"

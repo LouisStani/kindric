@@ -2,7 +2,7 @@
 
 <img src="assets/header.svg" alt="claude-accounts: several claude code accounts side by side, one shared setup. no logout, no login." width="100%">
 
-claude-accounts lives in the [claude-sessions](https://github.com/LouisStani/Claude-Sessions) repository, in `crates/accounts`. Its binaries are attached to that repository's releases.
+claude-accounts lives in the [kindric](https://github.com/LouisStani/kindric) repository, in `crates/accounts`. Its binaries are attached to that repository's releases.
 
 Run several Claude Code accounts side by side, each in its own terminal, with a single shared setup.
 
@@ -30,7 +30,7 @@ You need [Claude Code](https://docs.anthropic.com/en/docs/claude-code) on your `
 # x86_64-unknown-linux-gnu, aarch64-unknown-linux-gnu, x86_64-apple-darwin or aarch64-apple-darwin
 target=x86_64-unknown-linux-gnu
 curl -fLo "$HOME/.local/bin/claude-accounts" --create-dirs \
-  "https://github.com/LouisStani/Claude-Sessions/releases/latest/download/claude-accounts-$target"
+  "https://github.com/LouisStani/kindric/releases/latest/download/claude-accounts-$target"
 chmod +x "$HOME/.local/bin/claude-accounts"
 claude-accounts --version
 ```
@@ -43,7 +43,7 @@ Make sure `~/.local/bin` is on your `PATH`. Run the same commands again to updat
 $dir = "$env:LOCALAPPDATA\Programs\claude-accounts"
 New-Item -ItemType Directory -Force $dir | Out-Null
 Invoke-WebRequest -OutFile "$dir\claude-accounts.exe" `
-  https://github.com/LouisStani/Claude-Sessions/releases/latest/download/claude-accounts-x86_64-pc-windows-msvc.exe
+  https://github.com/LouisStani/kindric/releases/latest/download/claude-accounts-x86_64-pc-windows-msvc.exe
 $userPath = [Environment]::GetEnvironmentVariable('Path', 'User')
 [Environment]::SetEnvironmentVariable('Path', "$userPath;$dir", 'User')
 ```
@@ -53,7 +53,7 @@ Open a new terminal, then run `claude-accounts --version`. Windows support is ne
 **From source**, with Rust installed:
 
 ```sh
-cargo install --locked --git https://github.com/LouisStani/Claude-Sessions claude-accounts
+cargo install --locked --git https://github.com/LouisStani/kindric claude-accounts
 ```
 
 **Upgrading from 1.x.** Version 2 reads the same files: your accounts work as they are. Replace the old `claude-accounts` script with the binary. Bash, `jq` and `gum` are no longer needed.
@@ -90,7 +90,7 @@ Or just run `claude-accounts` to open the menu. It shows whether each account is
 | `claude-accounts isolated [--json]` | Lists isolated accounts. |
 | `claude-accounts --version` | Prints the installed version. |
 
-Names use 1 to 32 characters among `a-z`, `0-9`, `_` and `-`. `default` is reserved: claude-sessions uses it for Claude Code's own configuration, `~/.claude`.
+Names use 1 to 32 characters among `a-z`, `0-9`, `_` and `-`. `default` is reserved: kindric uses it for Claude Code's own configuration, `~/.claude`.
 
 `add`, `list`, `remove` and `run` work without the menu, so you can use them in scripts and aliases:
 
@@ -102,7 +102,7 @@ alias cw='claude-accounts run work'
 
 Other programs can drive claude-accounts through the commands below. Their output stays stable across all 1.x versions: new fields may be added, existing ones are not renamed or removed.
 
-[claude-sessions](https://github.com/LouisStani/Claude-Sessions) uses them to show the Claude sessions of all your accounts side by side in one terminal, and to let them send each other messages.
+[kindric](https://github.com/LouisStani/kindric) uses them to show the Claude sessions of all your accounts side by side in one terminal, and to let them send each other messages.
 
 | Command | Output |
 | --- | --- |
@@ -174,7 +174,7 @@ An isolated account gives its MCP servers to no other account and receives none 
 
 Isolation applies from the next launch. Sessions already running keep the servers they loaded: restart them, on the isolated account and on the others.
 
-[claude-sessions](https://github.com/LouisStani/Claude-Sessions) also keeps isolated accounts out of its messages between sessions. It shows Claude Code's own configuration, `~/.claude`, as an account named `default`: `claude-accounts isolate default` keeps it out of messages too, although it is not an account of this list. claude-accounts shares no MCP servers with it either way.
+[kindric](https://github.com/LouisStani/kindric) also keeps isolated accounts out of its messages between sessions. It shows Claude Code's own configuration, `~/.claude`, as an account named `default`: `claude-accounts isolate default` keeps it out of messages too, although it is not an account of this list. claude-accounts shares no MCP servers with it either way.
 
 ## Security and billing
 

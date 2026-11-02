@@ -1,6 +1,6 @@
 [package]
-name = "claude-sessions-core"
-description = "Accounts, sessions, messages and refresh shared by the claude-sessions interfaces"
+name = "kindric-core"
+description = "Accounts, sessions, messages and refresh shared by the kindric interfaces"
 version.workspace = true
 edition.workspace = true
 license.workspace = true

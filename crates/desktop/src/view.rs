@@ -2,10 +2,10 @@
 
 use std::path::Path;
 
-use claude_sessions_core::accounts::{SessionInfo, SessionState};
-use claude_sessions_core::launcher::tilde;
-use claude_sessions_core::refresher::Update;
-use claude_sessions_core::search::matches_with;
+use kindric_core::accounts::{SessionInfo, SessionState};
+use kindric_core::launcher::tilde;
+use kindric_core::refresher::Update;
+use kindric_core::search::matches_with;
 use serde::Serialize;
 
 use crate::layout::{PaneId, SessionKey};
@@ -204,7 +204,7 @@ pub fn filter(view: &ListView, tab: PaneId, query: &str) -> Vec<SessionRow> {
 mod tests {
     use std::collections::HashMap;
 
-    use claude_sessions_core::accounts::{SessionState, Snapshot};
+    use kindric_core::accounts::{SessionState, Snapshot};
 
     use super::*;
 

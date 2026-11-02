@@ -53,15 +53,15 @@ fn message_files(dir: &Path) -> io::Result<Vec<PathBuf>> {
     Ok(files)
 }
 
-/// Where claude-sessions keeps its files, next to the claude-accounts data: `$XDG_DATA_HOME`
-/// (else `~/.local/share`) on Unix, the user's AppData on Windows, then `claude-sessions`.
+/// Where kindric keeps its files, next to the claude-accounts data: `$XDG_DATA_HOME`
+/// (else `~/.local/share`) on Unix, the user's AppData on Windows, then `kindric`.
 pub fn data_dir() -> io::Result<PathBuf> {
     data_dir_for(&Paths::from_env().map_err(io::Error::other)?)
 }
 
 fn data_dir_for(paths: &Paths) -> io::Result<PathBuf> {
     let data = paths.data_root.parent().ok_or_else(|| io::Error::other("claude-accounts data has no parent"))?;
-    Ok(data.join("claude-sessions"))
+    Ok(data.join("kindric"))
 }
 
 /// `mailbox` in the data directory.
@@ -196,7 +196,7 @@ mod tests {
     use super::*;
 
     fn temp_root(label: &str) -> PathBuf {
-        let root = std::env::temp_dir().join(format!("claude-sessions-test-{label}-{}", std::process::id()));
+        let root = std::env::temp_dir().join(format!("kindric-test-{label}-{}", std::process::id()));
         let _ = fs::remove_dir_all(&root);
         root
     }
@@ -303,7 +303,7 @@ mod tests {
     fn the_mailbox_sits_next_to_the_claude_accounts_data() {
         let home = PathBuf::from("/home/u");
         let paths = Paths::from_roots(home.join(".config"), home.join(".local/share"), home.clone());
-        assert_eq!(root_for(&paths).unwrap(), home.join(".local/share").join("claude-sessions").join("mailbox"));
+        assert_eq!(root_for(&paths).unwrap(), home.join(".local/share").join("kindric").join("mailbox"));
     }
 
     /// The path of versions up to 0.3.0, so existing messages are still found.
@@ -314,6 +314,6 @@ mod tests {
             Some(data) => PathBuf::from(data),
             None => std::env::home_dir().unwrap().join(".local/share"),
         };
-        assert_eq!(default_root().unwrap(), data.join("claude-sessions/mailbox"));
+        assert_eq!(default_root().unwrap(), data.join("kindric/mailbox"));
     }
 }

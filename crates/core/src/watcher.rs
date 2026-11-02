@@ -118,7 +118,7 @@ mod tests {
 
     #[test]
     fn a_write_wakes_up_and_a_burst_counts_once() {
-        let root = std::env::temp_dir().join(format!("claude-sessions-watch-{}", std::process::id()));
+        let root = std::env::temp_dir().join(format!("kindric-watch-{}", std::process::id()));
         let _ = fs::remove_dir_all(&root);
         fs::create_dir_all(root.join("jobs/abc")).unwrap();
         let mut watcher = ChangeWatcher::new().unwrap();
@@ -147,7 +147,7 @@ mod tests {
 
     #[test]
     fn a_session_that_keeps_writing_does_not_hold_the_list_back() {
-        let root = std::env::temp_dir().join(format!("claude-sessions-watch-busy-{}", std::process::id()));
+        let root = std::env::temp_dir().join(format!("kindric-watch-busy-{}", std::process::id()));
         let _ = fs::remove_dir_all(&root);
         fs::create_dir_all(&root).unwrap();
         let mut watcher = ChangeWatcher::new().unwrap();
@@ -172,7 +172,7 @@ mod tests {
     /// or every refresh triggers the next one.
     #[test]
     fn reading_a_watched_file_does_not_wake_up() {
-        let root = std::env::temp_dir().join(format!("claude-sessions-watch-read-{}", std::process::id()));
+        let root = std::env::temp_dir().join(format!("kindric-watch-read-{}", std::process::id()));
         let _ = fs::remove_dir_all(&root);
         fs::create_dir_all(&root).unwrap();
         fs::write(root.join("roster.json"), b"{}").unwrap();

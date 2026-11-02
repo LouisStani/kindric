@@ -70,7 +70,7 @@ mod tests {
     use super::*;
 
     fn scratch(label: &str) -> PathBuf {
-        let root = std::env::temp_dir().join(format!("claude-sessions-progress-{label}-{}", std::process::id()));
+        let root = std::env::temp_dir().join(format!("kindric-progress-{label}-{}", std::process::id()));
         let _ = fs::remove_dir_all(&root);
         root
     }

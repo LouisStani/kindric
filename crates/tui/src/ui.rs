@@ -1,4 +1,4 @@
-use claude_sessions_core::accounts::SessionInfo;
+use kindric_core::accounts::SessionInfo;
 use ratatui::Frame;
 use ratatui::layout::{Position, Rect};
 use ratatui::style::{Color, Modifier, Style};

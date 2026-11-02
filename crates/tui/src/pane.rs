@@ -8,7 +8,7 @@ use alacritty_terminal::grid::Dimensions;
 use alacritty_terminal::sync::FairMutex;
 use alacritty_terminal::term::{Config, Term};
 use alacritty_terminal::tty::{self, Options, Shell};
-use claude_sessions_core::attach::{AttachCommand, attach_command};
+use kindric_core::attach::{AttachCommand, attach_command};
 
 use crate::AppEvent;
 

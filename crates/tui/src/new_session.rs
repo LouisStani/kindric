@@ -1,6 +1,6 @@
 use std::path::Path;
 
-use claude_sessions_core::launcher::{Request, resolve_directory};
+use kindric_core::launcher::{Request, resolve_directory};
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

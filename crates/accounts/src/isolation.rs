@@ -7,7 +7,7 @@ use crate::paths::Paths;
 use crate::registry;
 
 /// `default`, Claude Code's own configuration, can be isolated without being an account:
-/// claude-sessions keeps it out of its messages.
+/// kindric keeps it out of its messages.
 fn require_isolatable(paths: &Paths, name: &str) -> Result<()> {
     if name == registry::DEFAULT_ACCOUNT {
         return Ok(());

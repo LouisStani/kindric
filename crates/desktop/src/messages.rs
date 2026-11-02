@@ -1,7 +1,7 @@
 //! The messages of a session as the page shows them (Ctrl+Shift+M): read from the mailbox
 //! without marking anything read.
 
-use claude_sessions_core::mailbox::Entry;
+use kindric_core::mailbox::Entry;
 use serde::Serialize;
 
 /// An unknown session is named by the start of its id.
@@ -42,7 +42,7 @@ pub fn rows(entries: Vec<Entry>, me: &str, known: impl Fn(&str) -> Option<(Strin
 
 #[cfg(test)]
 mod tests {
-    use claude_sessions_core::mailbox::Message;
+    use kindric_core::mailbox::Message;
 
     use super::*;
 
