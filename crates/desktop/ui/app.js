@@ -760,6 +760,7 @@ function onKey(event) {
 const panes = new Panes(document.getElementById("panes"), document.getElementById("tabs"), {
   keyFilter: (event) => shortcutFor(event) === null,
   onChange: () => render(lastView),
+  onError: setStatus,
   titleOf,
   isFinished,
   markOf,

@@ -425,6 +425,18 @@ fn close_tab(app: AppHandle, shared: State<'_, Shared>) -> Result<Tabs, String> 
     Ok(tabs)
 }
 
+/// A project tab dragged to another place; the new order is kept in `projects.json`.
+#[tauri::command]
+fn move_tab(app: AppHandle, shared: State<'_, Shared>, from: usize, to: usize) -> Result<Tabs, String> {
+    let _span = shared.trace.span("move_tab");
+    let mut workspace = shared.workspace();
+    let mut next = workspace.tabs.clone();
+    next.move_tab(from, to)?;
+    save_projects(&shared, &next)?;
+    workspace.tabs = next;
+    Ok(respond(&app, &shared, workspace))
+}
+
 #[tauri::command]
 fn tab_step(app: AppHandle, shared: State<'_, Shared>, step: i64) -> Tabs {
     let _span = shared.trace.span("tab_step");
@@ -458,8 +470,8 @@ fn end_session(app: &AppHandle, pane: PaneId, generation: u64) {
     let _ = app.emit("tabs", &tabs);
 }
 
-/// Shows a session in `pane`, unless another pane, in any tab, already shows it. The session shown
-/// there before is detached, not stopped.
+/// Shows a session in `pane`, unless another pane of the same tab already shows it; shown in
+/// another tab, it moves here. The sessions it replaces or leaves are detached, not stopped.
 #[tauri::command]
 #[allow(clippy::too_many_arguments)]
 fn open_session(
@@ -476,14 +488,17 @@ fn open_session(
     let implicit = implicit_default(&account)?;
     let mut workspace = shared.workspace();
     let key = SessionKey { account: account.clone(), short_id: short_id.clone() };
-    match workspace.tabs.show(pane, key) {
+    let left = match workspace.tabs.show(pane, key) {
         None => return Err(format!("no pane {pane}")),
-        Some(Shown::Already(_)) => return Ok(Opened { tabs: respond(&app, &shared, workspace), generation: None }),
-        Some(Shown::Attach) => {},
-    }
+        Some((Shown::Already(_), _)) => return Ok(Opened { tabs: respond(&app, &shared, workspace), generation: None }),
+        Some((Shown::Attach, left)) => left,
+    };
     {
         let _span = shared.trace.span("detach previous");
-        detach(&mut workspace, pane);
+        // The session shown here before, and this one where it was shown in another tab.
+        for pane in left.into_iter().chain([pane]) {
+            detach(&mut workspace, pane);
+        }
     }
     workspace.generation += 1;
     let generation = workspace.generation;
@@ -698,6 +713,7 @@ fn main() -> ExitCode {
             show_session,
             messages,
             close_tab,
+            move_tab,
             tab_step,
             go_tab,
             open_session,

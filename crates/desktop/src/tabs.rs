@@ -148,6 +148,18 @@ impl Tabs {
         self.active = self.tabs[(self.index() as i64 + step).rem_euclid(length) as usize].id;
     }
 
+    /// Moves tab `from` to place `to`, both counted from 1. Only project tabs move, and only
+    /// among themselves: "other" stays first. The active tab stays the same.
+    pub fn move_tab(&mut self, from: usize, to: usize) -> Result<(), String> {
+        let projects = 2..=self.tabs.len();
+        if !projects.contains(&from) || !projects.contains(&to) {
+            return Err(format!("cannot move tab {from} to {to}: other stays first"));
+        }
+        let tab = self.tabs.remove(from - 1);
+        self.tabs.insert(to - 1, tab);
+        Ok(())
+    }
+
     /// Moves to tab `number`, counted from 1; nothing happens if there is no such tab.
     pub fn go(&mut self, number: usize) {
         if let Some(tab) = number.checked_sub(1).and_then(|index| self.tabs.get(index)) {
@@ -155,21 +167,27 @@ impl Tabs {
         }
     }
 
-    /// Like `Layout::show`, across tabs: a session shown in another tab brings that tab and
-    /// its pane to the front instead of being attached twice. The tab showing it waits for
-    /// nothing any more.
-    pub fn show(&mut self, pane: PaneId, session: SessionKey) -> Option<Shown> {
-        for tab in &mut self.tabs {
-            if let Some(shown_in) = tab.layout.shown_in(&session) {
-                tab.layout.focus(shown_in);
+    /// Like `Layout::show`, in the active tab: a session opens where it is asked for. Shown in
+    /// another tab, it leaves that tab's pane, returned with the answer to be detached; a tab
+    /// that waited for it waits no more.
+    pub fn show(&mut self, pane: PaneId, session: SessionKey) -> Option<(Shown, Vec<PaneId>)> {
+        let index = self.index();
+        if !self.tabs[index].layout.leaves().contains(&pane) {
+            return None;
+        }
+        let mut left = Vec::new();
+        for (_, tab) in self.tabs.iter_mut().enumerate().filter(|(other, _)| *other != index) {
+            if tab.restore.as_ref() == Some(&session) {
                 tab.restore = None;
-                self.active = tab.id;
-                return Some(Shown::Already(shown_in));
+            }
+            if let Some(shown_in) = tab.layout.shown_in(&session) {
+                tab.layout.clear(shown_in);
+                left.push(shown_in);
             }
         }
-        let index = self.index();
         self.tabs[index].restore = None;
-        self.tabs[index].layout.show(pane, session)
+        let shown = self.tabs[index].layout.show(pane, session)?;
+        Some((shown, left))
     }
 
     /// The active tab no longer waits for its session: it is gone or belongs elsewhere now.
@@ -348,6 +366,47 @@ mod tests {
         assert_eq!(tabs.index(), 1);
     }
 
+    fn folders(tabs: &Tabs) -> Vec<String> {
+        tabs.projects().iter().map(|project| project.directory.display().to_string()).collect()
+    }
+
+    #[test]
+    fn a_project_tab_moves_forward_or_back_and_the_projects_follow() {
+        let mut tabs = Tabs::default();
+        add(&mut tabs);
+        add(&mut tabs);
+        add(&mut tabs);
+        tabs.move_tab(2, 4).unwrap();
+        assert_eq!(folders(&tabs), ["/home/u/project2", "/home/u/project3", "/home/u/project1"]);
+        tabs.move_tab(4, 2).unwrap();
+        assert_eq!(folders(&tabs), ["/home/u/project1", "/home/u/project2", "/home/u/project3"]);
+    }
+
+    #[test]
+    fn moving_tabs_keeps_the_active_one() {
+        let mut tabs = Tabs::default();
+        add(&mut tabs);
+        add(&mut tabs);
+        let active = tabs.active;
+        tabs.move_tab(3, 2).unwrap();
+        assert_eq!(tabs.active, active);
+        assert_eq!(tabs.index(), 1);
+    }
+
+    #[test]
+    fn other_stays_first_and_missing_tabs_do_not_move() {
+        let mut tabs = Tabs::default();
+        add(&mut tabs);
+        add(&mut tabs);
+        let before = folders(&tabs);
+        assert!(tabs.move_tab(1, 2).is_err());
+        assert!(tabs.move_tab(2, 1).is_err());
+        assert!(tabs.move_tab(2, 4).is_err());
+        assert!(tabs.move_tab(0, 2).is_err());
+        assert_eq!(folders(&tabs), before);
+        assert_eq!(tabs.tabs[0].project, None);
+    }
+
     #[test]
     fn go_ignores_missing_numbers() {
         let mut tabs = Tabs::default();
@@ -362,19 +421,48 @@ mod tests {
     }
 
     #[test]
-    fn a_session_shown_in_another_tab_brings_that_tab_and_pane_to_the_front() {
+    fn a_session_shown_in_another_tab_moves_to_the_pane_asked_for() {
+        let mut tabs = Tabs::default();
+        let first = active_tab(&tabs).layout.active();
+        tabs.show(first, key("aaa"));
+        add(&mut tabs);
+        let project_tab = tabs.active;
+        let pane = active_tab(&tabs).layout.active();
+        assert_eq!(tabs.show(pane, key("aaa")), Some((Shown::Attach, vec![first])));
+        assert_eq!(tabs.active, project_tab);
+        assert_eq!(tabs.tabs[0].layout.shown_in(&key("aaa")), None);
+        assert_eq!(active_tab(&tabs).layout.shown_in(&key("aaa")), Some(pane));
+    }
+
+    #[test]
+    fn a_session_shown_in_the_same_tab_gets_the_focus_and_leaves_nothing() {
         let mut tabs = Tabs::default();
         tabs.split(1000.0, 500.0);
-        let first_tab = tabs.active;
         let shown = active_tab(&tabs).layout.leaves()[0];
         tabs.show(shown, key("aaa"));
         tabs.current_mut().focus_step(1);
-        add(&mut tabs);
         let pane = active_tab(&tabs).layout.active();
-        assert_eq!(tabs.show(pane, key("aaa")), Some(Shown::Already(shown)));
-        assert_eq!(tabs.active, first_tab);
+        assert_eq!(tabs.show(pane, key("aaa")), Some((Shown::Already(shown), vec![])));
         assert_eq!(active_tab(&tabs).layout.active(), shown);
-        assert_eq!(tabs.show(pane, key("bbb")), None, "pane is in the other tab");
+    }
+
+    #[test]
+    fn a_pane_of_another_tab_is_refused_and_nothing_moves() {
+        let mut tabs = Tabs::default();
+        let first = active_tab(&tabs).layout.active();
+        tabs.show(first, key("aaa"));
+        add(&mut tabs);
+        assert_eq!(tabs.show(first, key("aaa")), None);
+        assert_eq!(tabs.tabs[0].layout.shown_in(&key("aaa")), Some(first));
+    }
+
+    #[test]
+    fn a_tab_waiting_for_a_session_opened_elsewhere_waits_no_more() {
+        let mut tabs = worked_in();
+        tabs.go(1);
+        let pane = tabs.current_mut().active();
+        assert_eq!(tabs.show(pane, key("bbb")), Some((Shown::Attach, vec![])));
+        assert_eq!(restore_of(&tabs, 3), None);
     }
 
     #[test]
@@ -385,7 +473,7 @@ mod tests {
         add(&mut tabs);
         tabs.clear(pane);
         let other = active_tab(&tabs).layout.active();
-        assert_eq!(tabs.show(other, key("aaa")), Some(Shown::Attach));
+        assert_eq!(tabs.show(other, key("aaa")), Some((Shown::Attach, vec![])));
     }
 
     #[test]
@@ -397,7 +485,7 @@ mod tests {
         assert_eq!(tabs.clear_session(&key("aaa")), [pane]);
         assert!(tabs.clear_session(&key("aaa")).is_empty());
         let other = active_tab(&tabs).layout.active();
-        assert_eq!(tabs.show(other, key("aaa")), Some(Shown::Attach));
+        assert_eq!(tabs.show(other, key("aaa")), Some((Shown::Attach, vec![])));
     }
 
     #[test]
@@ -484,8 +572,8 @@ mod tests {
         tabs.go(1);
         let pane = tabs.current_mut().active();
         tabs.show(pane, key("aaa"));
-        assert_eq!(tabs.index(), 1, "aaa is shown in api already");
-        assert_eq!(restore_of(&tabs, 2), None);
+        assert_eq!(tabs.index(), 0, "aaa moved to other");
+        assert_eq!(restore_of(&tabs, 2), Some(&key("zzz")), "api was not visited");
         tabs.tabs[0].restore = Some(key("zzz"));
         tabs.go(1);
         tabs.drop_restore();
