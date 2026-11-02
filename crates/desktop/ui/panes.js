@@ -144,11 +144,12 @@ function leaves(node, found = []) {
 }
 
 export class Panes {
-  constructor(container, bar, { keyFilter, onChange, titleOf, isFinished, markOf, progressOf }) {
+  constructor(container, bar, { keyFilter, onChange, onError, titleOf, isFinished, markOf, progressOf }) {
     this.container = container;
     this.bar = bar;
     this.keyFilter = keyFilter;
     this.onChange = onChange;
+    this.onError = onError;
     this.titleOf = titleOf;
     this.isFinished = isFinished;
     this.markOf = markOf;
@@ -157,6 +158,8 @@ export class Panes {
     this.views = new Map();
     // Tab id → its page and the shape it was built for.
     this.pages = new Map();
+    this.tabDrag = false;
+    this.tabDropped = -Infinity;
   }
 
   // The terminals take the colors of the theme just applied.
@@ -208,8 +211,9 @@ export class Panes {
     return this.view(this.layout().active);
   }
 
+  // Whether a pane of the visible tab shows `session`: opened from another tab, it moves.
   shows(session) {
-    return this.state !== null && this.allLeaves().some((leaf) => sameSession(leaf.session, session));
+    return this.state !== null && leaves(this.layout().root).some((leaf) => sameSession(leaf.session, session));
   }
 
   draw(node) {
@@ -297,7 +301,8 @@ export class Panes {
 
   // "n name" per tab, which carries the dot of its most urgent session.
   renderBar() {
-    if (this.state === null) return;
+    // A tab being dragged keeps the bar as it is until it is dropped.
+    if (this.state === null || this.tabDrag) return;
     this.bar.replaceChildren(
       ...this.state.tabs.map((tab, index) => {
         const button = element("button", "tab");
@@ -309,7 +314,9 @@ export class Panes {
           button.append(element("span", "dot", mark === "finished" ? "✓" : ""));
         }
         button.classList.toggle("active", tab.id === this.state.active);
-        button.onclick = () => this.goTab(index + 1);
+        // The click that ends a drag is not a click on the tab.
+        button.onclick = () => performance.now() - this.tabDropped > 300 && this.goTab(index + 1);
+        if (tab.project) button.onmousedown = (event) => this.dragTab(event, button, index);
         return button;
       }),
     );
@@ -317,6 +324,45 @@ export class Panes {
 
   focus() {
     if (!document.querySelector("dialog[open]")) this.active().terminal.focus();
+  }
+
+  // A project tab follows the mouse along the bar, among the other project tabs: "other"
+  // stays first. A press that does not move is a click. Rust gets the new place on release.
+  dragTab(event, button, from) {
+    if (event.button !== 0) return;
+    const startX = event.clientX;
+    let to = from;
+    const move = (moved) => {
+      if (!this.tabDrag && Math.abs(moved.clientX - startX) < 5) return;
+      this.tabDrag = true;
+      button.classList.add("dragging");
+      const others = [...this.bar.children].slice(1).filter((other) => other !== button);
+      const before = others.find((other) => {
+        const box = other.getBoundingClientRect();
+        return moved.clientX < box.left + box.width / 2;
+      });
+      this.bar.insertBefore(button, before ?? null);
+      to = [...this.bar.children].indexOf(button);
+    };
+    const release = async () => {
+      document.removeEventListener("mousemove", move);
+      document.removeEventListener("mouseup", release);
+      if (!this.tabDrag) return;
+      this.tabDropped = performance.now();
+      this.tabDrag = false;
+      if (to === from) {
+        this.renderBar();
+        return;
+      }
+      try {
+        this.render(await invoke("move_tab", { from: from + 1, to: to + 1 }));
+      } catch (error) {
+        this.renderBar();
+        this.onError(`${error}`);
+      }
+    };
+    document.addEventListener("mousemove", move);
+    document.addEventListener("mouseup", release);
   }
 
   // The separator follows the mouse; Rust gets the ratio once it is released.
@@ -378,8 +424,8 @@ export class Panes {
     if (index >= 0 && id !== this.state.active) await this.goTab(index + 1);
   }
 
-  // Shows `session` in the active pane. If a pane of any tab shows it already, Rust brings
-  // that tab and pane to the front instead.
+  // Shows `session` in the active pane. If another pane of this tab shows it already, Rust
+  // gives that pane the focus instead; a pane of another tab gives it up.
   async open(session) {
     const start = performance.now();
     const view = this.active();

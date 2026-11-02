@@ -345,6 +345,11 @@ ol, ul {
   cursor: pointer;
 }
 
+.tab.dragging {
+  opacity: 0.6;
+  cursor: grabbing;
+}
+
 .tab-name {
   overflow: hidden;
   text-overflow: ellipsis;
@@ -378,11 +383,14 @@ ol, ul {
   position: relative;
 }
 
+/* xterm stacks its layers with z-index (up to 11): kept inside the panes, so that the
+   welcome screen above them gets the clicks. */
 #panes {
   flex: 1;
   min-height: 0;
   display: flex;
   padding: var(--gap);
+  isolation: isolate;
 }
 
 /* Over the panes rather than instead of them: a terminal opened while hidden would measure
