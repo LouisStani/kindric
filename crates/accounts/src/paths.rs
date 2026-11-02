@@ -1,4 +1,4 @@
-//! Where claude-accounts keeps its files. Unix paths are the ones of the 1.x Bash
+//! Where kindric-accounts keeps its files. Unix paths are the ones of the 1.x Bash
 //! script, so existing accounts work without any migration.
 
 use std::path::PathBuf;

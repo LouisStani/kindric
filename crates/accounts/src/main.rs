@@ -4,23 +4,23 @@ use std::ffi::OsString;
 use std::io::{self, BufRead, IsTerminal, Write};
 use std::process::ExitCode;
 
-use claude_accounts::{Paths, Result, account, isolation, launch, mcp, registry, status};
+use kindric_accounts::{Paths, Result, account, isolation, launch, mcp, registry, status};
 
 const VERSION: &str = env!("CARGO_PKG_VERSION");
 
 const USAGE: &str = "\
 Usage:
-  claude-accounts                   menu: pick an account and start claude here
-  claude-accounts add <name>        create the account and its directory (700)
-  claude-accounts list [--json]     list accounts
-  claude-accounts status [--json]   show login status, plan and active sessions of each account
-  claude-accounts remove <name> [--delete-dir|--keep-dir]
-                                    remove the account (directory deleted only if confirmed)
-  claude-accounts run <name> [...]  start claude with this account here (args passed to claude)
-  claude-accounts isolate <name>    stop sharing MCP servers with and from this account
-  claude-accounts unisolate <name>  share MCP servers again
-  claude-accounts isolated [--json] list isolated accounts
-  claude-accounts --version         print the version
+  kindric-accounts                   menu: pick an account and start claude here
+  kindric-accounts add <name>        create the account and its directory (700)
+  kindric-accounts list [--json]     list accounts
+  kindric-accounts status [--json]   show login status, plan and active sessions of each account
+  kindric-accounts remove <name> [--delete-dir|--keep-dir]
+                                     remove the account (directory deleted only if confirmed)
+  kindric-accounts run <name> [...]  start claude with this account here (args passed to claude)
+  kindric-accounts isolate <name>    stop sharing MCP servers with and from this account
+  kindric-accounts unisolate <name>  share MCP servers again
+  kindric-accounts isolated [--json] list isolated accounts
+  kindric-accounts --version         print the version
 ";
 
 /// What a command asks the process to do once it is done.
@@ -58,7 +58,7 @@ fn dir_choice(args: &[String]) -> Option<DirChoice> {
 
 fn print_warnings(warnings: &[String]) {
     for warning in warnings {
-        eprintln!("claude-accounts: {warning}");
+        eprintln!("kindric-accounts: {warning}");
     }
 }
 
@@ -80,7 +80,7 @@ fn cmd_add(paths: &Paths, name: &str) -> Result<Exit> {
     let created = account::add(paths, name)?;
     print_warnings(&created.warnings);
     println!("Account \"{name}\" created: {}", created.dir.display());
-    println!("First launch: claude-accounts run {name}, then /login");
+    println!("First launch: kindric-accounts run {name}, then /login");
     Ok(Exit::Success)
 }
 
@@ -92,7 +92,7 @@ fn cmd_list(paths: &Paths, args: &[String]) -> Result<Exit> {
     if json {
         println!("{}", to_json(&names)?);
     } else if names.is_empty() {
-        eprintln!("No accounts. Create one: claude-accounts add <name>");
+        eprintln!("No accounts. Create one: kindric-accounts add <name>");
     } else {
         for name in names {
             println!("{name}");
@@ -132,7 +132,7 @@ fn cmd_remove_with(paths: &Paths, name: &str, choice: DirChoice) -> Result<Exit>
 }
 
 fn to_json(value: &impl serde::Serialize) -> Result<String> {
-    serde_json::to_string(value).map_err(|error| claude_accounts::Error(error.to_string()))
+    serde_json::to_string(value).map_err(|error| kindric_accounts::Error(error.to_string()))
 }
 
 fn cmd_status(paths: &Paths, args: &[String]) -> Result<Exit> {
@@ -209,7 +209,7 @@ fn dispatch(args: &[String], raw_args: &[OsString]) -> Result<Exit> {
     let command = args.first().map(String::as_str).unwrap_or("");
     match command {
         "-V" | "--version" => {
-            println!("claude-accounts {VERSION}");
+            println!("kindric-accounts {VERSION}");
             return Ok(Exit::Success);
         },
         "-h" | "--help" | "help" => {
@@ -245,7 +245,7 @@ fn main() -> ExitCode {
             ExitCode::FAILURE
         },
         Err(error) => {
-            eprintln!("claude-accounts: {error}");
+            eprintln!("kindric-accounts: {error}");
             ExitCode::FAILURE
         },
     }

@@ -5,7 +5,7 @@ Do not open a public issue if the problem could expose an OAuth token, API key, 
 Contact the repository maintainer privately first, including:
 
 - a description of the issue;
-- the affected versions (`claude-accounts --version`, `kindric --version`), operating system and Claude Code version;
+- the affected versions (`kindric-accounts --version`, `kindric --version`), operating system and Claude Code version;
 - reproduction steps without real credentials;
 - the expected impact.
 

@@ -9,6 +9,6 @@ license = "GPL-3.0-only"
 publish = false
 
 [workspace.dependencies]
-claude-accounts = { path = "crates/accounts" }
+kindric-accounts = { path = "crates/accounts" }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"

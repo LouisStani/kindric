@@ -452,7 +452,7 @@ async function startNewSession(event) {
   const message = document.getElementById("new-message");
   const account = fields.account.value;
   if (!account) {
-    message.textContent = "no accounts: claude-accounts add <name>";
+    message.textContent = "no accounts: kindric-accounts add <name>";
     return;
   }
   const button = form.querySelector("button");

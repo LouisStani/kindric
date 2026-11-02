@@ -92,7 +92,7 @@ pub fn prepare(paths: &Paths, name: &str, mcp_config: Option<&Path>, user_args: 
 }
 
 /// Ctrl+C reaches every process attached to the console. While waiting for Claude Code,
-/// claude-accounts handles it by doing nothing, so only Claude Code reacts. A handler is
+/// kindric-accounts handles it by doing nothing, so only Claude Code reacts. A handler is
 /// used rather than ignoring the signal, because ignoring it would be inherited.
 #[cfg(windows)]
 fn survive_ctrl_c() {

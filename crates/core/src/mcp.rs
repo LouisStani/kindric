@@ -34,7 +34,7 @@ pub fn identity_from_env() -> io::Result<Identity> {
 pub fn ensure_not_isolated(account: &str, isolated: &[String]) -> io::Result<()> {
     if isolated.iter().any(|name| name == account) {
         return Err(io::Error::other(format!(
-            "account {account} is isolated (claude-accounts isolate): messages between sessions are disabled"
+            "account {account} is isolated (kindric-accounts isolate): messages between sessions are disabled"
         )));
     }
     Ok(())
@@ -63,7 +63,7 @@ fn tool_definitions() -> Value {
         {
             "name": "list_sessions",
             "description": "List the Claude Code sessions running on this machine, across all accounts \
-                managed by claude-accounts: title, account, state, id and directory.",
+                managed by kindric-accounts: title, account, state, id and directory.",
             "inputSchema": { "type": "object", "properties": {} }
         },
         {

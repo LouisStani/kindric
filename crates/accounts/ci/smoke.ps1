@@ -1,6 +1,6 @@
 # Smoke test of a built binary on Windows. Uses the runner's own profile (the CI
 # machine is thrown away afterwards) and a fake claude.cmd. No real account, no network.
-# Usage: ci/smoke.ps1 <path to claude-accounts.exe>
+# Usage: ci/smoke.ps1 <path to kindric-accounts.exe>
 param([Parameter(Mandatory = $true)][string]$Bin)
 $ErrorActionPreference = 'Stop'
 $Bin = (Resolve-Path $Bin).Path

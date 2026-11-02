@@ -425,19 +425,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "claude-accounts"
-version = "2.0.0"
-dependencies = [
- "dialoguer",
- "dirs",
- "junction",
- "serde",
- "serde_json",
- "sysinfo",
- "windows-sys 0.61.2",
-]
-
-[[package]]
 name = "combine"
 version = "4.6.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2056,10 +2043,23 @@ dependencies = [
 ]
 
 [[package]]
+name = "kindric-accounts"
+version = "2.0.0"
+dependencies = [
+ "dialoguer",
+ "dirs",
+ "junction",
+ "serde",
+ "serde_json",
+ "sysinfo",
+ "windows-sys 0.61.2",
+]
+
+[[package]]
 name = "kindric-core"
 version = "0.4.1"
 dependencies = [
- "claude-accounts",
+ "kindric-accounts",
  "notify",
  "serde",
  "serde_json",

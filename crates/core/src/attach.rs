@@ -18,7 +18,7 @@ fn colours() -> Vec<(String, String)> {
     vec![("TERM".into(), "xterm-256color".into()), ("COLORTERM".into(), "truecolor".into())]
 }
 
-/// `claude-accounts run <account> attach <short_id>`: claude-accounts sets the account up,
+/// `kindric-accounts run <account> attach <short_id>`: kindric-accounts sets the account up,
 /// then Claude Code attaches. On the implicit `default`, `claude attach <short_id>` without
 /// `CLAUDE_CONFIG_DIR`. Ending this process only detaches; the session keeps running.
 pub fn attach_command(account: &str, short_id: &str, implicit_default: bool) -> AttachCommand {
@@ -38,7 +38,7 @@ pub fn attach_command(account: &str, short_id: &str, implicit_default: bool) -> 
     }
 }
 
-/// `claude-accounts run <account> stop <short_id>`, or `claude stop <short_id>` on the
+/// `kindric-accounts run <account> stop <short_id>`, or `claude stop <short_id>` on the
 /// implicit `default`: the session stops and keeps its conversation; `attach` starts it again.
 pub fn stop_command(account: &str, short_id: &str, implicit_default: bool) -> Command {
     if implicit_default {
@@ -59,9 +59,9 @@ mod tests {
     use super::*;
 
     #[test]
-    fn attaches_through_claude_accounts_with_colours() {
+    fn attaches_through_kindric_accounts_with_colours() {
         let command = attach_command("lystriq", "378ce649", false);
-        assert_eq!(command.program, "claude-accounts");
+        assert_eq!(command.program, "kindric-accounts");
         assert_eq!(command.args, ["run", "lystriq", "attach", "378ce649"]);
         assert!(command.env.contains(&("TERM".into(), "xterm-256color".into())));
         assert!(command.env.contains(&("COLORTERM".into(), "truecolor".into())));
@@ -79,9 +79,9 @@ mod tests {
     }
 
     #[test]
-    fn stops_through_claude_accounts() {
+    fn stops_through_kindric_accounts() {
         let command = stop_command("lystriq", "378ce649", false);
-        assert_eq!(command.get_program(), "claude-accounts");
+        assert_eq!(command.get_program(), "kindric-accounts");
         assert_eq!(command.get_args().collect::<Vec<_>>(), ["run", "lystriq", "stop", "378ce649"]);
     }
 

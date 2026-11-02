@@ -1,5 +1,5 @@
 [package]
-name = "claude-accounts"
+name = "kindric-accounts"
 version = "2.0.0"
 edition = "2024"
 description = "Several Claude Code accounts side by side, one shared setup"
@@ -8,11 +8,11 @@ repository = "https://github.com/LouisStani/kindric"
 publish = false
 
 [lib]
-name = "claude_accounts"
+name = "kindric_accounts"
 path = "src/lib.rs"
 
 [[bin]]
-name = "claude-accounts"
+name = "kindric-accounts"
 path = "src/main.rs"
 
 [dependencies]

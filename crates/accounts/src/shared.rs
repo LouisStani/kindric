@@ -17,9 +17,9 @@ pub enum Existing {
     Missing,
     Symlink,
     Junction,
-    /// A copy made by claude-accounts, unchanged since.
+    /// A copy made by kindric-accounts, unchanged since.
     CopyUnchanged,
-    /// A copy made by claude-accounts, then edited inside the account.
+    /// A copy made by kindric-accounts, then edited inside the account.
     CopyEdited,
     /// Anything else: a file or directory that belongs to the account.
     Other,

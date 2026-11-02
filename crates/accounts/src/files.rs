@@ -1,4 +1,4 @@
-//! Small file helpers. On Unix, everything claude-accounts creates is private:
+//! Small file helpers. On Unix, everything kindric-accounts creates is private:
 //! directories in 700, files in 600, like the `umask 077` of the 1.x script.
 
 use std::fs::{self, OpenOptions};
@@ -85,7 +85,7 @@ pub mod test_dir {
 
     /// A fresh empty directory for one test.
     pub fn fresh(label: &str) -> PathBuf {
-        let dir = std::env::temp_dir().join(format!("claude-accounts-test-{label}-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("kindric-accounts-test-{label}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         dir
