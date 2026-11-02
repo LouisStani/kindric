@@ -5,7 +5,7 @@ use std::io::{self, Read, Write};
 use std::sync::{Arc, Mutex, PoisonError};
 use std::thread::{self, JoinHandle};
 
-use claude_sessions_core::attach::AttachCommand;
+use kindric_core::attach::AttachCommand;
 use portable_pty::{Child, ChildKiller, CommandBuilder, MasterPty, PtySize, native_pty_system};
 
 /// The pty side kept by the pane; None once the program has ended and the pty is closed.

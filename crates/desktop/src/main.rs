@@ -17,10 +17,10 @@ use std::process::ExitCode;
 use std::sync::{Mutex, MutexGuard, PoisonError};
 use std::time::{Duration, Instant};
 
-use claude_sessions_core::attach::{attach_command, stop_command};
-use claude_sessions_core::launcher::{self, Request, resolve_directory};
-use claude_sessions_core::mailbox::Mailbox;
-use claude_sessions_core::{accounts, checks, mailbox, refresher};
+use kindric_core::attach::{attach_command, stop_command};
+use kindric_core::launcher::{self, Request, resolve_directory};
+use kindric_core::mailbox::Mailbox;
+use kindric_core::{accounts, checks, mailbox, refresher};
 use serde::Serialize;
 use serde::de::DeserializeOwned;
 use tauri::ipc::{Channel, InvokeResponseBody};
@@ -63,7 +63,7 @@ struct Shared {
     /// The theme chosen, kept like the projects.
     settings: Mutex<Settings>,
     settings_file: Result<PathBuf, String>,
-    /// Off unless `CLAUDE_SESSIONS_TRACE` is set.
+    /// Off unless `KINDRIC_TRACE` is set.
     trace: Trace,
 }
 
@@ -637,7 +637,7 @@ fn load_file<T: DeserializeOwned + Default>(name: &str, errors: &mut Vec<String>
     }
 }
 
-/// `trace.log` in the data directory when `CLAUDE_SESSIONS_TRACE` is set; a trace that cannot
+/// `trace.log` in the data directory when `KINDRIC_TRACE` is set; a trace that cannot
 /// be opened is reported, and the app runs without it.
 fn open_trace(errors: &mut Vec<String>) -> Trace {
     if std::env::var_os(trace::VARIABLE).is_none_or(|value| value.is_empty()) {
@@ -722,7 +722,7 @@ fn main() -> ExitCode {
             ExitCode::SUCCESS
         },
         Err(error) => {
-            eprintln!("claude-sessions-desktop: {error}");
+            eprintln!("kindric-desktop: {error}");
             ExitCode::FAILURE
         },
     }

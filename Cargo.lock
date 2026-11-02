@@ -438,37 +438,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "claude-sessions"
-version = "0.4.1"
-dependencies = [
- "alacritty_terminal",
- "claude-sessions-core",
- "ratatui",
-]
-
-[[package]]
-name = "claude-sessions-core"
-version = "0.4.1"
-dependencies = [
- "claude-accounts",
- "notify",
- "serde",
- "serde_json",
-]
-
-[[package]]
-name = "claude-sessions-desktop"
-version = "0.4.1"
-dependencies = [
- "claude-sessions-core",
- "portable-pty",
- "serde",
- "serde_json",
- "tauri",
- "tauri-build",
-]
-
-[[package]]
 name = "combine"
 version = "4.6.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2075,6 +2044,37 @@ checksum = "0fbe853b403ae61a04233030ae8a79d94975281ed9770a1f9e246732b534b28d"
 dependencies = [
  "bitflags 2.13.2",
  "serde",
+]
+
+[[package]]
+name = "kindric"
+version = "0.4.1"
+dependencies = [
+ "alacritty_terminal",
+ "kindric-core",
+ "ratatui",
+]
+
+[[package]]
+name = "kindric-core"
+version = "0.4.1"
+dependencies = [
+ "claude-accounts",
+ "notify",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
+name = "kindric-desktop"
+version = "0.4.1"
+dependencies = [
+ "kindric-core",
+ "portable-pty",
+ "serde",
+ "serde_json",
+ "tauri",
+ "tauri-build",
 ]
 
 [[package]]

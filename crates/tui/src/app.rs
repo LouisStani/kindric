@@ -5,8 +5,8 @@ use std::thread;
 
 use alacritty_terminal::event::Event as TermEvent;
 use alacritty_terminal::term::TermMode;
-use claude_sessions_core::accounts::{self, SessionInfo, Snapshot};
-use claude_sessions_core::launcher;
+use kindric_core::accounts::{self, SessionInfo, Snapshot};
+use kindric_core::launcher;
 use ratatui::crossterm::event::{Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use ratatui::layout::Rect;
 

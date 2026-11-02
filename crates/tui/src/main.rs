@@ -15,8 +15,8 @@ use std::sync::mpsc::{self, Sender};
 use std::thread;
 
 use alacritty_terminal::event::Event as TermEvent;
-use claude_sessions_core::launcher::Launched;
-use claude_sessions_core::{accounts, mcp, refresher};
+use kindric_core::launcher::Launched;
+use kindric_core::{accounts, mcp, refresher};
 use ratatui::DefaultTerminal;
 use ratatui::crossterm::event::{self, DisableBracketedPaste, EnableBracketedPaste, Event};
 use ratatui::crossterm::execute;
@@ -25,7 +25,7 @@ use ratatui::layout::Rect;
 use crate::app::{App, Flow};
 use crate::pane::PaneKey;
 
-const USAGE: &str = "usage: claude-sessions [mcp | --version]";
+const USAGE: &str = "usage: kindric [mcp | --version]";
 
 pub enum AppEvent {
     Input(Event),
@@ -41,7 +41,7 @@ fn main() -> ExitCode {
         [] => run_ui(),
         ["mcp"] => mcp::run(),
         ["--version" | "-V"] => {
-            println!("claude-sessions {}", env!("CARGO_PKG_VERSION"));
+            println!("kindric {}", env!("CARGO_PKG_VERSION"));
             Ok(())
         },
         _ => {
@@ -52,7 +52,7 @@ fn main() -> ExitCode {
     match result {
         Ok(()) => ExitCode::SUCCESS,
         Err(error) => {
-            eprintln!("claude-sessions: {error}");
+            eprintln!("kindric: {error}");
             ExitCode::FAILURE
         },
     }

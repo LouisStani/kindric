@@ -34,7 +34,7 @@ mod tests {
     use super::*;
 
     fn scratch(label: &str) -> PathBuf {
-        let root = std::env::temp_dir().join(format!("claude-sessions-store-{label}-{}", std::process::id()));
+        let root = std::env::temp_dir().join(format!("kindric-store-{label}-{}", std::process::id()));
         let _ = fs::remove_dir_all(&root);
         root
     }
@@ -42,7 +42,7 @@ mod tests {
     #[test]
     fn a_saved_value_loads_back_and_leaves_no_temporary_file() {
         let root = scratch("round-trip");
-        let path = root.join("claude-sessions/list.json");
+        let path = root.join("kindric/list.json");
         save(&path, &vec!["b".to_string(), "a".to_string()]).unwrap();
         assert_eq!(load::<Vec<String>>(&path).unwrap(), ["b", "a"]);
         assert!(!path.with_file_name(".list.json.tmp").exists());

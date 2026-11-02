@@ -13,12 +13,12 @@ use serde_json::Value;
 
 use crate::accounts::{self, DEFAULT_ACCOUNT, LAUNCHER};
 
-/// The Claude Code version claude-sessions was tested with. Older ones get a warning only:
+/// The Claude Code version kindric was tested with. Older ones get a warning only:
 /// the oldest one that works is not known.
 pub const TESTED_CLAUDE: (u32, u32, u32) = (2, 1, 312);
 
 /// Name of the messages server in Claude Code's MCP configuration.
-pub const MESSAGES_SERVER: &str = "claude-sessions";
+pub const MESSAGES_SERVER: &str = "kindric";
 
 /// Claude Code's own installer.
 const INSTALL_CLAUDE: &str = if cfg!(windows) {
@@ -27,7 +27,7 @@ const INSTALL_CLAUDE: &str = if cfg!(windows) {
     "curl -fsSL https://claude.ai/install.sh | bash"
 };
 
-const INSTALL_LAUNCHER: &str = "https://github.com/LouisStani/Claude-Sessions/blob/main/crates/accounts/README.md#installation";
+const INSTALL_LAUNCHER: &str = "https://github.com/LouisStani/kindric/blob/main/crates/accounts/README.md#installation";
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ClaudeCheck {
@@ -107,7 +107,7 @@ pub enum Side {
     Default,
 }
 
-const ADD_ARGS: [&str; 8] = ["mcp", "add", "-s", "user", MESSAGES_SERVER, "--", "claude-sessions", "mcp"];
+const ADD_ARGS: [&str; 8] = ["mcp", "add", "-s", "user", MESSAGES_SERVER, "--", "kindric", "mcp"];
 
 impl Side {
     /// `claude-accounts run <account> mcp add …`, or `claude mcp add …` without
@@ -220,7 +220,7 @@ fn claude_line(claude: &ClaudeCheck) -> Line {
         return Line::new(State::Ok, format!("Claude Code {shown}"), Vec::new());
     }
     let (major, minor, patch) = TESTED_CLAUDE;
-    let text = format!("Claude Code {shown}: claude-sessions was tested with {major}.{minor}.{patch} and later");
+    let text = format!("Claude Code {shown}: kindric was tested with {major}.{minor}.{patch} and later");
     Line::new(State::Warning, text, vec!["claude update".into()])
 }
 
@@ -346,13 +346,13 @@ mod tests {
     }
 
     fn scratch(label: &str) -> PathBuf {
-        let root = std::env::temp_dir().join(format!("claude-sessions-checks-{label}-{}", std::process::id()));
+        let root = std::env::temp_dir().join(format!("kindric-checks-{label}-{}", std::process::id()));
         let _ = fs::remove_dir_all(&root);
         fs::create_dir_all(&root).expect("scratch directory");
         root
     }
 
-    const WITH_SERVER: &str = r#"{"mcpServers":{"claude-sessions":{"type":"stdio","command":"claude-sessions","args":["mcp"]}}}"#;
+    const WITH_SERVER: &str = r#"{"mcpServers":{"kindric":{"type":"stdio","command":"kindric","args":["mcp"]}}}"#;
 
     #[test]
     fn only_the_user_scope_counts() {
@@ -363,7 +363,7 @@ mod tests {
         assert!(has_messages_server(&file));
         fs::write(&file, r#"{"mcpServers":{"sentry":{"type":"http","url":"https://mcp.sentry.dev/mcp"}}}"#).unwrap();
         assert!(!has_messages_server(&file), "another server only");
-        fs::write(&file, r#"{"projects":{"/p":{"mcpServers":{"claude-sessions":{}}}}}"#).unwrap();
+        fs::write(&file, r#"{"projects":{"/p":{"mcpServers":{"kindric":{}}}}}"#).unwrap();
         assert!(!has_messages_server(&file), "project scope");
         fs::write(&file, "{").unwrap();
         assert!(!has_messages_server(&file), "broken file");
@@ -469,7 +469,7 @@ mod tests {
 
     #[test]
     fn each_side_without_the_server_gets_its_command() {
-        let add = "mcp add -s user claude-sessions -- claude-sessions mcp";
+        let add = "mcp add -s user kindric -- kindric mcp";
         let both = Found { messages: messages(Some("louis"), false, true, false), ..found() };
         let line = &lines(&both)[3];
         assert_eq!(line.state, State::ToDo);
@@ -504,7 +504,7 @@ mod tests {
 
         let default = Side::Default.command();
         assert_eq!(parts(&default).join(" "), Side::Default.shown());
-        assert_eq!(Side::Default.shown(), "claude mcp add -s user claude-sessions -- claude-sessions mcp");
+        assert_eq!(Side::Default.shown(), "claude mcp add -s user kindric -- kindric mcp");
         let removed: Vec<_> = default.get_envs().filter(|(_, value)| value.is_none()).map(|(name, _)| name).collect();
         assert!(removed.contains(&std::ffi::OsStr::new("CLAUDE_CONFIG_DIR")));
         assert!(removed.contains(&std::ffi::OsStr::new("ANTHROPIC_API_KEY")));

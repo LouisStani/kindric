@@ -42,7 +42,7 @@ function renderStatus() {
   node.className = errors ? "error" : text ? "notice" : "";
   node.title = text;
   if (text) node.replaceChildren(element("span", "status-text", text));
-  else node.replaceChildren("claude-sessions", element("span", "cursor"));
+  else node.replaceChildren("kindric", element("span", "cursor"));
 }
 
 // The state a chip shows: its color and the shape of its dot.

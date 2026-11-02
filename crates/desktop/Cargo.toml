@@ -1,13 +1,13 @@
 [package]
-name = "claude-sessions-desktop"
-description = "Desktop interface of claude-sessions"
+name = "kindric-desktop"
+description = "Desktop interface of kindric"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
 publish.workspace = true
 
 [dependencies]
-claude-sessions-core = { path = "../core" }
+kindric-core = { path = "../core" }
 portable-pty = "0.9"
 serde.workspace = true
 serde_json.workspace = true

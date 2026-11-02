@@ -1,4 +1,4 @@
-//! Timings of what the app does, written to `trace.log` when `CLAUDE_SESSIONS_TRACE` is set, to
+//! Timings of what the app does, written to `trace.log` when `KINDRIC_TRACE` is set, to
 //! find where a delay comes from before fixing it. Off, it writes nothing.
 
 use std::fs::{self, File};
@@ -7,7 +7,7 @@ use std::path::Path;
 use std::sync::{Mutex, PoisonError};
 use std::time::{Duration, Instant};
 
-pub const VARIABLE: &str = "CLAUDE_SESSIONS_TRACE";
+pub const VARIABLE: &str = "KINDRIC_TRACE";
 
 pub struct Trace {
     file: Option<Mutex<File>>,
@@ -70,7 +70,7 @@ mod tests {
     use super::*;
 
     fn scratch(label: &str) -> PathBuf {
-        let root = std::env::temp_dir().join(format!("claude-sessions-trace-{label}-{}", std::process::id()));
+        let root = std::env::temp_dir().join(format!("kindric-trace-{label}-{}", std::process::id()));
         let _ = fs::remove_dir_all(&root);
         root
     }
@@ -92,7 +92,7 @@ mod tests {
     #[test]
     fn a_span_writes_its_line_once_dropped() {
         let root = scratch("span");
-        let path = root.join("claude-sessions/trace.log");
+        let path = root.join("kindric/trace.log");
         let trace = Trace::open(&path).unwrap();
         assert!(trace.enabled());
         let span = trace.span("go_tab");

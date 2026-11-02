@@ -1,6 +1,6 @@
 # Contributing
 
-Thank you for helping improve the project. This repository holds two tools: claude-accounts (`crates/accounts`) and claude-sessions (`crates/core`, `crates/tui`, `crates/desktop`).
+Thank you for helping improve the project. This repository holds two tools: claude-accounts (`crates/accounts`) and kindric (`crates/core`, `crates/tui`, `crates/desktop`).
 
 ## Before opening a contribution
 
@@ -22,7 +22,7 @@ cargo build --release -p claude-accounts && crates/accounts/tests.sh
 
 ```sh
 rustup target add x86_64-pc-windows-gnu
-cargo clippy -p claude-accounts -p claude-sessions-core -p claude-sessions --target x86_64-pc-windows-gnu --all-targets
+cargo clippy -p claude-accounts -p kindric-core -p kindric --target x86_64-pc-windows-gnu --all-targets
 ```
 
 The desktop app cannot be checked this way: on Windows, Tauri needs the MinGW resource compiler. The CI checks it on Windows.

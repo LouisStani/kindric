@@ -1,5 +1,5 @@
-use claude_sessions_core::accounts::SessionInfo;
-use claude_sessions_core::search::matches;
+use kindric_core::accounts::SessionInfo;
+use kindric_core::search::matches;
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -67,7 +67,7 @@ impl Picker {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use claude_sessions_core::accounts::SessionState;
+    use kindric_core::accounts::SessionState;
 
     fn session(account: &str, name: &str, cwd: &str) -> SessionInfo {
         SessionInfo {
