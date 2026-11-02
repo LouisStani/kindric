@@ -1,12 +1,12 @@
 #!/usr/bin/env bash
-# Tests de claude-accounts : HOME temporaire, faux claude.
+# Tests de kindric-accounts : HOME temporaire, faux claude.
 # Aucun vrai compte, aucun identifiant, aucun réseau.
 
 set -uo pipefail
 # A permissive umask, so that only the tool itself can make its files private.
 umask 022
 
-SCRIPT=$(readlink -f -- "${CA_BIN:-$(dirname -- "$0")/../../target/release/claude-accounts}")
+SCRIPT=$(readlink -f -- "${CA_BIN:-$(dirname -- "$0")/../../target/release/kindric-accounts}")
 TESTS=0
 FAILURES=0
 
@@ -284,7 +284,7 @@ test_errors() {
 }
 
 test_version() {
-	local pattern='^claude-accounts [0-9]+\.[0-9]+\.[0-9]+$'
+	local pattern='^kindric-accounts [0-9]+\.[0-9]+\.[0-9]+$'
 	check "--version affiche nom et version x.y.z" bash -c '[[ $("$0" --version) =~ $1 ]]' "$SCRIPT" "$pattern"
 	check "-V équivaut à --version" bash -c '[[ $("$0" -V) == $("$0" --version) ]]' "$SCRIPT"
 	check "--help mentionne --version" bash -c '"$0" --help | grep -q -- "--version"' "$SCRIPT"

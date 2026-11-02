@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Smoke test of a built binary, for systems where tests.sh cannot run (macOS: no GNU
 # stat, BSD script). Temporary HOME, fake claude, no real account, no network.
-# Usage: ci/smoke.sh <path to claude-accounts>
+# Usage: ci/smoke.sh <path to kindric-accounts>
 set -euo pipefail
 
 bin="$(cd "$(dirname "$1")" && pwd)/$(basename "$1")"

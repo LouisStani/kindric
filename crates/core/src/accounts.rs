@@ -5,13 +5,13 @@ use std::process::{Command, Stdio};
 use std::thread;
 use std::time::{Duration, Instant};
 
-pub use claude_accounts::registry::DEFAULT_ACCOUNT;
-use claude_accounts::{Paths, launch, registry};
+pub use kindric_accounts::registry::DEFAULT_ACCOUNT;
+use kindric_accounts::{Paths, launch, registry};
 use serde::Deserialize;
 
 use crate::progress;
 
-pub(crate) const LAUNCHER: &str = "claude-accounts";
+pub(crate) const LAUNCHER: &str = "kindric-accounts";
 pub const MIN_LAUNCHER_VERSION: (u32, u32, u32) = (1, 2, 0);
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -42,7 +42,7 @@ pub struct SessionInfo {
     pub name: String,
     pub cwd: String,
     pub state: SessionState,
-    /// Account isolated by `claude-accounts isolate`: kept out of messages.
+    /// Account isolated by `kindric-accounts isolate`: kept out of messages.
     pub isolated: bool,
     /// What the session last said it is doing (see `progress`); background sessions only.
     pub progress: Option<String>,
@@ -107,9 +107,9 @@ pub fn parse_agents(account: &str, json: &str) -> serde_json::Result<Vec<Session
         .collect())
 }
 
-/// Parses `claude-accounts 1.2.3` into (1, 2, 3).
+/// Parses `kindric-accounts 1.2.3` into (1, 2, 3).
 pub fn parse_version(output: &str) -> Option<(u32, u32, u32)> {
-    let version = output.trim().strip_prefix("claude-accounts ")?;
+    let version = output.trim().strip_prefix("kindric-accounts ")?;
     let mut parts = version.split('.').map(str::parse::<u32>);
     match (parts.next(), parts.next(), parts.next(), parts.next()) {
         (Some(Ok(major)), Some(Ok(minor)), Some(Ok(patch)), None) => Some((major, minor, patch)),
@@ -126,7 +126,7 @@ fn launcher_output(args: &[&str]) -> io::Result<String> {
     String::from_utf8(output.stdout).map_err(io::Error::other)
 }
 
-/// The version line of claude-accounts, `claude-accounts 2.0.0`, when it is recent enough.
+/// The version line of kindric-accounts, `kindric-accounts 2.0.0`, when it is recent enough.
 pub fn check_launcher_version() -> io::Result<String> {
     let output = launcher_output(&["--version"])?;
     let version = parse_version(&output)
@@ -141,7 +141,7 @@ pub fn check_launcher_version() -> io::Result<String> {
     Ok(output.trim().to_string())
 }
 
-fn library_error(error: claude_accounts::Error) -> io::Error {
+fn library_error(error: kindric_accounts::Error) -> io::Error {
     io::Error::other(error.to_string())
 }
 
@@ -165,7 +165,7 @@ pub fn messaging_sessions(sessions: Vec<SessionInfo>) -> Vec<SessionInfo> {
 }
 
 /// `default` joins the accounts, first, when Claude Code's own configuration is logged in
-/// and no account of claude-accounts took the name (older versions allowed it). The flag
+/// and no account of kindric-accounts took the name (older versions allowed it). The flag
 /// says whether it was added.
 pub fn with_default(mut accounts: Vec<String>, logged_in: bool) -> (Vec<String>, bool) {
     let added = logged_in && !accounts.iter().any(|account| account == DEFAULT_ACCOUNT);
@@ -180,7 +180,7 @@ fn is_implicit_default(account: &str, implicit_default: bool) -> bool {
 }
 
 /// Whether `account` is the implicit `default`: that name, and no account of
-/// claude-accounts that took it.
+/// kindric-accounts that took it.
 pub fn is_implicit(paths: &Paths, account: &str) -> io::Result<bool> {
     Ok(account == DEFAULT_ACCOUNT && !registry::account_exists(paths, account).map_err(library_error)?)
 }
@@ -199,7 +199,7 @@ pub fn dir_of(paths: &Paths, account: &str, implicit_default: bool) -> PathBuf {
     paths.account_dir(account)
 }
 
-/// `claude` with the billing variables removed, as `claude-accounts run` does.
+/// `claude` with the billing variables removed, as `kindric-accounts run` does.
 fn claude_command(claude: PathBuf) -> Command {
     let mut command = Command::new(claude);
     for variable in launch::STRIPPED_ENV {
@@ -231,7 +231,7 @@ pub fn default_logged_in() -> bool {
 }
 
 /// `claude agents --json` on one account, with the environment rules of
-/// `claude-accounts run`. The shared configuration is not linked again here: relinking
+/// `kindric-accounts run`. The shared configuration is not linked again here: relinking
 /// removes then recreates the links, and this runs at every refresh. The implicit
 /// `default` runs without `CLAUDE_CONFIG_DIR`: setting it to `~/.claude` would make Claude
 /// Code read `~/.claude/.claude.json` instead of its real `~/.claude.json`.
@@ -270,7 +270,7 @@ pub struct Snapshot {
     /// How long `claude agents --json` took, by account.
     pub timings: Vec<(String, Duration)>,
     /// `default` in `accounts` is Claude Code's own configuration, not an account of
-    /// claude-accounts (see `with_default`).
+    /// kindric-accounts (see `with_default`).
     pub implicit_default: bool,
 }
 
@@ -499,10 +499,10 @@ mod tests {
 
     #[test]
     fn version_parsing() {
-        assert_eq!(parse_version("claude-accounts 1.1.0\n"), Some((1, 1, 0)));
-        assert_eq!(parse_version("claude-accounts 1.0"), None);
+        assert_eq!(parse_version("kindric-accounts 1.1.0\n"), Some((1, 1, 0)));
+        assert_eq!(parse_version("kindric-accounts 1.0"), None);
         assert_eq!(parse_version("other 1.1.0"), None);
-        assert!(parse_version("claude-accounts 1.0.9").unwrap() < MIN_LAUNCHER_VERSION);
-        assert!(parse_version("claude-accounts 1.10.0").unwrap() > MIN_LAUNCHER_VERSION);
+        assert!(parse_version("kindric-accounts 1.0.9").unwrap() < MIN_LAUNCHER_VERSION);
+        assert!(parse_version("kindric-accounts 1.10.0").unwrap() > MIN_LAUNCHER_VERSION);
     }
 }

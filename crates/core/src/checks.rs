@@ -1,5 +1,5 @@
 //! What the welcome screen lists before the first session: Claude Code and its version, an
-//! account, claude-accounts, the MCP server that carries messages between sessions, and a
+//! account, kindric-accounts, the MCP server that carries messages between sessions, and a
 //! first session. Each line says what is missing and what to run.
 
 use std::fs;
@@ -7,7 +7,7 @@ use std::io;
 use std::path::Path;
 use std::process::{Command, Stdio};
 
-use claude_accounts::{Paths, launch, registry};
+use kindric_accounts::{Paths, launch, registry};
 use serde::Serialize;
 use serde_json::Value;
 
@@ -38,11 +38,11 @@ pub struct ClaudeCheck {
     pub error: Option<String>,
 }
 
-/// Where the messages server is configured: claude-accounts shares it between its accounts,
+/// Where the messages server is configured: kindric-accounts shares it between its accounts,
 /// but never with `default`, which needs its own.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct MessagesCheck {
-    /// An account of claude-accounts that is not isolated, to add the server in; None when
+    /// An account of kindric-accounts that is not isolated, to add the server in; None when
     /// there is none.
     pub account: Option<String>,
     /// One of those accounts has it in its user scope.
@@ -58,12 +58,12 @@ pub struct MessagesCheck {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Found {
     pub claude: ClaudeCheck,
-    /// The version line of claude-accounts, or why it cannot be used.
+    /// The version line of kindric-accounts, or why it cannot be used.
     pub launcher: Result<String, String>,
     pub messages: MessagesCheck,
-    /// claude-accounts has accounts of its own.
+    /// kindric-accounts has accounts of its own.
     pub registry: bool,
-    /// The accounts the app lists: `default` when logged in, and those of claude-accounts.
+    /// The accounts the app lists: `default` when logged in, and those of kindric-accounts.
     pub accounts: Vec<String>,
     pub sessions: usize,
 }
@@ -99,7 +99,7 @@ impl Line {
     }
 }
 
-/// Where the messages server is missing: an account of claude-accounts, which shares it with
+/// Where the messages server is missing: an account of kindric-accounts, which shares it with
 /// its other accounts, or `default`.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Side {
@@ -110,7 +110,7 @@ pub enum Side {
 const ADD_ARGS: [&str; 8] = ["mcp", "add", "-s", "user", MESSAGES_SERVER, "--", "kindric", "mcp"];
 
 impl Side {
-    /// `claude-accounts run <account> mcp add …`, or `claude mcp add …` without
+    /// `kindric-accounts run <account> mcp add …`, or `claude mcp add …` without
     /// `CLAUDE_CONFIG_DIR` on `default`, as its sessions run. Claude Code writes its own file.
     pub fn command(&self) -> Command {
         let mut command = match self {
@@ -232,7 +232,7 @@ fn account_line(accounts: &[String]) -> Line {
     Line::new(State::Ok, format!("accounts: {}", accounts.join(", ")), Vec::new())
 }
 
-/// Needed only when claude-accounts has accounts: `default` runs with `claude` alone.
+/// Needed only when kindric-accounts has accounts: `default` runs with `claude` alone.
 fn launcher_line(launcher: &Result<String, String>, registry: bool) -> Line {
     let optional = if registry { "" } else { " · only needed for more accounts" };
     match launcher {
@@ -312,7 +312,7 @@ pub fn lines(found: &Found) -> Vec<Line> {
 }
 
 /// The list for the accounts and sessions the app shows now. About a second at most:
-/// `claude --version` and `claude-accounts --version`.
+/// `claude --version` and `kindric-accounts --version`.
 pub fn run(accounts: Vec<String>, sessions: usize) -> Result<Vec<Line>, String> {
     let paths = accounts::paths().map_err(|error| error.to_string())?;
     let registry = !registry::list_accounts(&paths).map_err(|error| error.to_string())?.is_empty();
@@ -406,7 +406,7 @@ mod tests {
     fn found() -> Found {
         Found {
             claude: claude_check("2.1.316 (Claude Code)"),
-            launcher: Ok("claude-accounts 2.0.0".into()),
+            launcher: Ok("kindric-accounts 2.0.0".into()),
             messages: messages(Some("louis"), true, true, true),
             registry: true,
             accounts: vec!["default".into(), "louis".into()],
@@ -424,7 +424,7 @@ mod tests {
         assert!(lines.iter().all(|line| line.state == State::Ok && line.copy.is_empty() && !line.start), "{lines:?}");
         assert_eq!(lines[0].text, "Claude Code 2.1.316");
         assert_eq!(lines[1].text, "accounts: default, louis");
-        assert_eq!(lines[2].text, "claude-accounts 2.0.0");
+        assert_eq!(lines[2].text, "kindric-accounts 2.0.0");
         assert_eq!(lines[4].text, "2 sessions");
     }
 
@@ -432,7 +432,7 @@ mod tests {
     fn a_new_machine_lists_everything_in_order() {
         let found = Found {
             claude: ClaudeCheck { version: None, tested: false, error: Some("claude not found".into()) },
-            launcher: Err("claude-accounts is not installed".into()),
+            launcher: Err("kindric-accounts is not installed".into()),
             messages: messages(None, false, true, false),
             registry: false,
             accounts: Vec::new(),
@@ -458,13 +458,13 @@ mod tests {
     }
 
     #[test]
-    fn claude_accounts_is_needed_only_for_its_own_accounts() {
-        let alone = Found { launcher: Err("claude-accounts is not installed".into()), registry: false, ..found() };
+    fn kindric_accounts_is_needed_only_for_its_own_accounts() {
+        let alone = Found { launcher: Err("kindric-accounts is not installed".into()), registry: false, ..found() };
         assert_eq!(states(&alone)[2], State::Optional);
         let used = Found { registry: true, ..alone.clone() };
         assert_eq!(states(&used)[2], State::ToDo);
         let installed = Found { registry: false, ..found() };
-        assert_eq!(lines(&installed)[2].text, "claude-accounts 2.0.0 · only needed for more accounts");
+        assert_eq!(lines(&installed)[2].text, "kindric-accounts 2.0.0 · only needed for more accounts");
     }
 
     #[test]
@@ -473,7 +473,7 @@ mod tests {
         let both = Found { messages: messages(Some("louis"), false, true, false), ..found() };
         let line = &lines(&both)[3];
         assert_eq!(line.state, State::ToDo);
-        assert_eq!(line.copy, [format!("claude-accounts run louis {add}"), format!("claude {add}")]);
+        assert_eq!(line.copy, [format!("kindric-accounts run louis {add}"), format!("claude {add}")]);
         assert!(line.add);
         assert!(lines(&found()).iter().all(|line| !line.add), "nothing to add");
         assert!(!lines(&Found { accounts: Vec::new(), messages: messages(None, false, true, false), ..found() })[3].add, "no account yet");
@@ -499,8 +499,8 @@ mod tests {
     fn the_command_run_is_the_one_shown() {
         let account = Side::Account("louis".into());
         assert_eq!(parts(&account.command()).join(" "), account.shown());
-        assert_eq!(parts(&account.command())[..3], ["claude-accounts", "run", "louis"]);
-        assert!(account.command().get_envs().next().is_none(), "claude-accounts sets the account up");
+        assert_eq!(parts(&account.command())[..3], ["kindric-accounts", "run", "louis"]);
+        assert!(account.command().get_envs().next().is_none(), "kindric-accounts sets the account up");
 
         let default = Side::Default.command();
         assert_eq!(parts(&default).join(" "), Side::Default.shown());

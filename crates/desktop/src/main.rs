@@ -303,7 +303,7 @@ fn reassign(app: &AppHandle, shared: &Shared, tabs: &Tabs) {
 }
 
 /// Whether `account` is Claude Code's own configuration rather than an account of
-/// claude-accounts: its sessions run with `claude` alone.
+/// kindric-accounts: its sessions run with `claude` alone.
 fn implicit_default(account: &str) -> Result<bool, String> {
     accounts::paths().and_then(|paths| accounts::is_implicit(&paths, account)).map_err(|error| error.to_string())
 }

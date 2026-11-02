@@ -2,8 +2,8 @@
 
 use std::io::{self, IsTerminal};
 
-use claude_accounts::status::{AccountStatus, LoginState};
-use claude_accounts::{Paths, Result, Error, registry, status};
+use kindric_accounts::status::{AccountStatus, LoginState};
+use kindric_accounts::{Paths, Result, Error, registry, status};
 use dialoguer::console::{Term, style};
 use dialoguer::{FuzzySelect, Input};
 
@@ -20,7 +20,7 @@ fn header(count: usize) -> String {
         1 => "1 account ready to launch".to_string(),
         _ => format!("{count} accounts ready to launch"),
     };
-    format!("claude-accounts\n{label}\n")
+    format!("kindric-accounts\n{label}\n")
 }
 
 fn badge(status: &AccountStatus) -> String {

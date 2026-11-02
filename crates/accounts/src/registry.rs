@@ -32,7 +32,7 @@ pub fn require_existing_account(paths: &Paths, name: &str) -> Result<()> {
     if account_exists(paths, name)? {
         return Ok(());
     }
-    fail(format!("no such account: {name} (see: claude-accounts list)"))
+    fail(format!("no such account: {name} (see: kindric-accounts list)"))
 }
 
 pub fn list_isolated(paths: &Paths) -> Result<Vec<String>> {

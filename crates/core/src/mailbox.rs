@@ -4,8 +4,8 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use claude_accounts::Paths;
-use claude_accounts::files::create_private_dir;
+use kindric_accounts::Paths;
+use kindric_accounts::files::create_private_dir;
 use serde::{Deserialize, Serialize};
 
 const READ_DIR: &str = "read";

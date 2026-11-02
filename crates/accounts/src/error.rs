@@ -1,7 +1,7 @@
 use std::fmt;
 use std::io;
 
-/// One-line message shown as `claude-accounts: <message>` before exiting with code 1.
+/// One-line message shown as `kindric-accounts: <message>` before exiting with code 1.
 #[derive(Debug, PartialEq, Eq)]
 pub struct Error(pub String);
 

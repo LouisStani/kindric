@@ -5,7 +5,7 @@ use std::fs;
 use std::path::{Path, PathBuf, is_separator};
 use std::process::{Command, Stdio};
 
-use claude_accounts::{Paths, launch, mcp};
+use kindric_accounts::{Paths, launch, mcp};
 
 use crate::accounts;
 
@@ -83,7 +83,7 @@ pub struct Launched {
     pub warnings: Vec<String>,
 }
 
-fn library_error(error: claude_accounts::Error) -> String {
+fn library_error(error: kindric_accounts::Error) -> String {
     error.to_string()
 }
 
@@ -107,7 +107,7 @@ fn run_backgrounded(mut command: Command, directory: &Path) -> Result<String, St
     parse_backgrounded_id(&text).ok_or_else(|| format!("no session id in: {}", text.trim()))
 }
 
-/// Starts a background session the way `claude-accounts run <account> --bg` does: shared
+/// Starts a background session the way `kindric-accounts run <account> --bg` does: shared
 /// MCP servers (none for an isolated account), shared settings, billing variables removed.
 pub fn launch(request: &Request) -> Result<Launched, String> {
     let paths = Paths::from_env().map_err(library_error)?;

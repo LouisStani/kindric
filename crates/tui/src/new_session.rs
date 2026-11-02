@@ -91,7 +91,7 @@ impl NewSessionForm {
 
     fn submit(&mut self, home: &Path) -> FormOutcome {
         let Some(account) = self.accounts.get(self.account) else {
-            self.error = Some("no accounts: claude-accounts add <name>".into());
+            self.error = Some("no accounts: kindric-accounts add <name>".into());
             return FormOutcome::Continue;
         };
         let directory = match resolve_directory(&self.directory, home) {
