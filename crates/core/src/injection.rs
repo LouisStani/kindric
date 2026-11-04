@@ -165,7 +165,7 @@ mod tests {
         }
 
         fn plugin(&self) -> PathBuf {
-            self.data.join("plugins/p")
+            self.data.join("plugins").join("p")
         }
 
         fn finish(self) {
@@ -184,7 +184,7 @@ mod tests {
 
         let injection = s.prepare();
 
-        let startup = s.data.join("startup/p.md");
+        let startup = s.data.join("startup").join("p.md");
         let expected: Vec<OsString> = vec![
             "--append-system-prompt-file".into(),
             startup.clone().into_os_string(),
