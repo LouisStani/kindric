@@ -16,12 +16,17 @@ use std::os::unix::fs::OpenOptionsExt;
 /// cap: nothing is cut or refused above it.
 pub const WARNING_BYTES: u64 = 30 * 1024;
 
+const ROOT_VARIABLE: &str = "KINDRIC_MEMORY_DIR";
 const PROJECTS: &str = "projets";
-const TOP_LEVEL: [&str; 5] = ["global", "setup", "perso", "skills", PROJECTS];
+const SKILLS_DIR: &str = "skills";
+const SKILL_FILE: &str = "SKILL.md";
+const TOP_LEVEL: [&str; 5] = ["global", "setup", "perso", SKILLS_DIR, PROJECTS];
 const OPENED_AT_STARTUP: [&str; 2] = ["global", "setup"];
 const PROJECT_DIRS: [&str; 4] = ["status", "decisions", "lessons", "knowledge"];
 const INSTRUCTIONS: &str = "claude.md";
-const PROJECT_FILES: [&str; 3] = [INSTRUCTIONS, "skills.md", "INDEX.md"];
+const SKILLS: &str = "skills.md";
+const INDEX: &str = "INDEX.md";
+const PROJECT_FILES: [&str; 3] = [INSTRUCTIONS, SKILLS, INDEX];
 
 /// What a session of a project opens when it starts.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -39,8 +44,58 @@ impl Memory {
         Self { root }
     }
 
+    /// `~/.kindric/memory`, or the folder named by `KINDRIC_MEMORY_DIR`.
     pub fn default_root() -> io::Result<PathBuf> {
-        root_for(&Paths::from_env().map_err(io::Error::other)?)
+        match std::env::var_os(ROOT_VARIABLE).filter(|value| !value.is_empty()) {
+            Some(root) => Ok(PathBuf::from(root)),
+            None => root_for(&Paths::from_env().map_err(io::Error::other)?),
+        }
+    }
+
+    /// Whether `project` has a zone. Nothing here creates one for a session: without a zone,
+    /// a session starts as if this module did not exist.
+    pub fn has_project(&self, project: &str) -> bool {
+        self.zone(project).is_ok_and(|zone| zone.is_dir())
+    }
+
+    /// What a session of `project` receives at startup besides its `CLAUDE.md`: `global/`,
+    /// `setup/` and the index of the zone. Never `perso/`, skills or the zone's other folders.
+    pub fn startup_text(&self, project: &str) -> io::Result<String> {
+        let zone = self.zone(project)?;
+        let mut files = Vec::new();
+        for name in OPENED_AT_STARTUP {
+            files.extend(files_under(&self.root.join(name))?);
+        }
+        files.push(zone.join(INDEX));
+        let mut parts = Vec::new();
+        for file in files {
+            let text = read_text_if_present(&file)?;
+            if !text.trim().is_empty() {
+                parts.push(text.trim().to_string());
+            }
+        }
+        Ok(parts.join("\n\n"))
+    }
+
+    /// The names listed in the `skills.md` of `project`: one per line, a leading `-` accepted,
+    /// blank lines and `#` lines ignored.
+    pub fn skill_names(&self, project: &str) -> io::Result<Vec<String>> {
+        let text = read_text_if_present(&self.zone(project)?.join(SKILLS))?;
+        Ok(text
+            .lines()
+            .map(|line| line.trim().trim_start_matches('-').trim())
+            .filter(|line| !line.is_empty() && !line.starts_with('#'))
+            .map(String::from)
+            .collect())
+    }
+
+    /// The folder of a skill, if the name stays one folder under `skills/` and holds a `SKILL.md`.
+    pub fn skill_dir(&self, name: &str) -> Option<PathBuf> {
+        if !is_single_folder_name(name) {
+            return None;
+        }
+        let dir = self.root.join(SKILLS_DIR).join(name);
+        dir.join(SKILL_FILE).is_file().then_some(dir)
     }
 
     pub fn ensure_tree(&self) -> io::Result<()> {
@@ -87,7 +142,7 @@ impl Memory {
     }
 
     fn zone(&self, project: &str) -> io::Result<PathBuf> {
-        if !is_valid_project_name(project) {
+        if !is_single_folder_name(project) {
             return Err(io::Error::new(io::ErrorKind::InvalidInput, format!("invalid project name: {project:?}")));
         }
         Ok(self.root.join(PROJECTS).join(project))
@@ -99,8 +154,8 @@ fn root_for(paths: &Paths) -> io::Result<PathBuf> {
     Ok(home.join(".kindric").join("memory"))
 }
 
-/// A name must stay one folder under `projets/`, on every system.
-fn is_valid_project_name(name: &str) -> bool {
+/// A name must stay one folder under its parent, on every system.
+pub fn is_single_folder_name(name: &str) -> bool {
     if name.contains(['/', '\\']) {
         return false;
     }
@@ -118,6 +173,37 @@ fn create_empty_if_missing(path: &Path) -> io::Result<()> {
         Err(error) if error.kind() == io::ErrorKind::AlreadyExists => Ok(()),
         Err(error) => Err(error),
     }
+}
+
+/// A missing file reads as empty; bytes that are not text cannot stop a session from starting.
+fn read_text_if_present(path: &Path) -> io::Result<String> {
+    match fs::read(path) {
+        Ok(bytes) => Ok(String::from_utf8_lossy(&bytes).into_owned()),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(String::new()),
+        Err(error) => Err(error),
+    }
+}
+
+/// The files of `dir` and its subfolders in name order; none if it does not exist. Links are
+/// not followed, like in `dir_size`.
+fn files_under(dir: &Path) -> io::Result<Vec<PathBuf>> {
+    let entries = match fs::read_dir(dir) {
+        Ok(entries) => entries,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(error) => return Err(error),
+    };
+    let mut paths: Vec<_> = entries.map(|entry| entry.map(|entry| entry.path())).collect::<io::Result<_>>()?;
+    paths.sort();
+    let mut files = Vec::new();
+    for path in paths {
+        let kind = fs::symlink_metadata(&path)?.file_type();
+        if kind.is_dir() {
+            files.extend(files_under(&path)?);
+        } else if kind.is_file() {
+            files.push(path);
+        }
+    }
+    Ok(files)
 }
 
 /// A missing file weighs nothing.
@@ -263,7 +349,7 @@ mod tests {
     #[test]
     fn ordinary_project_names_are_accepted() {
         for name in ["kindric", "Pro", "mon projet", "a.b-c_d", "..x"] {
-            assert!(is_valid_project_name(name), "{name:?}");
+            assert!(is_single_folder_name(name), "{name:?}");
         }
     }
 
@@ -312,6 +398,76 @@ mod tests {
         write(root.join("global/rules.md"), 11);
         assert!(memory.startup_size("kindric", 10).unwrap().over_warning);
         assert!(!memory.startup_size("kindric", 11).unwrap().over_warning);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn a_project_has_a_zone_only_once_its_folder_exists() {
+        let root = scratch("has");
+        let memory = Memory::at(root.clone());
+        assert!(!memory.has_project("kindric"));
+        assert!(!memory.has_project("../kindric"));
+        memory.ensure_project("kindric").unwrap();
+        assert!(memory.has_project("kindric"));
+        assert!(!memory.has_project("other"));
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn the_startup_text_holds_what_is_opened_and_nothing_else() {
+        let root = scratch("text");
+        let memory = Memory::at(root.clone());
+        memory.ensure_project("kindric").unwrap();
+        fs::write(root.join("global/b.md"), "RULE-B\n").unwrap();
+        fs::create_dir_all(root.join("global/a")).unwrap();
+        fs::write(root.join("global/a/a.md"), "RULE-A\n").unwrap();
+        fs::write(root.join("setup/machine.md"), "MACHINE\n").unwrap();
+        fs::write(root.join("projets/kindric/INDEX.md"), "NOTE-LIST\n").unwrap();
+        fs::write(root.join("projets/kindric/claude.md"), "IN-CLAUDE-MD\n").unwrap();
+        fs::write(root.join("projets/kindric/skills.md"), "IN-SKILLS-MD\n").unwrap();
+        fs::write(root.join("projets/kindric/decisions/d.md"), "IN-DECISIONS\n").unwrap();
+        fs::write(root.join("perso/life.md"), "IN-PERSO\n").unwrap();
+        fs::create_dir_all(root.join("skills/rust")).unwrap();
+        fs::write(root.join("skills/rust/SKILL.md"), "IN-SKILL\n").unwrap();
+        fs::create_dir_all(root.join("projets/other")).unwrap();
+        fs::write(root.join("projets/other/INDEX.md"), "OTHER-PROJECT\n").unwrap();
+
+        assert_eq!(memory.startup_text("kindric").unwrap(), "RULE-A\n\nRULE-B\n\nMACHINE\n\nNOTE-LIST");
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn bytes_that_are_not_text_do_not_stop_the_startup_text() {
+        let root = scratch("bytes");
+        let memory = Memory::at(root.clone());
+        write(root.join("global/rules.md"), 0);
+        fs::write(root.join("global/rules.md"), [b'o', b'k', 0xff]).unwrap();
+        assert!(memory.startup_text("kindric").unwrap().starts_with("ok"));
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn skill_names_are_read_one_per_line() {
+        let root = scratch("names-list");
+        let memory = Memory::at(root.clone());
+        assert!(memory.skill_names("kindric").unwrap().is_empty());
+        memory.ensure_project("kindric").unwrap();
+        fs::write(root.join("projets/kindric/skills.md"), "# Skills\n\n- rust\ndev\n  - front  \r\n").unwrap();
+        assert_eq!(memory.skill_names("kindric").unwrap(), ["rust", "dev", "front"]);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn a_skill_needs_its_file_and_a_name_that_stays_in_place() {
+        let root = scratch("skill-dir");
+        let memory = Memory::at(root.clone());
+        write(root.join("skills/rust/SKILL.md"), 1);
+        fs::create_dir_all(root.join("skills/empty")).unwrap();
+        write(root.join("perso/SKILL.md"), 1);
+        assert_eq!(memory.skill_dir("rust"), Some(root.join("skills/rust")));
+        assert_eq!(memory.skill_dir("empty"), None);
+        assert_eq!(memory.skill_dir("missing"), None);
+        assert_eq!(memory.skill_dir("../perso"), None);
         fs::remove_dir_all(root).unwrap();
     }
 

@@ -2,6 +2,7 @@ pub mod accounts;
 pub mod attach;
 pub mod checks;
 pub mod generate;
+pub mod injection;
 pub mod launcher;
 pub mod mailbox;
 pub mod mcp;
