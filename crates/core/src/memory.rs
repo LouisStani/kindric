@@ -20,7 +20,8 @@ const PROJECTS: &str = "projets";
 const TOP_LEVEL: [&str; 5] = ["global", "setup", "perso", "skills", PROJECTS];
 const OPENED_AT_STARTUP: [&str; 2] = ["global", "setup"];
 const PROJECT_DIRS: [&str; 4] = ["status", "decisions", "lessons", "knowledge"];
-const PROJECT_FILES: [&str; 3] = ["claude.md", "skills.md", "INDEX.md"];
+const INSTRUCTIONS: &str = "claude.md";
+const PROJECT_FILES: [&str; 3] = [INSTRUCTIONS, "skills.md", "INDEX.md"];
 
 /// What a session of a project opens when it starts.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -60,6 +61,15 @@ impl Memory {
             create_empty_if_missing(&zone.join(name))?;
         }
         Ok(())
+    }
+
+    /// The `claude.md` of `project`; a missing file is an empty one.
+    pub fn instructions_source(&self, project: &str) -> io::Result<String> {
+        match fs::read_to_string(self.zone(project)?.join(INSTRUCTIONS)) {
+            Ok(text) => Ok(text),
+            Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(String::new()),
+            Err(error) => Err(error),
+        }
     }
 
     /// Counts `global/`, `setup/` and the files of the project's zone. What sessions open on
