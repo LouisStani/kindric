@@ -4,6 +4,7 @@ pub mod checks;
 pub mod launcher;
 pub mod mailbox;
 pub mod mcp;
+pub mod memory;
 pub mod progress;
 pub mod refresher;
 pub mod search;
