@@ -1,12 +1,14 @@
 //! What the welcome screen lists before the first session: Claude Code and its version, an
 //! account, kindric-accounts, the MCP server that carries messages between sessions, and a
-//! first session. Each line says what is missing and what to run.
+//! first session. Each line says what is missing and what to run. A line also warns when Claude
+//! Code has subcommands kindric does not know.
 
 use std::fs;
 use std::io;
 use std::path::Path;
 use std::process::{Command, Stdio};
 
+use kindric_accounts::injection::SUBCOMMANDS;
 use kindric_accounts::{Paths, launch, registry};
 use serde::Serialize;
 use serde_json::Value;
@@ -58,6 +60,8 @@ pub struct MessagesCheck {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Found {
     pub claude: ClaudeCheck,
+    /// The subcommands of `claude --help` that kindric does not know, or why they were not read.
+    pub subcommands: Result<Vec<String>, String>,
     /// The version line of kindric-accounts, or why it cannot be used.
     pub launcher: Result<String, String>,
     pub messages: MessagesCheck,
@@ -167,6 +171,45 @@ fn check_claude() -> ClaudeCheck {
         Ok(output) if output.status.success() => claude_check(&String::from_utf8_lossy(&output.stdout)),
         Ok(output) => failed(format!("claude --version: {}", String::from_utf8_lossy(&output.stderr).trim())),
         Err(error) => failed(format!("claude --version: {error}")),
+    }
+}
+
+/// The subcommands listed under `Commands:` in `claude --help` that are not in `SUBCOMMANDS`:
+/// kindric would read them as the start of a conversation and give them the memory. Aliases
+/// count, `stop|kill` gives both; `help` is left out.
+pub fn unknown_subcommands(help: &str) -> Vec<String> {
+    help.lines()
+        .skip_while(|line| line.trim_end() != "Commands:")
+        .skip(1)
+        .take_while(|line| line.trim().is_empty() || line.starts_with(' '))
+        .filter(|line| line.starts_with("  ") && !line[2..].starts_with(' '))
+        .filter_map(|line| line.split_whitespace().next())
+        .flat_map(|names| names.split('|'))
+        .filter(|name| *name != "help" && !SUBCOMMANDS.contains(name))
+        .map(String::from)
+        .collect()
+}
+
+fn check_subcommands() -> Result<Vec<String>, String> {
+    let claude = launch::require_claude().map_err(|error| error.to_string())?;
+    match Command::new(claude).arg("--help").stdin(Stdio::null()).output() {
+        Ok(output) if output.status.success() => Ok(unknown_subcommands(&String::from_utf8_lossy(&output.stdout))),
+        Ok(output) => Err(format!("claude --help: {}", String::from_utf8_lossy(&output.stderr).trim())),
+        Err(error) => Err(format!("claude --help: {error}")),
+    }
+}
+
+/// Shown only when something is off, and never when Claude Code itself is missing: its own line
+/// says so.
+fn subcommands_line(subcommands: &Result<Vec<String>, String>, claude: &ClaudeCheck) -> Option<Line> {
+    match subcommands {
+        Ok(unknown) if unknown.is_empty() => None,
+        Ok(unknown) => {
+            let text = format!("Claude Code subcommands unknown to kindric, which gives them the memory: {}", unknown.join(", "));
+            Some(Line::new(State::Warning, text, Vec::new()))
+        },
+        Err(_) if claude.version.is_none() => None,
+        Err(error) => Some(Line::new(State::Warning, format!("Claude Code subcommands not checked: {error}"), Vec::new())),
     }
 }
 
@@ -302,22 +345,25 @@ fn session_line(sessions: usize) -> Line {
 
 /// The list, in the order things get set up.
 pub fn lines(found: &Found) -> Vec<Line> {
-    vec![
-        claude_line(&found.claude),
+    let mut lines = vec![claude_line(&found.claude)];
+    lines.extend(subcommands_line(&found.subcommands, &found.claude));
+    lines.extend([
         account_line(&found.accounts),
         launcher_line(&found.launcher, found.registry),
         messages_line(&found.messages, &found.accounts),
         session_line(found.sessions),
-    ]
+    ]);
+    lines
 }
 
 /// The list for the accounts and sessions the app shows now. About a second at most:
-/// `claude --version` and `kindric-accounts --version`.
+/// `claude --version`, `claude --help` (0.2 s measured) and `kindric-accounts --version`.
 pub fn run(accounts: Vec<String>, sessions: usize) -> Result<Vec<Line>, String> {
     let paths = accounts::paths().map_err(|error| error.to_string())?;
     let registry = !registry::list_accounts(&paths).map_err(|error| error.to_string())?.is_empty();
     let found = Found {
         claude: check_claude(),
+        subcommands: check_subcommands(),
         launcher: check_launcher(),
         messages: check_messages(&paths)?,
         registry,
@@ -406,6 +452,7 @@ mod tests {
     fn found() -> Found {
         Found {
             claude: claude_check("2.1.316 (Claude Code)"),
+            subcommands: Ok(Vec::new()),
             launcher: Ok("kindric-accounts 2.0.0".into()),
             messages: messages(Some("louis"), true, true, true),
             registry: true,
@@ -432,6 +479,7 @@ mod tests {
     fn a_new_machine_lists_everything_in_order() {
         let found = Found {
             claude: ClaudeCheck { version: None, tested: false, error: Some("claude not found".into()) },
+            subcommands: Err("claude not found in PATH".into()),
             launcher: Err("kindric-accounts is not installed".into()),
             messages: messages(None, false, true, false),
             registry: false,
@@ -446,6 +494,48 @@ mod tests {
         assert_eq!(lines[2].copy, [INSTALL_LAUNCHER]);
         assert!(lines[3].copy.is_empty());
         assert!(lines[4].start);
+    }
+
+    /// `claude --help` of Claude Code 2.1.318, cut down: options, then commands with an alias, a
+    /// description on two lines, and one subcommand kindric does not know.
+    const HELP: &str = "Usage: claude [options] [command] [prompt]
+
+Options:
+  -p, --print                           Print response and exit
+  -h, --help                            Display help for command
+
+Commands:
+  agents [options]                      Manage background agents
+  attach <id|name>                      Open a background session in this
+                                        terminal. Part of the session name works
+  plugin|plugins                        Manage Claude Code plugins
+  stop|kill <id>                        Stop a background session
+  sandbox|sb [options]                  Something new
+  help [command]                        display help for command
+";
+
+    #[test]
+    fn subcommands_are_read_under_commands_with_their_aliases() {
+        assert_eq!(unknown_subcommands(HELP), ["sandbox", "sb"]);
+        let known = HELP.replace("  sandbox|sb [options]                  Something new\n", "");
+        assert!(unknown_subcommands(&known).is_empty());
+        assert!(unknown_subcommands("Usage: claude\n").is_empty());
+    }
+
+    #[test]
+    fn the_installed_list_is_known() {
+        let installed = "Commands:\n".to_string() + &SUBCOMMANDS.map(|name| format!("  {name} [options]  d\n")).concat();
+        assert!(unknown_subcommands(&installed).is_empty());
+    }
+
+    #[test]
+    fn unknown_subcommands_are_a_warning_after_claude_code() {
+        let unknown = lines(&Found { subcommands: Ok(vec!["sandbox".into(), "sb".into()]), ..found() });
+        assert_eq!(unknown.len(), 6);
+        assert_eq!(unknown[1].state, State::Warning);
+        assert!(unknown[1].text.ends_with(": sandbox, sb"), "{}", unknown[1].text);
+        let unread = Found { subcommands: Err("claude --help: boom".into()), ..found() };
+        assert_eq!(lines(&unread)[1].text, "Claude Code subcommands not checked: claude --help: boom");
     }
 
     #[test]
