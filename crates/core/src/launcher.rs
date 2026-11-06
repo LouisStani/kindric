@@ -6,6 +6,7 @@ use std::path::{Path, PathBuf, is_separator};
 use std::process::{Command, Stdio};
 
 use kindric_accounts::injection;
+use kindric_accounts::memory::Memory;
 use kindric_accounts::paths::expand_home;
 use kindric_accounts::{Paths, isolation, launch, mcp, registry};
 
@@ -100,6 +101,16 @@ fn run_backgrounded(mut command: Command, directory: &Path) -> Result<String, St
         return Err(format!("cannot start the session: {}", text.trim()));
     }
     parse_backgrounded_id(&text).ok_or_else(|| format!("no session id in: {}", text.trim()))
+}
+
+/// The memory zone a session started in `directory` receives, by name, and the zones that could
+/// not be read on the way. An isolated account receives no zone whatever this says.
+pub fn memory_zone(directory: &Path) -> Result<(Option<String>, Vec<String>), String> {
+    let paths = Paths::from_env().map_err(library_error)?;
+    let home = paths.home().ok_or("the shared configuration has no parent")?;
+    let root = Memory::default_root_for(&paths).map_err(|error| error.to_string())?;
+    let lookup = Memory::at(root).zone_of(directory, home).map_err(|error| error.to_string())?;
+    Ok((lookup.zone.map(|zone| zone.name), lookup.warnings))
 }
 
 /// Starts a background session the way `kindric-accounts run <account> --bg` does: shared

@@ -308,6 +308,13 @@ export class Panes {
         const button = element("button", "tab");
         button.append(element("span", "pos", `${index + 1}`), element("span", "tab-name", tab.project ? tab.project.name : "other"));
         button.title = tab.project ? tab.project.directory : "sessions of no project";
+        if (tab.project) {
+          // Read at each hover, before the tooltip shows: a zone declared since shows at once.
+          button.onmouseenter = async () => {
+            const memory = await invoke("memory_zone", { directory: tab.project.directory }).catch((error) => `memory not read: ${error}`);
+            button.title = `${tab.project.directory}\n${memory}`;
+          };
+        }
         const mark = this.markOf(tab.id);
         if (mark) {
           button.classList.add(mark);
