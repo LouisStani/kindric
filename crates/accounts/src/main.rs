@@ -2,9 +2,10 @@ mod menu;
 
 use std::ffi::OsString;
 use std::io::{self, BufRead, IsTerminal, Write};
+use std::path::PathBuf;
 use std::process::ExitCode;
 
-use kindric_accounts::{Paths, Result, account, isolation, launch, mcp, registry, status};
+use kindric_accounts::{Paths, Result, account, injection, isolation, launch, mcp, registry, status};
 
 const VERSION: &str = env!("CARGO_PKG_VERSION");
 
@@ -192,12 +193,28 @@ fn cmd_isolated(paths: &Paths, args: &[String]) -> Result<Exit> {
     Ok(Exit::Success)
 }
 
+/// Where the conversation `claude <args>` opens starts, so it gets the memory of its zone; none
+/// for a subcommand. A current directory that cannot be read only costs the memory.
+fn conversation_dir(claude_args: &[OsString]) -> Option<PathBuf> {
+    if !injection::opens_conversation(claude_args) {
+        return None;
+    }
+    match std::env::current_dir() {
+        Ok(directory) => Some(directory),
+        Err(error) => {
+            print_warnings(&[format!("memory not loaded: current directory: {error}")]);
+            None
+        },
+    }
+}
+
 fn cmd_run(paths: &Paths, name: &str, claude_args: &[OsString]) -> Result<Exit> {
     launch::require_account(paths, name)?;
     launch::require_claude()?;
     let shared_mcp = mcp::prepare(paths, name)?;
     print_warnings(&shared_mcp.warnings);
-    let prepared = launch::prepare(paths, name, shared_mcp.file.as_deref(), claude_args)?;
+    let conversation_dir = conversation_dir(claude_args);
+    let prepared = launch::prepare(paths, name, shared_mcp.file.as_deref(), claude_args, conversation_dir.as_deref())?;
     print_warnings(&prepared.warnings);
     #[cfg(unix)]
     return Err(launch::exec(prepared.command));

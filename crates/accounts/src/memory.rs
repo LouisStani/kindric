@@ -37,10 +37,18 @@ pub struct StartupSize {
     pub over_warning: bool,
 }
 
+/// A zone and the folder it declares that holds a session's directory.
+#[derive(Debug, PartialEq, Eq)]
+pub struct Zone {
+    pub name: String,
+    /// Where its `CLAUDE.md` and `AGENTS.md` go, whatever subfolder the session starts in.
+    pub folder: PathBuf,
+}
+
 /// The zone of a session's directory, and the zones that could not be read on the way.
 #[derive(Debug, Default, PartialEq, Eq)]
 pub struct ZoneLookup {
-    pub zone: Option<String>,
+    pub zone: Option<Zone>,
     pub warnings: Vec<String>,
 }
 
@@ -55,9 +63,14 @@ impl Memory {
 
     /// `~/.kindric/memory`, or the folder named by `KINDRIC_MEMORY_DIR`.
     pub fn default_root() -> io::Result<PathBuf> {
+        Self::default_root_for(&Paths::from_env().map_err(io::Error::other)?)
+    }
+
+    /// The same, for the files of `paths`.
+    pub fn default_root_for(paths: &Paths) -> io::Result<PathBuf> {
         match std::env::var_os(MEMORY_ROOT_VARIABLE).filter(|value| !value.is_empty()) {
             Some(root) => Ok(PathBuf::from(root)),
-            None => root_for(&Paths::from_env().map_err(io::Error::other)?),
+            None => root_for(paths),
         }
     }
 
@@ -73,7 +86,7 @@ impl Memory {
     /// the app. A zone whose header cannot be read is a warning, and the search goes on.
     pub fn zone_of(&self, directory: &Path, home: &Path) -> io::Result<ZoneLookup> {
         let mut lookup = ZoneLookup::default();
-        let mut best: Option<(usize, String)> = None;
+        let mut best: Option<(usize, Zone)> = None;
         for zone in self.zone_names()? {
             let folders = match self.declared_folders(&zone, home) {
                 Ok(folders) => folders,
@@ -85,7 +98,7 @@ impl Memory {
             for folder in folders {
                 let depth = folder.components().count();
                 if directory.starts_with(&folder) && best.as_ref().is_none_or(|(deepest, _)| depth > *deepest) {
-                    best = Some((depth, zone.clone()));
+                    best = Some((depth, Zone { name: zone.clone(), folder }));
                 }
             }
         }
@@ -545,7 +558,7 @@ mod tests {
     fn zone_of(memory: &Memory, home: &Path, relative: &str) -> Option<String> {
         let lookup = memory.zone_of(&home.join(relative), home).unwrap();
         assert!(lookup.warnings.is_empty(), "{:?}", lookup.warnings);
-        lookup.zone
+        lookup.zone.map(|zone| zone.name)
     }
 
     #[test]
@@ -558,6 +571,8 @@ mod tests {
         let memory = Memory::at(root.clone());
         assert_eq!(zone_of(&memory, &home, "Dev/api/src").as_deref(), Some("api"));
         assert_eq!(zone_of(&memory, &home, "Srv/api").as_deref(), Some("api"));
+        let found = memory.zone_of(&home.join("Dev/api/src"), &home).unwrap().zone.unwrap();
+        assert_eq!(found.folder, home.join("Dev/api"), "the folder declared, not the session's");
         assert_eq!(zone_of(&memory, &home, "Dev/api2").as_deref(), Some("dev"), "compared by component");
         assert_eq!(zone_of(&memory, &home, "Dev").as_deref(), Some("dev"));
         assert_eq!(zone_of(&memory, &home, ""), None);
@@ -570,7 +585,8 @@ mod tests {
         let root = scratch("zone-absolute");
         zone_with(&root, "api", "---\ndirectory: /srv/api\n---\n");
         let lookup = Memory::at(root.clone()).zone_of(Path::new("/srv/api/src"), Path::new("/h")).unwrap();
-        assert_eq!(lookup, ZoneLookup { zone: Some("api".into()), warnings: Vec::new() });
+        let zone = Zone { name: "api".into(), folder: PathBuf::from("/srv/api") };
+        assert_eq!(lookup, ZoneLookup { zone: Some(zone), warnings: Vec::new() });
         fs::remove_dir_all(root).unwrap();
     }
 
@@ -601,7 +617,7 @@ mod tests {
         zone_with(&root, "relative", "---\ndirectory: Dev/x\n---\n");
         zone_with(&root, "x", "---\ndirectory: ~/x\n---\n");
         let lookup = Memory::at(root.clone()).zone_of(&home.join("x/y"), &home).unwrap();
-        assert_eq!(lookup.zone.as_deref(), Some("x"));
+        assert_eq!(lookup.zone.map(|zone| zone.name).as_deref(), Some("x"));
         assert_eq!(lookup.warnings.len(), 2);
         assert!(lookup.warnings[0].starts_with("projets/open/claude.md: "));
         assert!(lookup.warnings[1].contains("\"Dev/x\" must start with ~ or be absolute"));

@@ -7,10 +7,11 @@ use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
 
+use crate::Paths;
 use crate::files::{create_private_dir, write_atomic};
-
 use crate::generate::{self, Outcome};
 use crate::memory::{Memory, WARNING_BYTES};
+use crate::registry;
 
 /// Skills appear in the session as `memory:<name>`.
 const PLUGIN_NAME: &str = "memory";
@@ -23,7 +24,62 @@ pub struct Injection {
     pub warnings: Vec<String>,
 }
 
-/// Prepares a session of `project`, which must have a zone, working in `directory`.
+/// Claude Code's subcommands, aliases included, as `claude --help` lists them in 2.1.318. They
+/// open no conversation, so they never receive the memory.
+pub const SUBCOMMANDS: [&str; 21] = [
+    "agents", "attach", "auth", "auto-mode", "doctor", "gateway", "import", "install", "logs", "mcp", "plugin",
+    "plugins", "purge", "respawn", "rm", "setup-token", "stop", "kill", "ultrareview", "update", "upgrade",
+];
+
+/// Whether `claude <args>` opens a conversation: its first argument that is not an option is not
+/// a subcommand, as Claude Code itself reads it. An option followed by its value, as in
+/// `--model x mcp`, is read wrong: `x` counts as the first argument.
+pub fn opens_conversation(claude_args: &[OsString]) -> bool {
+    claude_args
+        .iter()
+        .map(|arg| arg.to_string_lossy())
+        .find(|arg| !arg.starts_with('-'))
+        .is_none_or(|first| !SUBCOMMANDS.contains(&first.as_ref()))
+}
+
+fn not_loaded(error: impl std::fmt::Display) -> Injection {
+    Injection { args: Vec::new(), warnings: vec![format!("memory not loaded: {error}")] }
+}
+
+/// What the memory adds to a conversation of `account` started in `directory`: the zone whose
+/// folders hold it. When it cannot be told whether the account is isolated, the account counts as
+/// isolated.
+pub fn for_session(paths: &Paths, account: &str, directory: &Path) -> Injection {
+    let isolated = registry::is_isolated(paths, account).unwrap_or(true);
+    let (Some(home), Some(data_dir)) = (paths.home(), paths.kindric_data_dir()) else {
+        return not_loaded("the shared configuration has no parent");
+    };
+    match Memory::default_root_for(paths) {
+        Ok(root) => injection_for(&Memory::at(root), &data_dir, home, directory, isolated),
+        Err(error) => not_loaded(error),
+    }
+}
+
+/// An isolated account receives nothing here: it gets `global/` alone from `isolation`, with its
+/// rules against reading the rest, and no zone is even looked up. A directory outside every zone
+/// receives nothing either. Nothing here can stop the session from starting.
+fn injection_for(memory: &Memory, data_dir: &Path, home: &Path, directory: &Path, isolated: bool) -> Injection {
+    if isolated {
+        return Injection::default();
+    }
+    let lookup = match memory.zone_of(directory, home) {
+        Ok(lookup) => lookup,
+        Err(error) => return not_loaded(error),
+    };
+    let Some(zone) = lookup.zone else {
+        return Injection { args: Vec::new(), warnings: lookup.warnings };
+    };
+    let mut injection = prepare(memory, data_dir, &zone.name, &zone.folder).unwrap_or_else(not_loaded);
+    injection.warnings.splice(0..0, lookup.warnings);
+    injection
+}
+
+/// Prepares a session of `project`, which must have a zone, with its instructions in `directory`.
 pub fn prepare(memory: &Memory, data_dir: &Path, project: &str, directory: &Path) -> io::Result<Injection> {
     let mut injection = Injection::default();
     injection.warnings.extend(write_instructions(memory, project, directory));
@@ -133,6 +189,100 @@ fn copy_dir(from: &Path, to: &Path) -> io::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A memory with a zone for `p` holding a rule and instructions, and an empty project folder.
+    fn session_setup(label: &str) -> (PathBuf, Memory, PathBuf) {
+        let root = std::env::temp_dir().join(format!("kindric-session-{label}-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        let memory = Memory::at(root.join("memory"));
+        memory.ensure_project("p").unwrap();
+        fs::write(root.join("memory/global/rules.md"), "RULE").unwrap();
+        let directory = root.join("project");
+        let instructions = format!("---\ndirectory: {}\n---\nPROJECT RULES", directory.display());
+        fs::write(root.join("memory/projets/p/claude.md"), instructions).unwrap();
+        fs::create_dir_all(&directory).unwrap();
+        (root, memory, directory)
+    }
+
+    fn for_directory(root: &Path, memory: &Memory, data_dir: &Path, directory: &Path, isolated: bool) -> Injection {
+        injection_for(memory, data_dir, &root.join("home"), directory, isolated)
+    }
+
+    #[test]
+    fn only_launches_that_open_a_conversation_receive_the_memory() {
+        let opens = |args: &[&str]| opens_conversation(&args.iter().map(OsString::from).collect::<Vec<_>>());
+        assert!(opens(&[]));
+        assert!(opens(&["fix the readme"]));
+        assert!(opens(&["-p", "fix the readme"]));
+        assert!(opens(&["--resume"]));
+        assert!(opens(&["-c"]));
+        assert!(opens(&["--bg", "-n", "api"]));
+        assert!(opens(&["update the readme"]), "a prompt is one argument");
+        assert!(!opens(&["attach", "378ce649"]));
+        assert!(!opens(&["stop", "378ce649"]));
+        assert!(!opens(&["kill", "378ce649"]));
+        assert!(!opens(&["mcp", "add", "-s", "user", "x"]));
+        assert!(!opens(&["--debug", "auth", "status"]));
+        assert!(!opens(&["plugins"]));
+        assert!(!opens(&["upgrade"]));
+    }
+
+    #[test]
+    fn a_session_in_a_folder_of_a_zone_receives_the_memory() {
+        let (root, memory, directory) = session_setup("zone");
+        fs::create_dir_all(directory.join("src")).unwrap();
+        let injection = for_directory(&root, &memory, &root.join("data"), &directory.join("src"), false);
+        assert_eq!(injection.args.len(), 2);
+        assert!(injection.warnings.is_empty(), "{:?}", injection.warnings);
+        assert!(directory.join("CLAUDE.md").is_file(), "in the folder of the zone");
+        assert!(!directory.join("src/CLAUDE.md").exists());
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn a_zone_that_cannot_be_read_is_a_warning_of_the_session() {
+        let (root, memory, directory) = session_setup("broken-zone");
+        memory.ensure_project("broken").unwrap();
+        fs::write(root.join("memory/projets/broken/claude.md"), "---\ndirectory: ~/x\n").unwrap();
+        let injection = for_directory(&root, &memory, &root.join("data"), &directory, false);
+        assert_eq!(injection.args.len(), 2);
+        assert_eq!(injection.warnings.len(), 1);
+        assert!(injection.warnings[0].starts_with("projets/broken/claude.md: "));
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn an_isolated_account_receives_nothing_and_nothing_is_written() {
+        let (root, memory, directory) = session_setup("isolated");
+        let data = root.join("data");
+        assert_eq!(for_directory(&root, &memory, &data, &directory, true), Injection::default());
+        assert_eq!(fs::read_dir(&directory).unwrap().count(), 0);
+        assert!(!data.exists());
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn a_directory_outside_every_zone_receives_nothing_and_nothing_is_written() {
+        let (root, memory, _) = session_setup("no-zone");
+        let data = root.join("data");
+        let elsewhere = root.join("elsewhere");
+        fs::create_dir_all(&elsewhere).unwrap();
+        assert_eq!(for_directory(&root, &memory, &data, &elsewhere, false), Injection::default());
+        assert_eq!(fs::read_dir(&elsewhere).unwrap().count(), 0);
+        assert!(!data.exists());
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn a_memory_that_fails_is_a_warning_and_the_session_still_starts() {
+        let (root, memory, directory) = session_setup("fails");
+        let blocked = root.join("data-is-a-file");
+        fs::write(&blocked, "x").unwrap();
+        let injection = for_directory(&root, &memory, &blocked, &directory, false);
+        assert!(injection.args.is_empty());
+        assert!(injection.warnings[0].starts_with("memory not loaded: "));
+        fs::remove_dir_all(root).unwrap();
+    }
 
     struct Setup {
         root: PathBuf,
