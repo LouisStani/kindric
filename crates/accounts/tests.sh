@@ -295,6 +295,31 @@ test_isolation() {
 	rm -f -- "$(data_dir pro1)/.claude.json"
 }
 
+test_memory() {
+	local out memory="$HOME/.kindric/memory" project="$SANDBOX/api"
+	local startup="$HOME/.local/share/kindric/startup/api.md"
+	mkdir -p "$memory/global" "$memory/projets/api" "$project/src"
+	printf 'REGLE\n' >"$memory/global/regles.md"
+	printf -- '---\ndirectory: %s\n---\nREGLES-API\n' "$project" >"$memory/projets/api/claude.md"
+	out=$(cd "$project/src" && ca run pro1)
+	check "conversation dans une zone : mémoire passée" grep -qF -- "--append-system-prompt-file $startup" <<<"$out"
+	check "zone : texte de démarrage écrit" grep -qxF REGLE "$startup"
+	check "zone : CLAUDE.md dans le dossier déclaré" grep -qxF REGLES-API "$project/CLAUDE.md"
+	check "zone : rien dans le sous-dossier de la session" test ! -e "$project/src/CLAUDE.md"
+	out=$(cd "$project/src" && ca run pro1 -p "fix the readme")
+	check "conversation avec prompt : mémoire passée" grep -qF -- "--append-system-prompt-file $startup" <<<"$out"
+	out=$(cd "$project/src" && ca run pro1 attach 378ce649)
+	check "sous-commande : pas de mémoire" bash -c '! grep -qF -- --append-system-prompt-file <<<"$0"' "$out"
+	check "sous-commande : arguments transmis" grep -qE '^ARGS=.* attach 378ce649$' <<<"$out"
+	out=$(cd "$SANDBOX" && ca run pro1)
+	check "hors zone : pas de mémoire de zone" bash -c '! grep -qF -- startup/ <<<"$0"' "$out"
+	ca isolate pro2 >/dev/null
+	out=$(cd "$project" && ca run pro2)
+	check "compte isolé dans une zone : pas de zone" bash -c '! grep -qF -- startup/ <<<"$0"' "$out"
+	ca unisolate pro2 >/dev/null
+	rm -rf -- "$HOME/.kindric" "$HOME/.local/share/kindric" "$project"
+}
+
 test_errors() {
 	check "run sur compte inexistant échoue" bash -c '! "$0" run nope 2>/dev/null' "$SCRIPT"
 	check "message compte inexistant" bash -c '"$0" run nope 2>&1 | grep -q "no such account"' "$SCRIPT"
@@ -378,6 +403,7 @@ test_status_json_escaping
 test_sessions
 test_shared_mcp
 test_isolation
+test_memory
 test_errors
 test_version
 test_menu_keys

@@ -5,6 +5,7 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use crate::error::{Result, fail};
+use crate::injection;
 use crate::isolation::{self, IsolatedSettings};
 use crate::paths::Paths;
 use crate::registry;
@@ -81,8 +82,16 @@ pub struct Launch {
 }
 
 /// Prepares `claude` for `name`: links the shared configuration again (a shared
-/// directory may have appeared since `add`), cleans the environment, adds the args.
-pub fn prepare(paths: &Paths, name: &str, mcp_config: Option<&Path>, user_args: &[OsString]) -> Result<Launch> {
+/// directory may have appeared since `add`), cleans the environment, adds the args. With
+/// `conversation_dir`, the directory a conversation starts in, the memory of its zone is added;
+/// leave it out for a subcommand of Claude Code.
+pub fn prepare(
+    paths: &Paths,
+    name: &str,
+    mcp_config: Option<&Path>,
+    user_args: &[OsString],
+    conversation_dir: Option<&Path>,
+) -> Result<Launch> {
     let dir = require_account(paths, name)?;
     let claude = require_claude()?;
     let mut warnings = shared::link_shared(&paths.shared_root, &dir)?;
@@ -91,11 +100,13 @@ pub fn prepare(paths: &Paths, name: &str, mcp_config: Option<&Path>, user_args: 
     if let Some(settings) = &isolated {
         warnings.extend(settings.warnings.iter().cloned());
     }
+    let memory = conversation_dir.map(|directory| injection::for_session(paths, name, directory)).unwrap_or_default();
+    warnings.extend(memory.warnings);
     let mut command = Command::new(claude);
     for variable in STRIPPED_ENV {
         command.env_remove(variable);
     }
-    command.env("CLAUDE_CONFIG_DIR", &dir).args(args).args(user_args);
+    command.env("CLAUDE_CONFIG_DIR", &dir).args(args).args(memory.args).args(user_args);
     Ok(Launch { command, warnings })
 }
 

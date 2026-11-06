@@ -5,13 +5,11 @@ use std::fs;
 use std::path::{Path, PathBuf, is_separator};
 use std::process::{Command, Stdio};
 
-use kindric_accounts::injection::{self, Injection};
-use kindric_accounts::memory::Memory;
+use kindric_accounts::injection;
 use kindric_accounts::paths::expand_home;
 use kindric_accounts::{Paths, isolation, launch, mcp, registry};
 
 use crate::accounts;
-use crate::mailbox;
 
 #[derive(Debug, PartialEq, Eq)]
 pub struct Request {
@@ -104,42 +102,6 @@ fn run_backgrounded(mut command: Command, directory: &Path) -> Result<String, St
     parse_backgrounded_id(&text).ok_or_else(|| format!("no session id in: {}", text.trim()))
 }
 
-fn not_loaded(error: impl std::fmt::Display) -> Injection {
-    Injection { args: Vec::new(), warnings: vec![format!("memory not loaded: {error}")] }
-}
-
-/// What the memory adds to this session: the zone whose folders hold its directory. An isolated
-/// account receives nothing here: it gets `global/` alone from `kindric_accounts::isolation`, with
-/// its rules against reading the rest, and no zone is even looked up. A directory outside every
-/// zone receives nothing either. Nothing here can stop the session from starting.
-fn injection_for(memory: &Memory, data_dir: &Path, home: &Path, request: &Request, isolated: bool) -> Injection {
-    if isolated {
-        return Injection::default();
-    }
-    let lookup = match memory.zone_of(&request.directory, home) {
-        Ok(lookup) => lookup,
-        Err(error) => return not_loaded(error),
-    };
-    let Some(zone) = lookup.zone else {
-        return Injection { args: Vec::new(), warnings: lookup.warnings };
-    };
-    let mut injection = injection::prepare(memory, data_dir, &zone, &request.directory).unwrap_or_else(not_loaded);
-    injection.warnings.splice(0..0, lookup.warnings);
-    injection
-}
-
-/// When it cannot be told whether the account is isolated, the account counts as isolated.
-fn memory_injection(paths: &Paths, request: &Request) -> Injection {
-    let isolated = registry::is_isolated(paths, &request.account).unwrap_or(true);
-    let Some(home) = paths.home() else {
-        return not_loaded("the shared configuration has no parent");
-    };
-    match (Memory::default_root(), mailbox::data_dir()) {
-        (Ok(root), Ok(data_dir)) => injection_for(&Memory::at(root), &data_dir, home, request, isolated),
-        (Err(error), _) | (_, Err(error)) => not_loaded(error),
-    }
-}
-
 /// Starts a background session the way `kindric-accounts run <account> --bg` does: shared
 /// MCP servers (none for an isolated account), shared settings, billing variables removed.
 pub fn launch(request: &Request) -> Result<Launched, String> {
@@ -150,13 +112,11 @@ pub fn launch(request: &Request) -> Result<Launched, String> {
     launch::require_account(&paths, &request.account).map_err(library_error)?;
     launch::require_claude().map_err(library_error)?;
     let shared = mcp::prepare(&paths, &request.account).map_err(library_error)?;
-    let memory = memory_injection(&paths, request);
-    let mut args = background_args(&request.name);
-    args.extend(memory.args);
-    let prepared =
-        launch::prepare(&paths, &request.account, shared.file.as_deref(), &args).map_err(library_error)?;
+    let args = background_args(&request.name);
+    let prepared = launch::prepare(&paths, &request.account, shared.file.as_deref(), &args, Some(&request.directory))
+        .map_err(library_error)?;
     let short_id = run_backgrounded(prepared.command, &request.directory)?;
-    let warnings = shared.warnings.into_iter().chain(prepared.warnings).chain(memory.warnings).collect();
+    let warnings = shared.warnings.into_iter().chain(prepared.warnings).collect();
     Ok(Launched { short_id, warnings })
 }
 
@@ -176,7 +136,7 @@ fn launch_default(paths: &Paths, request: &Request) -> Result<Launched, String> 
     for variable in accounts::default_removed_env() {
         command.env_remove(variable);
     }
-    let memory = memory_injection(paths, request);
+    let memory = injection::for_session(paths, registry::DEFAULT_ACCOUNT, &request.directory);
     command.args(settings).args(background_args(&request.name)).args(memory.args);
     let short_id = run_backgrounded(command, &request.directory)?;
     let warnings = settings_warnings.into_iter().chain(memory.warnings).collect();
@@ -186,28 +146,6 @@ fn launch_default(paths: &Paths, request: &Request) -> Result<Launched, String> 
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    /// A memory with a zone for `p` holding a rule and instructions, and an empty project folder.
-    fn memory_setup(label: &str) -> (PathBuf, Memory, PathBuf) {
-        let root = std::env::temp_dir().join(format!("kindric-launcher-{label}-{}", std::process::id()));
-        let _ = fs::remove_dir_all(&root);
-        let memory = Memory::at(root.join("memory"));
-        memory.ensure_project("p").unwrap();
-        fs::write(root.join("memory/global/rules.md"), "RULE").unwrap();
-        let directory = root.join("project");
-        let instructions = format!("---\ndirectory: {}\n---\nPROJECT RULES", directory.display());
-        fs::write(root.join("memory/projets/p/claude.md"), instructions).unwrap();
-        fs::create_dir_all(&directory).unwrap();
-        (root, memory, directory)
-    }
-
-    fn request(directory: PathBuf) -> Request {
-        Request { account: "a".into(), directory, name: String::new() }
-    }
-
-    fn injection(root: &Path, memory: &Memory, data_dir: &Path, directory: &Path, isolated: bool) -> Injection {
-        injection_for(memory, data_dir, &root.join("home"), &request(directory.to_path_buf()), isolated)
-    }
 
     #[test]
     fn the_implicit_default_gets_read_rules_only_when_isolated() {
@@ -221,62 +159,6 @@ mod tests {
         assert_eq!(args, [OsString::from("--settings"), file.clone().into_os_string()]);
         assert!(warnings.is_empty());
         assert!(fs::read_to_string(file).unwrap().contains("deny"));
-        fs::remove_dir_all(root).unwrap();
-    }
-
-    #[test]
-    fn a_session_of_a_project_with_a_zone_receives_the_memory() {
-        let (root, memory, directory) = memory_setup("zone");
-        fs::create_dir_all(directory.join("src")).unwrap();
-        let injection = injection(&root, &memory, &root.join("data"), &directory.join("src"), false);
-        assert_eq!(injection.args.len(), 2);
-        assert!(injection.warnings.is_empty(), "{:?}", injection.warnings);
-        assert!(directory.join("src/CLAUDE.md").is_file());
-        fs::remove_dir_all(root).unwrap();
-    }
-
-    #[test]
-    fn a_zone_that_cannot_be_read_is_a_warning_of_the_session() {
-        let (root, memory, directory) = memory_setup("broken-zone");
-        memory.ensure_project("broken").unwrap();
-        fs::write(root.join("memory/projets/broken/claude.md"), "---\ndirectory: ~/x\n").unwrap();
-        let injection = injection(&root, &memory, &root.join("data"), &directory, false);
-        assert_eq!(injection.args.len(), 2);
-        assert_eq!(injection.warnings.len(), 1);
-        assert!(injection.warnings[0].starts_with("projets/broken/claude.md: "));
-        fs::remove_dir_all(root).unwrap();
-    }
-
-    #[test]
-    fn an_isolated_account_receives_nothing_and_nothing_is_written() {
-        let (root, memory, directory) = memory_setup("isolated");
-        let data = root.join("data");
-        assert_eq!(injection(&root, &memory, &data, &directory, true), Injection::default());
-        assert_eq!(fs::read_dir(&directory).unwrap().count(), 0);
-        assert!(!data.exists());
-        fs::remove_dir_all(root).unwrap();
-    }
-
-    #[test]
-    fn a_directory_outside_every_zone_receives_nothing_and_nothing_is_written() {
-        let (root, memory, _) = memory_setup("no-zone");
-        let data = root.join("data");
-        let elsewhere = root.join("elsewhere");
-        fs::create_dir_all(&elsewhere).unwrap();
-        assert_eq!(injection(&root, &memory, &data, &elsewhere, false), Injection::default());
-        assert_eq!(fs::read_dir(&elsewhere).unwrap().count(), 0);
-        assert!(!data.exists());
-        fs::remove_dir_all(root).unwrap();
-    }
-
-    #[test]
-    fn a_memory_that_fails_is_a_warning_and_the_session_still_starts() {
-        let (root, memory, directory) = memory_setup("fails");
-        let blocked = root.join("data-is-a-file");
-        fs::write(&blocked, "x").unwrap();
-        let injection = injection(&root, &memory, &blocked, &directory, false);
-        assert!(injection.args.is_empty());
-        assert!(injection.warnings[0].starts_with("memory not loaded: "));
         fs::remove_dir_all(root).unwrap();
     }
 
