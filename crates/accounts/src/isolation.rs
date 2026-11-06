@@ -3,6 +3,7 @@
 //! belongs to the others. Those are rules of Claude Code, not a wall: its file tools and the
 //! file commands it recognizes obey them, a script that opens a file itself does not.
 
+use std::ffi::OsString;
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
@@ -15,13 +16,28 @@ use crate::paths::{MEMORY_ROOT_VARIABLE, Paths};
 use crate::registry;
 
 const RULE_TOOLS: [&str; 2] = ["Read", "Edit"];
+const GLOBAL_RULES_DIR: &str = "global";
 
 /// The settings of a session of an isolated account.
 #[derive(Debug, PartialEq, Eq)]
 pub struct IsolatedSettings {
     /// File to pass with `--settings`, in place of the shared one.
     pub file: PathBuf,
+    /// The rules of `global/` in the memory, if there are any.
+    pub global_rules: Option<PathBuf>,
     pub warnings: Vec<String>,
+}
+
+impl IsolatedSettings {
+    /// The options these settings add to a session.
+    pub fn args(&self) -> Vec<OsString> {
+        let mut args = vec![OsString::from("--settings"), self.file.clone().into_os_string()];
+        if let Some(rules) = &self.global_rules {
+            args.push(OsString::from("--append-system-prompt-file"));
+            args.push(rules.clone().into_os_string());
+        }
+        args
+    }
 }
 
 /// `default`, Claude Code's own configuration, can be isolated without being an account:
@@ -119,9 +135,24 @@ fn deny_rules(protected: &[PathBuf]) -> Vec<String> {
     rules
 }
 
+fn with_unique(mut list: Vec<Value>, items: &[String]) -> Vec<Value> {
+    for item in items {
+        let item = Value::String(item.clone());
+        if !list.contains(&item) {
+            list.push(item);
+        }
+    }
+    list
+}
+
+/// `~/CLAUDE.md`, which Claude Code loads for any session under the home folder.
+fn excluded_instructions(paths: &Paths) -> Vec<String> {
+    paths.home().map(|home| home.join("CLAUDE.md").to_string_lossy().replace('\\', "/")).into_iter().collect()
+}
+
 /// The shared settings plus the rules, in one file: Claude Code keeps only the last `--settings`.
 /// Settings that cannot be read as an object are left out, and the reason comes back.
-fn settings_with_rules(shared: Option<&str>, rules: &[String]) -> (String, Option<String>) {
+fn settings_with_rules(shared: Option<&str>, rules: &[String], excluded: &[String]) -> (String, Option<String>) {
     let (mut settings, problem) = match shared.map(serde_json::from_str::<Map<String, Value>>) {
         Some(Ok(settings)) => (settings, None),
         Some(Err(error)) => (Map::new(), Some(error.to_string())),
@@ -131,18 +162,17 @@ fn settings_with_rules(shared: Option<&str>, rules: &[String]) -> (String, Optio
         Some(Value::Object(permissions)) => permissions,
         _ => Map::new(),
     };
-    let mut deny = match permissions.remove("deny") {
+    let deny = match permissions.remove("deny") {
         Some(Value::Array(deny)) => deny,
         _ => Vec::new(),
     };
-    for rule in rules {
-        let rule = Value::String(rule.clone());
-        if !deny.contains(&rule) {
-            deny.push(rule);
-        }
-    }
-    permissions.insert("deny".to_string(), Value::Array(deny));
+    permissions.insert("deny".to_string(), Value::Array(with_unique(deny, rules)));
     settings.insert("permissions".to_string(), Value::Object(permissions));
+    let excludes = match settings.remove("claudeMdExcludes") {
+        Some(Value::Array(excludes)) => excludes,
+        _ => Vec::new(),
+    };
+    settings.insert("claudeMdExcludes".to_string(), Value::Array(with_unique(excludes, excluded)));
     (format!("{}\n", Value::Object(settings)), problem)
 }
 
@@ -169,17 +199,47 @@ fn memory_root(paths: &Paths) -> Option<PathBuf> {
         .or_else(|| paths.default_memory_root())
 }
 
+/// The files of `global/`, joined. `None` when there is nothing to give.
+fn global_rules_text(memory_root: &Path) -> io::Result<Option<String>> {
+    let mut parts = Vec::new();
+    for file in files::files_under(&memory_root.join(GLOBAL_RULES_DIR))? {
+        let text = fs::read_to_string(file)?;
+        if !text.trim().is_empty() {
+            parts.push(text.trim().to_string());
+        }
+    }
+    Ok((!parts.is_empty()).then(|| parts.join("\n\n")))
+}
+
+/// Writes the rules of `global/` for a session of `name`. These rules protect nothing, so what
+/// goes wrong here is a warning and the session still starts.
+fn write_global_rules(paths: &Paths, name: &str, memory_root: &Path, warnings: &mut Vec<String>) -> Option<PathBuf> {
+    let file = paths.shared_settings_file(name).with_extension("md");
+    let written = global_rules_text(memory_root).and_then(|text| match text {
+        Some(text) => write_settings(&file, &text).map(|()| true),
+        None => Ok(false),
+    });
+    match written {
+        Ok(true) => Some(file),
+        Ok(false) => None,
+        Err(error) => {
+            warnings.push(format!("rules of {} not loaded: {error}", memory_root.join(GLOBAL_RULES_DIR).display()));
+            None
+        }
+    }
+}
+
 fn settings_for(paths: &Paths, name: &str, memory_root: Option<PathBuf>) -> Result<Option<IsolatedSettings>> {
     if !registry::is_isolated(paths, name)? {
         return Ok(None);
     }
-    let (protected, mut warnings) = protected_paths(paths, name, memory_root)?;
+    let (protected, mut warnings) = protected_paths(paths, name, memory_root.clone())?;
     let source = paths.shared_root.join("settings.json");
     let (shared, unreadable) = match read_if_present(&source) {
         Ok(text) => (text, None),
         Err(error) => (None, Some(error.to_string())),
     };
-    let (content, invalid) = settings_with_rules(shared.as_deref(), &deny_rules(&protected));
+    let (content, invalid) = settings_with_rules(shared.as_deref(), &deny_rules(&protected), &excluded_instructions(paths));
     if let Some(problem) = unreadable.or(invalid) {
         warnings.push(format!("{}: left out of this isolated session: {problem}", source.display()));
     }
@@ -187,7 +247,8 @@ fn settings_for(paths: &Paths, name: &str, memory_root: Option<PathBuf>) -> Resu
     if let Err(error) = write_settings(&file, &content) {
         return fail(format!("not starting isolated account {name}: cannot write {}: {error}", file.display()));
     }
-    Ok(Some(IsolatedSettings { file, warnings }))
+    let global_rules = memory_root.and_then(|root| write_global_rules(paths, name, &root, &mut warnings));
+    Ok(Some(IsolatedSettings { file, global_rules, warnings }))
 }
 
 /// The settings of a session of `name`, if it is isolated. Refuses rather than start an isolated
@@ -300,7 +361,7 @@ mod tests {
     fn a_rule_already_there_is_not_added_twice() {
         let rule = "Read(//x/**)".to_string();
         let shared = format!("{{\"permissions\":{{\"deny\":[\"{rule}\"]}}}}");
-        let (content, problem) = settings_with_rules(Some(&shared), std::slice::from_ref(&rule));
+        let (content, problem) = settings_with_rules(Some(&shared), std::slice::from_ref(&rule), &[]);
         assert_eq!(problem, None);
         assert_eq!(content.matches(&rule).count(), 1);
     }
@@ -338,6 +399,78 @@ mod tests {
         assert!(!deny.iter().any(|rule| rule.contains("relative") || rule.contains("comment")));
         assert_eq!(settings.warnings.len(), 1);
         assert!(settings.warnings[0].contains("relative/path"));
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    fn memory_file(memory: &Path, relative: &str, text: &str) {
+        let file = memory.join(relative);
+        fs::create_dir_all(file.parent().unwrap()).unwrap();
+        fs::write(file, text).unwrap();
+    }
+
+    #[test]
+    fn a_session_gets_global_and_nothing_else_from_the_memory() {
+        let (root, paths) = setup("global", &["work"]);
+        isolate(&paths, "work").unwrap();
+        let memory = root.join("memory");
+        memory_file(&memory, "global/a.md", "RULE-A\n");
+        memory_file(&memory, "global/sub/b.md", "RULE-B\n");
+        memory_file(&memory, "global/empty.md", "  \n");
+        memory_file(&memory, "setup/machine.md", "MACHINE");
+        memory_file(&memory, "perso/profil.md", "PERSONAL");
+        memory_file(&memory, "projets/x/INDEX.md", "PROJECT");
+        memory_file(&memory, "skills/s/SKILL.md", "SKILL");
+        let settings = settings_for(&paths, "work", Some(memory)).unwrap().unwrap();
+        let rules = settings.global_rules.clone().unwrap();
+        assert_eq!(fs::read_to_string(&rules).unwrap(), "RULE-A\n\nRULE-B");
+        assert_eq!(
+            settings.args(),
+            [
+                OsString::from("--settings"),
+                settings.file.clone().into_os_string(),
+                OsString::from("--append-system-prompt-file"),
+                rules.into_os_string(),
+            ]
+        );
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn without_global_there_is_no_option_and_no_warning() {
+        let (root, paths) = setup("no-global", &["work"]);
+        isolate(&paths, "work").unwrap();
+        let settings = settings_for(&paths, "work", Some(root.join("memory"))).unwrap().unwrap();
+        assert_eq!(settings.global_rules, None);
+        assert!(settings.warnings.is_empty());
+        assert_eq!(settings.args().len(), 2);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn global_that_cannot_be_read_is_a_warning_and_the_session_starts() {
+        let (root, paths) = setup("bad-global", &["work"]);
+        isolate(&paths, "work").unwrap();
+        let memory = root.join("memory");
+        memory_file(&memory, "global", "a file, not a folder");
+        let settings = settings_for(&paths, "work", Some(memory)).unwrap().unwrap();
+        assert_eq!(settings.global_rules, None);
+        assert_eq!(settings.warnings.len(), 1);
+        assert!(settings.warnings[0].contains("not loaded"), "{:?}", settings.warnings);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn the_instructions_of_the_home_folder_are_excluded_and_other_exclusions_kept() {
+        let (root, paths) = setup("excludes", &["work"]);
+        isolate(&paths, "work").unwrap();
+        fs::create_dir_all(&paths.shared_root).unwrap();
+        fs::write(paths.shared_root.join("settings.json"), r#"{"claudeMdExcludes":["/already/CLAUDE.md"]}"#).unwrap();
+        let file = settings_for(&paths, "work", None).unwrap().unwrap().file;
+        let settings: Value = serde_json::from_str(&fs::read_to_string(file).unwrap()).unwrap();
+        let excludes = settings["claudeMdExcludes"].as_array().unwrap();
+        let home = root.join("CLAUDE.md").to_string_lossy().replace('\\', "/");
+        assert!(excludes.contains(&Value::String(home)), "{excludes:?}");
+        assert!(excludes.contains(&Value::String("/already/CLAUDE.md".to_string())), "{excludes:?}");
         fs::remove_dir_all(root).unwrap();
     }
 

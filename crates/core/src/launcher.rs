@@ -112,10 +112,9 @@ fn run_backgrounded(mut command: Command, directory: &Path) -> Result<String, St
     parse_backgrounded_id(&text).ok_or_else(|| format!("no session id in: {}", text.trim()))
 }
 
-/// What the memory adds to this session. An isolated account receives nothing: its rules keep it
-/// out of these notes (see `kindric_accounts::isolation`), and they are not a wall, so nothing is
-/// handed to it here. A project without a zone receives nothing either. Nothing here can stop the
-/// session from starting.
+/// What the memory adds to this session. An isolated account receives nothing here: it gets
+/// `global/` alone from `kindric_accounts::isolation`, with its rules against reading the rest. A
+/// project without a zone receives nothing either. Nothing here can stop the session from starting.
 fn injection_for(memory: &Memory, data_dir: &Path, request: &Request, isolated: bool) -> Injection {
     let Some(project) = request.project.as_deref() else {
         return Injection::default();
@@ -163,13 +162,11 @@ pub fn launch(request: &Request) -> Result<Launched, String> {
     Ok(Launched { short_id, warnings })
 }
 
-/// The read rules of the implicit `default`, when it is isolated. Claude Code adds them to the
-/// settings it reads there.
+/// The options of the implicit `default`, when it is isolated. Claude Code adds these settings to
+/// the ones it reads there.
 fn default_settings(paths: &Paths) -> Result<(Vec<OsString>, Vec<String>), String> {
     let settings = isolation::prepare_settings(paths, registry::DEFAULT_ACCOUNT).map_err(library_error)?;
-    Ok(settings.map_or_else(Default::default, |settings| {
-        (vec![OsString::from("--settings"), settings.file.into_os_string()], settings.warnings)
-    }))
+    Ok(settings.map_or_else(Default::default, |settings| (settings.args(), settings.warnings)))
 }
 
 /// `claude --bg` on the implicit `default`: Claude Code reads its own settings and MCP

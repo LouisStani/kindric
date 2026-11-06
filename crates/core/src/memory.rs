@@ -8,7 +8,7 @@ use std::path::{Component, Path, PathBuf};
 
 use kindric_accounts::Paths;
 use kindric_accounts::paths::MEMORY_ROOT_VARIABLE;
-use kindric_accounts::files::create_private_dir;
+use kindric_accounts::files::{create_private_dir, files_under};
 
 #[cfg(unix)]
 use std::os::unix::fs::OpenOptionsExt;
@@ -185,26 +185,6 @@ fn read_text_if_present(path: &Path) -> io::Result<String> {
 
 /// The files of `dir` and its subfolders in name order; none if it does not exist. Links are
 /// not followed, like in `dir_size`.
-fn files_under(dir: &Path) -> io::Result<Vec<PathBuf>> {
-    let entries = match fs::read_dir(dir) {
-        Ok(entries) => entries,
-        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(Vec::new()),
-        Err(error) => return Err(error),
-    };
-    let mut paths: Vec<_> = entries.map(|entry| entry.map(|entry| entry.path())).collect::<io::Result<_>>()?;
-    paths.sort();
-    let mut files = Vec::new();
-    for path in paths {
-        let kind = fs::symlink_metadata(&path)?.file_type();
-        if kind.is_dir() {
-            files.extend(files_under(&path)?);
-        } else if kind.is_file() {
-            files.push(path);
-        }
-    }
-    Ok(files)
-}
-
 /// A missing file weighs nothing.
 fn file_size(path: &Path) -> io::Result<u64> {
     match fs::symlink_metadata(path) {
