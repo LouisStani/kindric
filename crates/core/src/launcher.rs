@@ -121,10 +121,10 @@ pub fn launch(request: &Request) -> Result<Launched, String> {
 }
 
 /// The options of the implicit `default`, when it is isolated. Claude Code adds these settings to
-/// the ones it reads there.
+/// the ones it reads there. A `--bg` launch opens a conversation, so its rules of `global/` come too.
 fn default_settings(paths: &Paths) -> Result<(Vec<OsString>, Vec<String>), String> {
     let settings = isolation::prepare_settings(paths, registry::DEFAULT_ACCOUNT).map_err(library_error)?;
-    Ok(settings.map_or_else(Default::default, |settings| (settings.args(), settings.warnings)))
+    Ok(settings.map_or_else(Default::default, |settings| (settings.args(true), settings.warnings)))
 }
 
 /// `claude --bg` on the implicit `default`: Claude Code reads its own settings and MCP
