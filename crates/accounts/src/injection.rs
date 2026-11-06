@@ -7,7 +7,7 @@ use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
 
-use kindric_accounts::files::{create_private_dir, write_atomic};
+use crate::files::{create_private_dir, write_atomic};
 
 use crate::generate::{self, Outcome};
 use crate::memory::{Memory, WARNING_BYTES};

@@ -6,9 +6,12 @@
 pub mod account;
 pub mod error;
 pub mod files;
+pub mod generate;
+pub mod injection;
 pub mod isolation;
 pub mod launch;
 pub mod mcp;
+pub mod memory;
 pub mod paths;
 pub mod registry;
 pub mod shared;

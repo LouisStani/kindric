@@ -5,12 +5,12 @@ use std::fs;
 use std::path::{Path, PathBuf, is_separator};
 use std::process::{Command, Stdio};
 
+use kindric_accounts::injection::{self, Injection};
+use kindric_accounts::memory::Memory;
 use kindric_accounts::{Paths, isolation, launch, mcp, registry};
 
 use crate::accounts;
-use crate::injection::{self, Injection};
 use crate::mailbox;
-use crate::memory::Memory;
 
 #[derive(Debug, PartialEq, Eq)]
 pub struct Request {
