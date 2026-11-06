@@ -263,6 +263,19 @@ test_isolation() {
 		"$(printf '.permissions.deny | index("Read(/%s/.kindric/memory/**)") != null' "$HOME")" "$isolated_settings"
 	check "règles : son propre dossier reste lisible" json_true \
 		"$(printf '.permissions.deny | index("Read(/%s/**)") == null' "$(data_dir work)")" "$isolated_settings"
+	check "règles : ~/CLAUDE.md exclu" json_true \
+		"$(printf '.claudeMdExcludes | index("%s/CLAUDE.md") != null' "$HOME")" "$isolated_settings"
+	mkdir -p "$HOME/.kindric/memory/global" "$HOME/.kindric/memory/setup"
+	printf 'REGLE-GLOBALE\n' >"$HOME/.kindric/memory/global/regles.md"
+	printf 'NOTE-MACHINE\n' >"$HOME/.kindric/memory/setup/machine.md"
+	out=$(ca run work)
+	local global_rules="${isolated_settings%.json}.md"
+	check "compte isolé lancé avec global/" grep -qF -- "--append-system-prompt-file $global_rules" <<<"$out"
+	check "global/ transmis" grep -qxF 'REGLE-GLOBALE' "$global_rules"
+	check "setup/ non transmis" bash -c '! grep -qF NOTE-MACHINE "$0"' "$global_rules"
+	check "compte non isolé : pas de global/" bash -c \
+		'! "$0" run pro1 | grep -qF -- --append-system-prompt-file' "$SCRIPT"
+	rm -rf -- "$HOME/.kindric"
 	check "compte non isolé : réglages partagés, sans règles" grep -qF -- \
 		"--settings $HOME/.claude/settings.json" <<<"$(ca run pro1)"
 	rm -f -- "$(data_dir pro2)/.claude.json"

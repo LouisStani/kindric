@@ -5,7 +5,7 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use crate::error::{Result, fail};
-use crate::isolation;
+use crate::isolation::{self, IsolatedSettings};
 use crate::paths::Paths;
 use crate::registry;
 use crate::shared;
@@ -55,16 +55,17 @@ pub fn require_account(paths: &Paths, name: &str) -> Result<PathBuf> {
     Ok(dir)
 }
 
-/// Arguments placed before the user's: `--settings` with `isolated_settings` for an isolated
-/// account, else with `~/.claude/settings.json` when it exists, and `--mcp-config=<file>` (the
-/// `=` form: the option takes several values and would swallow the next arguments otherwise).
-pub fn claude_args(paths: &Paths, isolated_settings: Option<&Path>, mcp_config: Option<&Path>) -> Vec<OsString> {
+/// Arguments placed before the user's: the options of an isolated account, else `--settings`
+/// when `~/.claude/settings.json` exists, and `--mcp-config=<file>` (the `=` form: the option
+/// takes several values and would swallow the next arguments otherwise).
+pub fn claude_args(paths: &Paths, isolated: Option<&IsolatedSettings>, mcp_config: Option<&Path>) -> Vec<OsString> {
     let mut args = Vec::new();
     let shared = paths.shared_root.join("settings.json");
-    let settings = isolated_settings.map(Path::to_path_buf).or_else(|| shared.is_file().then_some(shared));
-    if let Some(settings) = settings {
+    if let Some(isolated) = isolated {
+        args.extend(isolated.args());
+    } else if shared.is_file() {
         args.push(OsString::from("--settings"));
-        args.push(settings.into_os_string());
+        args.push(shared.into_os_string());
     }
     if let Some(file) = mcp_config {
         let mut option = OsString::from("--mcp-config=");
@@ -86,8 +87,7 @@ pub fn prepare(paths: &Paths, name: &str, mcp_config: Option<&Path>, user_args: 
     let claude = require_claude()?;
     let mut warnings = shared::link_shared(&paths.shared_root, &dir)?;
     let isolated = isolation::prepare_settings(paths, name)?;
-    let isolated_settings = isolated.as_ref().map(|settings| settings.file.as_path());
-    let args = claude_args(paths, isolated_settings, mcp_config);
+    let args = claude_args(paths, isolated.as_ref(), mcp_config);
     if let Some(settings) = &isolated {
         warnings.extend(settings.warnings.iter().cloned());
     }
@@ -154,9 +154,14 @@ mod tests {
         let paths = Paths::from_roots(root.join("c"), root.join("d"), root.clone());
         fs::create_dir_all(&paths.shared_root).unwrap();
         fs::write(paths.shared_root.join("settings.json"), "{}").unwrap();
-        let isolated = Path::new("/x/isolated.json");
-        let args = claude_args(&paths, Some(isolated), None);
-        assert_eq!(args, [OsString::from("--settings"), isolated.as_os_str().to_os_string()]);
+        let isolated = IsolatedSettings {
+            file: PathBuf::from("/x/isolated.json"),
+            global_rules: Some(PathBuf::from("/x/isolated.md")),
+            warnings: Vec::new(),
+        };
+        let args = claude_args(&paths, Some(&isolated), None);
+        assert_eq!(args, isolated.args());
+        assert!(!args.contains(&paths.shared_root.join("settings.json").into_os_string()));
         fs::remove_dir_all(root).unwrap();
     }
 

@@ -177,6 +177,8 @@ Isolation applies from the next launch. Sessions already running keep the server
 
 Its sessions also get `permissions.deny` rules against reading and editing the folders of the other accounts, the transcripts in `~/.claude/projects` and the data and memory of kindric. To add your own paths, list them in `~/.config/claude-accounts/isolated-deny`, one absolute path or `~/...` per line, `#` for comments. If these rules cannot be written, the session does not start.
 
+Its sessions also receive the files of `~/.kindric/memory/global`, if there are any, and nothing else from that folder. They do not load `~/CLAUDE.md`, which Claude Code would otherwise read for any folder under your home.
+
 These are rules of Claude Code, not a wall. Its file tools and the file commands it recognizes in Bash obey them. A script that opens a file itself, or a `grep -r` run from inside the folder, does not. For a real barrier, run the account under another system user.
 
 [kindric](https://github.com/LouisStani/kindric) also keeps isolated accounts out of its messages between sessions. It shows Claude Code's own configuration, `~/.claude`, as an account named `default`: `kindric-accounts isolate default` keeps it out of messages too, although it is not an account of this list. kindric-accounts shares no MCP servers with it either way.

@@ -3,10 +3,31 @@
 
 use std::fs::{self, OpenOptions};
 use std::io::{self, Write};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 #[cfg(unix)]
 use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt, PermissionsExt};
+
+/// The files under `dir`, sorted, folders included and links left out. A missing folder holds none.
+pub fn files_under(dir: &Path) -> io::Result<Vec<PathBuf>> {
+    let entries = match fs::read_dir(dir) {
+        Ok(entries) => entries,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(error) => return Err(error),
+    };
+    let mut paths: Vec<_> = entries.map(|entry| entry.map(|entry| entry.path())).collect::<io::Result<_>>()?;
+    paths.sort();
+    let mut files = Vec::new();
+    for path in paths {
+        let kind = fs::symlink_metadata(&path)?.file_type();
+        if kind.is_dir() {
+            files.extend(files_under(&path)?);
+        } else if kind.is_file() {
+            files.push(path);
+        }
+    }
+    Ok(files)
+}
 
 pub fn create_private_dir(path: &Path) -> io::Result<()> {
     let mut builder = fs::DirBuilder::new();
