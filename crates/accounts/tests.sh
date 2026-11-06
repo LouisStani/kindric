@@ -272,6 +272,9 @@ test_isolation() {
 	local global_rules="${isolated_settings%.json}.md"
 	check "compte isolé lancé avec global/" grep -qF -- "--append-system-prompt-file $global_rules" <<<"$out"
 	check "global/ transmis" grep -qxF 'REGLE-GLOBALE' "$global_rules"
+	out=$(ca run work attach 378ce649)
+	check "compte isolé, sous-commande : réglages sans global/" bash -c \
+		'grep -qF -- "--settings $1" <<<"$0" && ! grep -qF -- --append-system-prompt-file <<<"$0"' "$out" "$isolated_settings"
 	check "setup/ non transmis" bash -c '! grep -qF NOTE-MACHINE "$0"' "$global_rules"
 	check "compte non isolé : pas de global/" bash -c \
 		'! "$0" run pro1 | grep -qF -- --append-system-prompt-file' "$SCRIPT"

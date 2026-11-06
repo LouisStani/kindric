@@ -29,10 +29,11 @@ pub struct IsolatedSettings {
 }
 
 impl IsolatedSettings {
-    /// The options these settings add to a session.
-    pub fn args(&self) -> Vec<OsString> {
+    /// The options these settings add to a session. The rules of `global/` go only to a launch
+    /// that opens a conversation; the settings, which hold what may not be read, go to every one.
+    pub fn args(&self, conversation: bool) -> Vec<OsString> {
         let mut args = vec![OsString::from("--settings"), self.file.clone().into_os_string()];
-        if let Some(rules) = &self.global_rules {
+        if let Some(rules) = self.global_rules.as_ref().filter(|_| conversation) {
             args.push(OsString::from("--append-system-prompt-file"));
             args.push(rules.clone().into_os_string());
         }
@@ -423,8 +424,9 @@ mod tests {
         let settings = settings_for(&paths, "work", Some(memory)).unwrap().unwrap();
         let rules = settings.global_rules.clone().unwrap();
         assert_eq!(fs::read_to_string(&rules).unwrap(), "RULE-A\n\nRULE-B");
+        assert_eq!(settings.args(false), [OsString::from("--settings"), settings.file.clone().into_os_string()]);
         assert_eq!(
-            settings.args(),
+            settings.args(true),
             [
                 OsString::from("--settings"),
                 settings.file.clone().into_os_string(),
@@ -442,7 +444,7 @@ mod tests {
         let settings = settings_for(&paths, "work", Some(root.join("memory"))).unwrap().unwrap();
         assert_eq!(settings.global_rules, None);
         assert!(settings.warnings.is_empty());
-        assert_eq!(settings.args().len(), 2);
+        assert_eq!(settings.args(true).len(), 2);
         fs::remove_dir_all(root).unwrap();
     }
 
