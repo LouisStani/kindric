@@ -60,8 +60,7 @@ pub fn data_dir() -> io::Result<PathBuf> {
 }
 
 fn data_dir_for(paths: &Paths) -> io::Result<PathBuf> {
-    let data = paths.data_root.parent().ok_or_else(|| io::Error::other("claude-accounts data has no parent"))?;
-    Ok(data.join("kindric"))
+    paths.kindric_data_dir().ok_or_else(|| io::Error::other("claude-accounts data has no parent"))
 }
 
 /// `mailbox` in the data directory.

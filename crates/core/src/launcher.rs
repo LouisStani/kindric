@@ -5,7 +5,7 @@ use std::fs;
 use std::path::{Path, PathBuf, is_separator};
 use std::process::{Command, Stdio};
 
-use kindric_accounts::{Paths, launch, mcp, registry};
+use kindric_accounts::{Paths, isolation, launch, mcp, registry};
 
 use crate::accounts;
 use crate::injection::{self, Injection};
@@ -112,9 +112,10 @@ fn run_backgrounded(mut command: Command, directory: &Path) -> Result<String, St
     parse_backgrounded_id(&text).ok_or_else(|| format!("no session id in: {}", text.trim()))
 }
 
-/// What the memory adds to this session. An isolated account receives nothing: only a sandbox
-/// can keep its sessions out of the personal notes, and it does not exist yet. A project without
-/// a zone receives nothing either. Nothing here can stop the session from starting.
+/// What the memory adds to this session. An isolated account receives nothing: its rules keep it
+/// out of these notes (see `kindric_accounts::isolation`), and they are not a wall, so nothing is
+/// handed to it here. A project without a zone receives nothing either. Nothing here can stop the
+/// session from starting.
 fn injection_for(memory: &Memory, data_dir: &Path, request: &Request, isolated: bool) -> Injection {
     let Some(project) = request.project.as_deref() else {
         return Injection::default();
@@ -162,18 +163,29 @@ pub fn launch(request: &Request) -> Result<Launched, String> {
     Ok(Launched { short_id, warnings })
 }
 
+/// The read rules of the implicit `default`, when it is isolated. Claude Code adds them to the
+/// settings it reads there.
+fn default_settings(paths: &Paths) -> Result<(Vec<OsString>, Vec<String>), String> {
+    let settings = isolation::prepare_settings(paths, registry::DEFAULT_ACCOUNT).map_err(library_error)?;
+    Ok(settings.map_or_else(Default::default, |settings| {
+        (vec![OsString::from("--settings"), settings.file.into_os_string()], settings.warnings)
+    }))
+}
+
 /// `claude --bg` on the implicit `default`: Claude Code reads its own settings and MCP
 /// servers there, so only the environment is cleaned.
 fn launch_default(paths: &Paths, request: &Request) -> Result<Launched, String> {
     let claude = launch::require_claude().map_err(library_error)?;
+    let (settings, settings_warnings) = default_settings(paths)?;
     let mut command = Command::new(claude);
     for variable in accounts::default_removed_env() {
         command.env_remove(variable);
     }
     let memory = memory_injection(paths, request);
-    command.args(background_args(&request.name)).args(memory.args);
+    command.args(settings).args(background_args(&request.name)).args(memory.args);
     let short_id = run_backgrounded(command, &request.directory)?;
-    Ok(Launched { short_id, warnings: memory.warnings })
+    let warnings = settings_warnings.into_iter().chain(memory.warnings).collect();
+    Ok(Launched { short_id, warnings })
 }
 
 #[cfg(test)]
@@ -195,6 +207,21 @@ mod tests {
 
     fn request(directory: PathBuf, project: Option<&str>) -> Request {
         Request { account: "a".into(), directory, name: String::new(), project: project.map(String::from) }
+    }
+
+    #[test]
+    fn the_implicit_default_gets_read_rules_only_when_isolated() {
+        let root = std::env::temp_dir().join(format!("kindric-default-settings-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        let paths = Paths::from_roots(root.join("config"), root.join("data"), root.clone());
+        assert_eq!(default_settings(&paths).unwrap(), (Vec::new(), Vec::new()));
+        kindric_accounts::isolation::isolate(&paths, registry::DEFAULT_ACCOUNT).unwrap();
+        let (args, warnings) = default_settings(&paths).unwrap();
+        let file = paths.shared_settings_file(registry::DEFAULT_ACCOUNT);
+        assert_eq!(args, [OsString::from("--settings"), file.clone().into_os_string()]);
+        assert!(warnings.is_empty());
+        assert!(fs::read_to_string(file).unwrap().contains("deny"));
+        fs::remove_dir_all(root).unwrap();
     }
 
     #[test]
