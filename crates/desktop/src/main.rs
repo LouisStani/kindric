@@ -164,6 +164,14 @@ fn remember_account(app: &AppHandle, shared: &Shared, created: &Created) -> Resu
     Ok(())
 }
 
+/// The memory line of a project tab's tooltip, read at each hover: a zone declared since shows at
+/// once.
+#[tauri::command(async)]
+fn memory_zone(shared: State<'_, Shared>, directory: String) -> String {
+    let _span = shared.trace.span("memory_zone");
+    projects::memory_label(launcher::memory_zone(std::path::Path::new(&directory)))
+}
+
 /// The folders a directory field offers before anything is typed.
 #[tauri::command(async)]
 fn known_directories(shared: State<'_, Shared>) -> Vec<String> {
@@ -702,6 +710,7 @@ fn main() -> ExitCode {
             add_messages_server,
             known_directories,
             complete_directory,
+            memory_zone,
             tabs,
             split_pane,
             close_pane,

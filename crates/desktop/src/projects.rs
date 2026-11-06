@@ -32,9 +32,32 @@ pub fn owner<'a, T>(directory: &Path, projects: impl IntoIterator<Item = (T, &'a
         .map(|(id, _)| id)
 }
 
+/// What a project tab's tooltip says about the memory its sessions receive, from
+/// `kindric_core::launcher::memory_zone`.
+pub fn memory_label(found: Result<(Option<String>, Vec<String>), String>) -> String {
+    let (zone, warnings) = match found {
+        Ok(found) => found,
+        Err(error) => return format!("memory not read: {error}"),
+    };
+    let first = zone.map_or_else(|| "memory: no zone".to_string(), |zone| format!("memory: zone {zone}"));
+    std::iter::once(first).chain(warnings).collect::<Vec<_>>().join("\n")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_tooltip_names_the_zone_and_what_could_not_be_read() {
+        assert_eq!(memory_label(Ok((Some("kindric".into()), Vec::new()))), "memory: zone kindric");
+        assert_eq!(memory_label(Ok((None, Vec::new()))), "memory: no zone");
+        let broken = vec!["projets/api/claude.md: the header is not closed by a --- line".to_string()];
+        assert_eq!(
+            memory_label(Ok((None, broken))),
+            "memory: no zone\nprojets/api/claude.md: the header is not closed by a --- line"
+        );
+        assert_eq!(memory_label(Err("HOME is not set".into())), "memory not read: HOME is not set");
+    }
 
     fn project(directory: &str) -> Project {
         Project::new(PathBuf::from(directory))
