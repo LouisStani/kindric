@@ -105,7 +105,6 @@ impl NewSessionForm {
             account: account.clone(),
             directory,
             name: self.name.trim().to_string(),
-            project: None,
         })
     }
 }
@@ -131,7 +130,7 @@ mod tests {
         let outcome = form.handle_key(key(KeyCode::Enter), &home);
         assert_eq!(
             outcome,
-            FormOutcome::Submit(Request { account: "lystriq".into(), directory: home.clone(), name: "api".into(), project: None })
+            FormOutcome::Submit(Request { account: "lystriq".into(), directory: home.clone(), name: "api".into() })
         );
     }
 

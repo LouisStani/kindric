@@ -99,11 +99,10 @@ struct Created {
     directory: PathBuf,
 }
 
-fn start_session(account: String, directory: &str, name: &str, known_projects: &[Project]) -> Result<Created, String> {
+fn start_session(account: String, directory: &str, name: &str) -> Result<Created, String> {
     let home = std::env::home_dir().ok_or("HOME is not set")?;
     let directory = resolve_directory(directory, &home)?;
-    let project = projects::owner(&directory, known_projects.iter().map(|project| (project.name.clone(), project)));
-    let request = Request { account, directory, name: name.trim().to_string(), project };
+    let request = Request { account, directory, name: name.trim().to_string() };
     let launched = launcher::launch(&request)?;
     Ok(Created { account: request.account, short_id: launched.short_id, warnings: launched.warnings, directory: request.directory })
 }
@@ -112,8 +111,7 @@ fn start_session(account: String, directory: &str, name: &str, known_projects: &
 #[tauri::command]
 async fn new_session(app: AppHandle, shared: State<'_, Shared>, account: String, directory: String, name: String) -> Result<Created, String> {
     let _span = shared.trace.span("new_session");
-    let known_projects = shared.workspace().tabs.projects();
-    let mut created = tauri::async_runtime::spawn_blocking(move || start_session(account, &directory, &name, &known_projects))
+    let mut created = tauri::async_runtime::spawn_blocking(move || start_session(account, &directory, &name))
         .await
         .map_err(|error| error.to_string())??;
     if let Err(error) = remember_account(&app, &shared, &created) {

@@ -7,6 +7,7 @@ use std::process::{Command, Stdio};
 
 use kindric_accounts::injection::{self, Injection};
 use kindric_accounts::memory::Memory;
+use kindric_accounts::paths::expand_home;
 use kindric_accounts::{Paths, isolation, launch, mcp, registry};
 
 use crate::accounts;
@@ -17,15 +18,6 @@ pub struct Request {
     pub account: String,
     pub directory: PathBuf,
     pub name: String,
-    /// The project holding `directory`: its memory zone, if it has one, goes to the session.
-    pub project: Option<String>,
-}
-
-pub fn expand_home(path: &str, home: &Path) -> PathBuf {
-    match path.strip_prefix('~') {
-        Some(rest) if rest.is_empty() || rest.starts_with('/') => home.join(rest.trim_start_matches('/')),
-        _ => PathBuf::from(path),
-    }
 }
 
 /// The directory typed in a new-session form, `~` expanded; refused if it does not exist.
@@ -112,33 +104,39 @@ fn run_backgrounded(mut command: Command, directory: &Path) -> Result<String, St
     parse_backgrounded_id(&text).ok_or_else(|| format!("no session id in: {}", text.trim()))
 }
 
-/// What the memory adds to this session. An isolated account receives nothing here: it gets
-/// `global/` alone from `kindric_accounts::isolation`, with its rules against reading the rest. A
-/// project without a zone receives nothing either. Nothing here can stop the session from starting.
-fn injection_for(memory: &Memory, data_dir: &Path, request: &Request, isolated: bool) -> Injection {
-    let Some(project) = request.project.as_deref() else {
-        return Injection::default();
-    };
-    if isolated || !memory.has_project(project) {
+fn not_loaded(error: impl std::fmt::Display) -> Injection {
+    Injection { args: Vec::new(), warnings: vec![format!("memory not loaded: {error}")] }
+}
+
+/// What the memory adds to this session: the zone whose folders hold its directory. An isolated
+/// account receives nothing here: it gets `global/` alone from `kindric_accounts::isolation`, with
+/// its rules against reading the rest, and no zone is even looked up. A directory outside every
+/// zone receives nothing either. Nothing here can stop the session from starting.
+fn injection_for(memory: &Memory, data_dir: &Path, home: &Path, request: &Request, isolated: bool) -> Injection {
+    if isolated {
         return Injection::default();
     }
-    injection::prepare(memory, data_dir, project, &request.directory).unwrap_or_else(|error| Injection {
-        args: Vec::new(),
-        warnings: vec![format!("memory not loaded: {error}")],
-    })
+    let lookup = match memory.zone_of(&request.directory, home) {
+        Ok(lookup) => lookup,
+        Err(error) => return not_loaded(error),
+    };
+    let Some(zone) = lookup.zone else {
+        return Injection { args: Vec::new(), warnings: lookup.warnings };
+    };
+    let mut injection = injection::prepare(memory, data_dir, &zone, &request.directory).unwrap_or_else(not_loaded);
+    injection.warnings.splice(0..0, lookup.warnings);
+    injection
 }
 
 /// When it cannot be told whether the account is isolated, the account counts as isolated.
 fn memory_injection(paths: &Paths, request: &Request) -> Injection {
-    if request.project.is_none() {
-        return Injection::default();
-    }
     let isolated = registry::is_isolated(paths, &request.account).unwrap_or(true);
+    let Some(home) = paths.home() else {
+        return not_loaded("the shared configuration has no parent");
+    };
     match (Memory::default_root(), mailbox::data_dir()) {
-        (Ok(root), Ok(data_dir)) => injection_for(&Memory::at(root), &data_dir, request, isolated),
-        (Err(error), _) | (_, Err(error)) => {
-            Injection { args: Vec::new(), warnings: vec![format!("memory not loaded: {error}")] }
-        }
+        (Ok(root), Ok(data_dir)) => injection_for(&Memory::at(root), &data_dir, home, request, isolated),
+        (Err(error), _) | (_, Err(error)) => not_loaded(error),
     }
 }
 
@@ -196,14 +194,19 @@ mod tests {
         let memory = Memory::at(root.join("memory"));
         memory.ensure_project("p").unwrap();
         fs::write(root.join("memory/global/rules.md"), "RULE").unwrap();
-        fs::write(root.join("memory/projets/p/claude.md"), "PROJECT RULES").unwrap();
         let directory = root.join("project");
+        let instructions = format!("---\ndirectory: {}\n---\nPROJECT RULES", directory.display());
+        fs::write(root.join("memory/projets/p/claude.md"), instructions).unwrap();
         fs::create_dir_all(&directory).unwrap();
         (root, memory, directory)
     }
 
-    fn request(directory: PathBuf, project: Option<&str>) -> Request {
-        Request { account: "a".into(), directory, name: String::new(), project: project.map(String::from) }
+    fn request(directory: PathBuf) -> Request {
+        Request { account: "a".into(), directory, name: String::new() }
+    }
+
+    fn injection(root: &Path, memory: &Memory, data_dir: &Path, directory: &Path, isolated: bool) -> Injection {
+        injection_for(memory, data_dir, &root.join("home"), &request(directory.to_path_buf()), isolated)
     }
 
     #[test]
@@ -224,9 +227,23 @@ mod tests {
     #[test]
     fn a_session_of_a_project_with_a_zone_receives_the_memory() {
         let (root, memory, directory) = memory_setup("zone");
-        let injection = injection_for(&memory, &root.join("data"), &request(directory.clone(), Some("p")), false);
+        fs::create_dir_all(directory.join("src")).unwrap();
+        let injection = injection(&root, &memory, &root.join("data"), &directory.join("src"), false);
         assert_eq!(injection.args.len(), 2);
-        assert!(directory.join("CLAUDE.md").is_file());
+        assert!(injection.warnings.is_empty(), "{:?}", injection.warnings);
+        assert!(directory.join("src/CLAUDE.md").is_file());
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn a_zone_that_cannot_be_read_is_a_warning_of_the_session() {
+        let (root, memory, directory) = memory_setup("broken-zone");
+        memory.ensure_project("broken").unwrap();
+        fs::write(root.join("memory/projets/broken/claude.md"), "---\ndirectory: ~/x\n").unwrap();
+        let injection = injection(&root, &memory, &root.join("data"), &directory, false);
+        assert_eq!(injection.args.len(), 2);
+        assert_eq!(injection.warnings.len(), 1);
+        assert!(injection.warnings[0].starts_with("projets/broken/claude.md: "));
         fs::remove_dir_all(root).unwrap();
     }
 
@@ -234,19 +251,20 @@ mod tests {
     fn an_isolated_account_receives_nothing_and_nothing_is_written() {
         let (root, memory, directory) = memory_setup("isolated");
         let data = root.join("data");
-        assert_eq!(injection_for(&memory, &data, &request(directory.clone(), Some("p")), true), Injection::default());
+        assert_eq!(injection(&root, &memory, &data, &directory, true), Injection::default());
         assert_eq!(fs::read_dir(&directory).unwrap().count(), 0);
         assert!(!data.exists());
         fs::remove_dir_all(root).unwrap();
     }
 
     #[test]
-    fn a_project_without_a_zone_or_no_project_receives_nothing_and_nothing_is_written() {
-        let (root, memory, directory) = memory_setup("no-zone");
+    fn a_directory_outside_every_zone_receives_nothing_and_nothing_is_written() {
+        let (root, memory, _) = memory_setup("no-zone");
         let data = root.join("data");
-        assert_eq!(injection_for(&memory, &data, &request(directory.clone(), Some("other")), false), Injection::default());
-        assert_eq!(injection_for(&memory, &data, &request(directory.clone(), None), false), Injection::default());
-        assert_eq!(fs::read_dir(&directory).unwrap().count(), 0);
+        let elsewhere = root.join("elsewhere");
+        fs::create_dir_all(&elsewhere).unwrap();
+        assert_eq!(injection(&root, &memory, &data, &elsewhere, false), Injection::default());
+        assert_eq!(fs::read_dir(&elsewhere).unwrap().count(), 0);
         assert!(!data.exists());
         fs::remove_dir_all(root).unwrap();
     }
@@ -256,7 +274,7 @@ mod tests {
         let (root, memory, directory) = memory_setup("fails");
         let blocked = root.join("data-is-a-file");
         fs::write(&blocked, "x").unwrap();
-        let injection = injection_for(&memory, &blocked, &request(directory, Some("p")), false);
+        let injection = injection(&root, &memory, &blocked, &directory, false);
         assert!(injection.args.is_empty());
         assert!(injection.warnings[0].starts_with("memory not loaded: "));
         fs::remove_dir_all(root).unwrap();
@@ -275,15 +293,6 @@ mod tests {
         assert_eq!(parse_backgrounded_id(output), Some("378ce649".into()));
         assert_eq!(parse_backgrounded_id("error: nope"), None);
         assert_eq!(parse_backgrounded_id("backgrounded · ../x · y"), None);
-    }
-
-    #[test]
-    fn home_is_expanded_only_at_the_start() {
-        let home = Path::new("/home/u");
-        assert_eq!(expand_home("~/Dev", home), PathBuf::from("/home/u/Dev"));
-        assert_eq!(expand_home("~", home), PathBuf::from("/home/u"));
-        assert_eq!(expand_home("~other/x", home), PathBuf::from("~other/x"));
-        assert_eq!(expand_home("/tmp", home), PathBuf::from("/tmp"));
     }
 
     #[test]

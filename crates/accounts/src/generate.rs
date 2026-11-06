@@ -41,15 +41,21 @@ pub fn render(source: &str) -> io::Result<Option<String>> {
 /// The header holds the project's access to the rest of the memory, and generated files can end
 /// up in a public repository: a header that is not closed is an error, never copied as text.
 fn without_header(source: &str) -> io::Result<&str> {
+    split_header(source).map(|(_, body)| body)
+}
+
+/// The header between the `---` lines, without them, and the body after. A source that does not
+/// open with `---` has an empty header. `source` has Unix line endings.
+pub(crate) fn split_header(source: &str) -> io::Result<(&str, &str)> {
     let Some(after_opening) = source.strip_prefix(HEADER_FENCE).and_then(|rest| rest.strip_prefix('\n')) else {
-        return Ok(source);
+        return Ok(("", source));
     };
     let mut position = 0;
     for line in after_opening.split_inclusive('\n') {
-        position += line.len();
         if line.trim_end_matches('\n') == HEADER_FENCE {
-            return Ok(&after_opening[position..]);
+            return Ok((&after_opening[..position], &after_opening[position + line.len()..]));
         }
+        position += line.len();
     }
     Err(io::Error::new(io::ErrorKind::InvalidData, "claude.md: the header is not closed by a --- line"))
 }

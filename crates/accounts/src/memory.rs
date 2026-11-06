@@ -7,8 +7,9 @@ use std::io;
 use std::path::{Component, Path, PathBuf};
 
 use crate::Paths;
-use crate::paths::MEMORY_ROOT_VARIABLE;
 use crate::files::{create_private_dir, files_under};
+use crate::generate::split_header;
+use crate::paths::{MEMORY_ROOT_VARIABLE, expand_home};
 
 #[cfg(unix)]
 use std::os::unix::fs::OpenOptionsExt;
@@ -27,12 +28,20 @@ const INSTRUCTIONS: &str = "claude.md";
 const SKILLS: &str = "skills.md";
 const INDEX: &str = "INDEX.md";
 const PROJECT_FILES: [&str; 3] = [INSTRUCTIONS, SKILLS, INDEX];
+const DIRECTORY_KEY: &str = "directory:";
 
 /// What a session of a project opens when it starts.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct StartupSize {
     pub bytes: u64,
     pub over_warning: bool,
+}
+
+/// The zone of a session's directory, and the zones that could not be read on the way.
+#[derive(Debug, Default, PartialEq, Eq)]
+pub struct ZoneLookup {
+    pub zone: Option<String>,
+    pub warnings: Vec<String>,
 }
 
 pub struct Memory {
@@ -56,6 +65,75 @@ impl Memory {
     /// a session starts as if this module did not exist.
     pub fn has_project(&self, project: &str) -> bool {
         self.zone(project).is_ok_and(|zone| zone.is_dir())
+    }
+
+    /// The zone whose folders hold `directory`, the deepest one when folders are nested; on a tie,
+    /// the first zone by name. A zone gives its folders in the header of its `claude.md`:
+    /// `directory: ~/Dev/api, ~/Dev/api-docs`. Paths are compared by component, like the tabs of
+    /// the app. A zone whose header cannot be read is a warning, and the search goes on.
+    pub fn zone_of(&self, directory: &Path, home: &Path) -> io::Result<ZoneLookup> {
+        let mut lookup = ZoneLookup::default();
+        let mut best: Option<(usize, String)> = None;
+        for zone in self.zone_names()? {
+            let folders = match self.declared_folders(&zone, home) {
+                Ok(folders) => folders,
+                Err(error) => {
+                    lookup.warnings.push(format!("{PROJECTS}/{zone}/{INSTRUCTIONS}: {error}"));
+                    continue;
+                }
+            };
+            for folder in folders {
+                let depth = folder.components().count();
+                if directory.starts_with(&folder) && best.as_ref().is_none_or(|(deepest, _)| depth > *deepest) {
+                    best = Some((depth, zone.clone()));
+                }
+            }
+        }
+        lookup.zone = best.map(|(_, zone)| zone);
+        Ok(lookup)
+    }
+
+    /// The zones, in name order.
+    fn zone_names(&self) -> io::Result<Vec<String>> {
+        let entries = match fs::read_dir(self.root.join(PROJECTS)) {
+            Ok(entries) => entries,
+            Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(Vec::new()),
+            Err(error) => return Err(error),
+        };
+        let mut names = Vec::new();
+        for entry in entries {
+            let entry = entry?;
+            let name = entry.file_name().to_string_lossy().into_owned();
+            if entry.file_type()?.is_dir() && is_single_folder_name(&name) {
+                names.push(name);
+            }
+        }
+        names.sort();
+        Ok(names)
+    }
+
+    /// The `directory:` folders of a zone's header, `~` read against `home`. A folder that is not
+    /// absolute is an error: it would depend on where the session starts.
+    fn declared_folders(&self, zone: &str, home: &Path) -> io::Result<Vec<PathBuf>> {
+        let source = self.instructions_source(zone)?.replace("\r\n", "\n");
+        let (header, _) = split_header(&source)?;
+        let mut folders = Vec::new();
+        for line in header.lines() {
+            let Some(value) = line.strip_prefix(DIRECTORY_KEY) else {
+                continue;
+            };
+            for text in value.split(',').map(str::trim).filter(|text| !text.is_empty()) {
+                let folder = expand_home(text, home);
+                if !folder.is_absolute() {
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        format!("directory {text:?} must start with ~ or be absolute"),
+                    ));
+                }
+                folders.push(folder);
+            }
+        }
+        Ok(folders)
     }
 
     /// What a session of `project` receives at startup besides its `CLAUDE.md`: `global/`,
@@ -455,5 +533,89 @@ mod tests {
         let root = scratch("empty");
         let size = Memory::at(root).startup_size("kindric", WARNING_BYTES).unwrap();
         assert_eq!(size, StartupSize { bytes: 0, over_warning: false });
+    }
+
+    fn zone_with(root: &Path, zone: &str, instructions: &str) {
+        let path = root.join("projets").join(zone).join("claude.md");
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        fs::write(path, instructions).unwrap();
+    }
+
+    /// The zone of `~/<relative>`, with `home` standing for `~`; no warning expected.
+    fn zone_of(memory: &Memory, home: &Path, relative: &str) -> Option<String> {
+        let lookup = memory.zone_of(&home.join(relative), home).unwrap();
+        assert!(lookup.warnings.is_empty(), "{:?}", lookup.warnings);
+        lookup.zone
+    }
+
+    #[test]
+    fn a_directory_belongs_to_the_zone_declaring_the_deepest_folder_holding_it() {
+        let root = scratch("zone-of");
+        let home = root.join("h");
+        zone_with(&root, "dev", "---\ndirectory: ~/Dev\n---\n");
+        zone_with(&root, "api", "---\naccess: skills/rust\ndirectory: ~/Dev/api, ~/Srv/api\n---\nrules\n");
+        zone_with(&root, "no-header", "directory: ~/Dev/api/src\n");
+        let memory = Memory::at(root.clone());
+        assert_eq!(zone_of(&memory, &home, "Dev/api/src").as_deref(), Some("api"));
+        assert_eq!(zone_of(&memory, &home, "Srv/api").as_deref(), Some("api"));
+        assert_eq!(zone_of(&memory, &home, "Dev/api2").as_deref(), Some("dev"), "compared by component");
+        assert_eq!(zone_of(&memory, &home, "Dev").as_deref(), Some("dev"));
+        assert_eq!(zone_of(&memory, &home, ""), None);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_folder_can_be_given_as_an_absolute_path() {
+        let root = scratch("zone-absolute");
+        zone_with(&root, "api", "---\ndirectory: /srv/api\n---\n");
+        let lookup = Memory::at(root.clone()).zone_of(Path::new("/srv/api/src"), Path::new("/h")).unwrap();
+        assert_eq!(lookup, ZoneLookup { zone: Some("api".into()), warnings: Vec::new() });
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn two_zones_on_the_same_folder_give_the_first_by_name() {
+        let root = scratch("zone-tie");
+        let home = root.join("h");
+        zone_with(&root, "b", "---\ndirectory: ~/x\n---\n");
+        zone_with(&root, "a", "---\ndirectory: ~/x\n---\n");
+        assert_eq!(zone_of(&Memory::at(root.clone()), &home, "x/y").as_deref(), Some("a"));
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn a_header_with_windows_line_endings_is_read() {
+        let root = scratch("zone-crlf");
+        let home = root.join("h");
+        zone_with(&root, "api", "---\r\ndirectory: ~/x\r\n---\r\n");
+        assert_eq!(zone_of(&Memory::at(root.clone()), &home, "x").as_deref(), Some("api"));
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn a_zone_that_cannot_be_read_is_a_warning_and_the_others_still_count() {
+        let root = scratch("zone-broken");
+        let home = root.join("h");
+        zone_with(&root, "open", "---\ndirectory: ~/x/y\n");
+        zone_with(&root, "relative", "---\ndirectory: Dev/x\n---\n");
+        zone_with(&root, "x", "---\ndirectory: ~/x\n---\n");
+        let lookup = Memory::at(root.clone()).zone_of(&home.join("x/y"), &home).unwrap();
+        assert_eq!(lookup.zone.as_deref(), Some("x"));
+        assert_eq!(lookup.warnings.len(), 2);
+        assert!(lookup.warnings[0].starts_with("projets/open/claude.md: "));
+        assert!(lookup.warnings[1].contains("\"Dev/x\" must start with ~ or be absolute"));
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn without_zones_no_directory_has_one() {
+        let root = scratch("zone-none");
+        let home = root.join("h");
+        assert_eq!(zone_of(&Memory::at(root.clone()), &home, "x"), None);
+        fs::create_dir_all(root.join("projets")).unwrap();
+        fs::write(root.join("projets/stray.md"), "---\ndirectory: ~/x\n---\n").unwrap();
+        assert_eq!(zone_of(&Memory::at(root.clone()), &home, "x"), None, "a file is not a zone");
+        fs::remove_dir_all(root).unwrap();
     }
 }

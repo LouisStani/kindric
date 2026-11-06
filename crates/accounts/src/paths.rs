@@ -8,6 +8,14 @@ use crate::error::{Result, fail};
 /// Names the folder of kindric's memory when it is not the default one.
 pub const MEMORY_ROOT_VARIABLE: &str = "KINDRIC_MEMORY_DIR";
 
+/// `~` or `~/…` read against `home`; any other path as it is.
+pub fn expand_home(path: &str, home: &Path) -> PathBuf {
+    match path.strip_prefix('~') {
+        Some(rest) if rest.is_empty() || rest.starts_with('/') => home.join(rest.trim_start_matches('/')),
+        _ => PathBuf::from(path),
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Paths {
     /// Account list and isolated list.
@@ -94,6 +102,15 @@ impl Paths {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn home_is_expanded_only_at_the_start() {
+        let home = Path::new("/home/u");
+        assert_eq!(expand_home("~/Dev", home), PathBuf::from("/home/u/Dev"));
+        assert_eq!(expand_home("~", home), PathBuf::from("/home/u"));
+        assert_eq!(expand_home("~other/x", home), PathBuf::from("~other/x"));
+        assert_eq!(expand_home("/tmp", home), PathBuf::from("/tmp"));
+    }
 
     #[test]
     fn layout_matches_the_bash_script() {
