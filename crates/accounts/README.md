@@ -140,6 +140,7 @@ Each account gets its own `CLAUDE_CONFIG_DIR`.
 | `CLAUDE.md`, `skills/`, `agents/`, `commands/`, `plugins/`, `themes/` | Symbolic links to `~/.claude` (see Windows below) |
 | `settings.json` | Read from `~/.claude/settings.json` and passed with `--settings` |
 | MCP servers of the other accounts | Merged at launch and passed with `--mcp-config` |
+| Read rules of an isolated account | Written at launch to `~/.local/share/claude-accounts/.shared-settings/<name>.json`, with `settings.json`, and passed with `--settings` |
 
 Links are checked on every launch. On Linux and macOS, account directories use `700` permissions and the account list uses `600`.
 
@@ -173,6 +174,10 @@ kindric-accounts isolate work
 An isolated account gives its MCP servers to no other account and receives none from them. Its own servers, added in that account, still work. It keeps the shared `CLAUDE.md`, skills, agents, commands, plugins, themes and settings.
 
 Isolation applies from the next launch. Sessions already running keep the servers they loaded: restart them, on the isolated account and on the others.
+
+Its sessions also get `permissions.deny` rules against reading and editing the folders of the other accounts, the transcripts in `~/.claude/projects` and the data and memory of kindric. To add your own paths, list them in `~/.config/claude-accounts/isolated-deny`, one absolute path or `~/...` per line, `#` for comments. If these rules cannot be written, the session does not start.
+
+These are rules of Claude Code, not a wall. Its file tools and the file commands it recognizes in Bash obey them. A script that opens a file itself, or a `grep -r` run from inside the folder, does not. For a real barrier, run the account under another system user.
 
 [kindric](https://github.com/LouisStani/kindric) also keeps isolated accounts out of its messages between sessions. It shows Claude Code's own configuration, `~/.claude`, as an account named `default`: `kindric-accounts isolate default` keeps it out of messages too, although it is not an account of this list. kindric-accounts shares no MCP servers with it either way.
 

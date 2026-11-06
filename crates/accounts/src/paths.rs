@@ -1,9 +1,12 @@
 //! Where kindric-accounts keeps its files. Unix paths are the ones of the 1.x Bash
 //! script, so existing accounts work without any migration.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use crate::error::{Result, fail};
+
+/// Names the folder of kindric's memory when it is not the default one.
+pub const MEMORY_ROOT_VARIABLE: &str = "KINDRIC_MEMORY_DIR";
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Paths {
@@ -62,6 +65,29 @@ impl Paths {
 
     pub fn shared_mcp_file(&self, name: &str) -> PathBuf {
         self.data_root.join(".shared-mcp").join(format!("{name}.json"))
+    }
+
+    pub fn shared_settings_file(&self, name: &str) -> PathBuf {
+        self.data_root.join(".shared-settings").join(format!("{name}.json"))
+    }
+
+    /// Paths an isolated account may not read, on top of the built-in ones: one per line.
+    pub fn isolated_deny_file(&self) -> PathBuf {
+        self.config_dir.join("isolated-deny")
+    }
+
+    pub fn home(&self) -> Option<&Path> {
+        self.shared_root.parent()
+    }
+
+    /// `~/.kindric/memory`.
+    pub fn default_memory_root(&self) -> Option<PathBuf> {
+        self.home().map(|home| home.join(".kindric").join("memory"))
+    }
+
+    /// Where the kindric app keeps its files, next to the data of the accounts.
+    pub fn kindric_data_dir(&self) -> Option<PathBuf> {
+        self.data_root.parent().map(|data| data.join("kindric"))
     }
 }
 

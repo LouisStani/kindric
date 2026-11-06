@@ -257,6 +257,14 @@ test_isolation() {
 	out=$(ca run work)
 	check "compte isolé lancé avec un fichier MCP" grep -qF -- "--mcp-config=$shared/work.json" <<<"$out"
 	check "compte isolé ne reçoit aucun MCP" json_true '.mcpServers == {}' "$shared/work.json"
+	local isolated_settings="$HOME/.local/share/claude-accounts/.shared-settings/work.json"
+	check "compte isolé lancé avec ses règles de lecture" grep -qF -- "--settings $isolated_settings" <<<"$out"
+	check "règles : mémoire de kindric interdite" json_true \
+		"$(printf '.permissions.deny | index("Read(/%s/.kindric/memory/**)") != null' "$HOME")" "$isolated_settings"
+	check "règles : son propre dossier reste lisible" json_true \
+		"$(printf '.permissions.deny | index("Read(/%s/**)") == null' "$(data_dir work)")" "$isolated_settings"
+	check "compte non isolé : réglages partagés, sans règles" grep -qF -- \
+		"--settings $HOME/.claude/settings.json" <<<"$(ca run pro1)"
 	rm -f -- "$(data_dir pro2)/.claude.json"
 	out=$(ca run pro1)
 	check "plus rien à partager : ancien fichier vidé, pas réutilisé" bash -c \
