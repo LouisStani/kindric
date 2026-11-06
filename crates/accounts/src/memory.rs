@@ -74,6 +74,11 @@ impl Memory {
         }
     }
 
+    /// Whether the memory folder exists. Without it, sessions start as if this module did not exist.
+    pub fn exists(&self) -> bool {
+        self.root.is_dir()
+    }
+
     /// Whether `project` has a zone. Nothing here creates one for a session: without a zone,
     /// a session starts as if this module did not exist.
     pub fn has_project(&self, project: &str) -> bool {
@@ -153,19 +158,22 @@ impl Memory {
     /// `setup/` and the index of the zone. Never `perso/`, skills or the zone's other folders.
     pub fn startup_text(&self, project: &str) -> io::Result<String> {
         let zone = self.zone(project)?;
+        let mut files = self.opened_by_every_session()?;
+        files.push(zone.join(INDEX));
+        joined_text(files)
+    }
+
+    /// What a session outside every zone receives: `global/` and `setup/`.
+    pub fn shared_startup_text(&self) -> io::Result<String> {
+        joined_text(self.opened_by_every_session()?)
+    }
+
+    fn opened_by_every_session(&self) -> io::Result<Vec<PathBuf>> {
         let mut files = Vec::new();
         for name in OPENED_AT_STARTUP {
             files.extend(files_under(&self.root.join(name))?);
         }
-        files.push(zone.join(INDEX));
-        let mut parts = Vec::new();
-        for file in files {
-            let text = read_text_if_present(&file)?;
-            if !text.trim().is_empty() {
-                parts.push(text.trim().to_string());
-            }
-        }
-        Ok(parts.join("\n\n"))
+        Ok(files)
     }
 
     /// The names listed in the `skills.md` of `project`: one per line, a leading `-` accepted,
@@ -238,6 +246,18 @@ impl Memory {
         }
         Ok(self.root.join(PROJECTS).join(project))
     }
+}
+
+/// The non-blank files, trimmed, a blank line between them.
+fn joined_text(files: Vec<PathBuf>) -> io::Result<String> {
+    let mut parts = Vec::new();
+    for file in files {
+        let text = read_text_if_present(&file)?;
+        if !text.trim().is_empty() {
+            parts.push(text.trim().to_string());
+        }
+    }
+    Ok(parts.join("\n\n"))
 }
 
 fn root_for(paths: &Paths) -> io::Result<PathBuf> {
