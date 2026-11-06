@@ -7,6 +7,7 @@ use std::io;
 use std::path::{Component, Path, PathBuf};
 
 use kindric_accounts::Paths;
+use kindric_accounts::paths::MEMORY_ROOT_VARIABLE;
 use kindric_accounts::files::create_private_dir;
 
 #[cfg(unix)]
@@ -16,7 +17,6 @@ use std::os::unix::fs::OpenOptionsExt;
 /// cap: nothing is cut or refused above it.
 pub const WARNING_BYTES: u64 = 30 * 1024;
 
-const ROOT_VARIABLE: &str = "KINDRIC_MEMORY_DIR";
 const PROJECTS: &str = "projets";
 const SKILLS_DIR: &str = "skills";
 const SKILL_FILE: &str = "SKILL.md";
@@ -46,7 +46,7 @@ impl Memory {
 
     /// `~/.kindric/memory`, or the folder named by `KINDRIC_MEMORY_DIR`.
     pub fn default_root() -> io::Result<PathBuf> {
-        match std::env::var_os(ROOT_VARIABLE).filter(|value| !value.is_empty()) {
+        match std::env::var_os(MEMORY_ROOT_VARIABLE).filter(|value| !value.is_empty()) {
             Some(root) => Ok(PathBuf::from(root)),
             None => root_for(&Paths::from_env().map_err(io::Error::other)?),
         }
@@ -150,8 +150,7 @@ impl Memory {
 }
 
 fn root_for(paths: &Paths) -> io::Result<PathBuf> {
-    let home = paths.shared_root.parent().ok_or_else(|| io::Error::other("the shared configuration has no parent"))?;
-    Ok(home.join(".kindric").join("memory"))
+    paths.default_memory_root().ok_or_else(|| io::Error::other("the shared configuration has no parent"))
 }
 
 /// A name must stay one folder under its parent, on every system.
