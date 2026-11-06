@@ -6,9 +6,9 @@ use std::fs::{self, OpenOptions};
 use std::io;
 use std::path::{Component, Path, PathBuf};
 
-use kindric_accounts::Paths;
-use kindric_accounts::paths::MEMORY_ROOT_VARIABLE;
-use kindric_accounts::files::{create_private_dir, files_under};
+use crate::Paths;
+use crate::paths::MEMORY_ROOT_VARIABLE;
+use crate::files::{create_private_dir, files_under};
 
 #[cfg(unix)]
 use std::os::unix::fs::OpenOptionsExt;

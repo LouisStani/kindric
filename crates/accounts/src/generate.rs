@@ -6,7 +6,7 @@ use std::fs;
 use std::io;
 use std::path::Path;
 
-use kindric_accounts::shared::fingerprint;
+use crate::shared::fingerprint;
 
 use crate::memory::Memory;
 
