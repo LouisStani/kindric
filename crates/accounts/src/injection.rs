@@ -16,6 +16,10 @@ use crate::registry;
 /// Skills appear in the session as `memory:<name>`.
 const PLUGIN_NAME: &str = "memory";
 const STARTUP_DIR: &str = "startup";
+/// Out of `startup/`, whose files are named after zones: no zone can take this name.
+const OUTSIDE_FILE: &str = "startup-outside.md";
+/// What a session outside every zone is told, after `global/` and `setup/`.
+pub const OUTSIDE_LINE: &str = "Ce dossier n'appartient à aucune zone de la mémoire kindric. Si la session travaille sur un projet, propose à l'utilisateur de lui créer une zone.";
 const PLUGINS_DIR: &str = "plugins";
 
 #[derive(Debug, Default, PartialEq, Eq)]
@@ -61,20 +65,22 @@ pub fn for_session(paths: &Paths, account: &str, directory: &Path) -> Injection 
 }
 
 /// An isolated account receives nothing here: it gets `global/` alone from `isolation`, with its
-/// rules against reading the rest, and no zone is even looked up. A directory outside every zone
-/// receives nothing either. Nothing here can stop the session from starting.
+/// rules against reading the rest, and no zone is even looked up. Without a memory folder, nothing
+/// either. A directory outside every zone receives `global/`, `setup/` and `OUTSIDE_LINE`. Nothing
+/// here can stop the session from starting.
 fn injection_for(memory: &Memory, data_dir: &Path, home: &Path, directory: &Path, isolated: bool) -> Injection {
-    if isolated {
+    if isolated || !memory.exists() {
         return Injection::default();
     }
     let lookup = match memory.zone_of(directory, home) {
         Ok(lookup) => lookup,
         Err(error) => return not_loaded(error),
     };
-    let Some(zone) = lookup.zone else {
-        return Injection { args: Vec::new(), warnings: lookup.warnings };
+    let prepared = match &lookup.zone {
+        Some(zone) => prepare(memory, data_dir, &zone.name, &zone.folder),
+        None => prepare_outside(memory, data_dir),
     };
-    let mut injection = prepare(memory, data_dir, &zone.name, &zone.folder).unwrap_or_else(not_loaded);
+    let mut injection = prepared.unwrap_or_else(not_loaded);
     injection.warnings.splice(0..0, lookup.warnings);
     injection
 }
@@ -99,13 +105,29 @@ pub fn prepare(memory: &Memory, data_dir: &Path, project: &str, directory: &Path
 
     let size = memory.startup_size(project, WARNING_BYTES)?;
     if size.over_warning {
-        injection.warnings.push(format!(
-            "memory opened at startup: {} KB, above the {} KB warning",
-            size.bytes / 1024,
-            WARNING_BYTES / 1024
-        ));
+        injection.warnings.push(size_warning(size.bytes));
     }
     Ok(injection)
+}
+
+/// A session outside every zone: no instructions written, no skills. Like a zone's, the file is
+/// never removed, for a session that resumes.
+fn prepare_outside(memory: &Memory, data_dir: &Path) -> io::Result<Injection> {
+    let shared = memory.shared_startup_text()?;
+    let text = if shared.is_empty() { OUTSIDE_LINE.to_string() } else { format!("{shared}\n\n{OUTSIDE_LINE}") };
+    create_private_dir(data_dir)?;
+    let file = data_dir.join(OUTSIDE_FILE);
+    write_atomic(&file, &text)?;
+    let mut injection = Injection { args: vec!["--append-system-prompt-file".into(), file.into_os_string()], warnings: Vec::new() };
+    let bytes = u64::try_from(text.len()).unwrap_or(u64::MAX);
+    if bytes > WARNING_BYTES {
+        injection.warnings.push(size_warning(bytes));
+    }
+    Ok(injection)
+}
+
+fn size_warning(bytes: u64) -> String {
+    format!("memory opened at startup: {} KB, above the {} KB warning", bytes / 1024, WARNING_BYTES / 1024)
 }
 
 fn write_instructions(memory: &Memory, project: &str, directory: &Path) -> Vec<String> {
@@ -262,14 +284,20 @@ mod tests {
     }
 
     #[test]
-    fn a_directory_outside_every_zone_receives_nothing_and_nothing_is_written() {
+    fn a_directory_outside_every_zone_receives_global_setup_and_the_line_only() {
         let (root, memory, _) = session_setup("no-zone");
+        fs::create_dir_all(root.join("memory/setup")).unwrap();
+        fs::write(root.join("memory/setup/machine.md"), "MACHINE").unwrap();
+        fs::write(root.join("memory/projets/p/INDEX.md"), "PROJECT INDEX").unwrap();
         let data = root.join("data");
         let elsewhere = root.join("elsewhere");
         fs::create_dir_all(&elsewhere).unwrap();
-        assert_eq!(for_directory(&root, &memory, &data, &elsewhere, false), Injection::default());
-        assert_eq!(fs::read_dir(&elsewhere).unwrap().count(), 0);
-        assert!(!data.exists());
+        let injection = for_directory(&root, &memory, &data, &elsewhere, false);
+        let file = data.join("startup-outside.md");
+        assert_eq!(injection, Injection { args: vec!["--append-system-prompt-file".into(), file.clone().into_os_string()], warnings: Vec::new() });
+        assert_eq!(fs::read_to_string(file).unwrap(), format!("RULE\n\nMACHINE\n\n{OUTSIDE_LINE}"));
+        assert_eq!(fs::read_dir(&elsewhere).unwrap().count(), 0, "no instructions written");
+        assert!(!data.join("plugins").exists(), "no skills");
         fs::remove_dir_all(root).unwrap();
     }
 
@@ -441,6 +469,37 @@ mod tests {
         assert!(s.project.join("AGENTS.md").is_file());
         assert_eq!(injection.args.len(), 2);
         s.finish();
+    }
+
+    #[test]
+    fn without_a_memory_folder_nothing_is_added_and_nothing_written() {
+        let root = std::env::temp_dir().join(format!("kindric-no-memory-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        let injection = for_directory(&root, &Memory::at(root.join("memory")), &root.join("data"), &root, false);
+        assert_eq!(injection, Injection::default());
+        assert!(!root.join("data").exists());
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn outside_every_zone_with_an_empty_memory_the_line_comes_alone() {
+        let root = std::env::temp_dir().join(format!("kindric-outside-empty-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        let injection = prepare_outside(&Memory::at(root.join("memory")), &root.join("data")).unwrap();
+        assert_eq!(injection.args.len(), 2);
+        assert_eq!(fs::read_to_string(root.join("data/startup-outside.md")).unwrap(), OUTSIDE_LINE);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn outside_every_zone_too_much_at_startup_is_a_warning() {
+        let root = std::env::temp_dir().join(format!("kindric-outside-size-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(root.join("memory/global")).unwrap();
+        fs::write(root.join("memory/global/rules.md"), "x".repeat(usize::try_from(WARNING_BYTES).unwrap())).unwrap();
+        let injection = prepare_outside(&Memory::at(root.join("memory")), &root.join("data")).unwrap();
+        assert_eq!(injection.warnings, ["memory opened at startup: 30 KB, above the 30 KB warning"]);
+        fs::remove_dir_all(root).unwrap();
     }
 
     #[test]

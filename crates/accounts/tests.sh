@@ -276,8 +276,8 @@ test_isolation() {
 	check "compte isolé, sous-commande : réglages sans global/" bash -c \
 		'grep -qF -- "--settings $1" <<<"$0" && ! grep -qF -- --append-system-prompt-file <<<"$0"' "$out" "$isolated_settings"
 	check "setup/ non transmis" bash -c '! grep -qF NOTE-MACHINE "$0"' "$global_rules"
-	check "compte non isolé : pas de global/" bash -c \
-		'! "$0" run pro1 | grep -qF -- --append-system-prompt-file' "$SCRIPT"
+	check "compte non isolé hors zone : fichier hors zone, pas celui des isolés" bash -c \
+		'out=$("$0" run pro1); grep -qF -- startup-outside.md <<<"$out" && ! grep -qF -- .shared-settings <<<"$out"' "$SCRIPT"
 	rm -rf -- "$HOME/.kindric"
 	check "compte non isolé : réglages partagés, sans règles" grep -qF -- \
 		"--settings $HOME/.claude/settings.json" <<<"$(ca run pro1)"
@@ -316,6 +316,9 @@ test_memory() {
 	check "sous-commande : arguments transmis" grep -qE '^ARGS=.* attach 378ce649$' <<<"$out"
 	out=$(cd "$SANDBOX" && ca run pro1)
 	check "hors zone : pas de mémoire de zone" bash -c '! grep -qF -- startup/ <<<"$0"' "$out"
+	local outside="$HOME/.local/share/kindric/startup-outside.md"
+	check "hors zone : global/ et la ligne hors zone" bash -c \
+		'grep -qF -- "--append-system-prompt-file $1" <<<"$0" && grep -qxF REGLE "$1" && grep -qF "aucune zone" "$1"' "$out" "$outside"
 	ca isolate pro2 >/dev/null
 	out=$(cd "$project" && ca run pro2)
 	check "compte isolé dans une zone : pas de zone" bash -c '! grep -qF -- startup/ <<<"$0"' "$out"
