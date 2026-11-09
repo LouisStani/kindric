@@ -1,4 +1,5 @@
 pub mod accounts;
+pub mod artifacts;
 pub mod attach;
 pub mod checks;
 pub mod images;
