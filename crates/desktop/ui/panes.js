@@ -81,7 +81,7 @@ class PaneView {
     this.element = element("div", "pane");
     this.title = element("span", "head-title");
     this.account = element("span", "head-account");
-    this.done = element("span", "head-done", "done");
+    this.done = element("span", "head-done", "✓ done");
     this.progress = element("span", "head-progress");
     const head = element("div", "pane-head");
     head.append(element("span", "prompt", "~ $"), this.title, this.account, this.progress, this.done);

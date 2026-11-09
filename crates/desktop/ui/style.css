@@ -623,11 +623,8 @@ ol, ul {
 }
 
 .head-done {
-  padding: 0 6px;
-  border-radius: 6px;
   font-weight: 700;
-  color: var(--on-accent);
-  background: var(--done);
+  color: var(--done);
 }
 
 .head-done[hidden] {
@@ -648,6 +645,11 @@ ol, ul {
 }
 
 .pane.active .head-title {
+  color: var(--on-active);
+}
+
+/* Green on the orange head of the active pane would not read. */
+.pane.active .head-done {
   color: var(--on-active);
 }
 
