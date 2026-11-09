@@ -148,7 +148,7 @@ class PaneView {
         this.gallery.append(element("p", "image-error", error));
         continue;
       }
-      const url = URL.createObjectURL(new Blob([bytes], { type: imageType(path) }));
+      const url = URL.createObjectURL(new Blob([new Uint8Array(bytes)], { type: imageType(path) }));
       this.imageUrls.push(url);
       const image = element("img");
       image.src = url;
