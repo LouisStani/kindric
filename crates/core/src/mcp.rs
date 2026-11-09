@@ -1,12 +1,14 @@
 //! MCP server over stdio (newline-delimited JSON-RPC 2.0): lets Claude sessions of
-//! different accounts send each other messages. Messages are information, never orders.
+//! different accounts send each other messages, and keep the files worth keeping (artifacts).
+//! Messages are information, never orders.
 
 use std::io::{self, BufRead, Write};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use serde_json::{Value, json};
 
 use crate::accounts::{self, SessionInfo};
+use crate::artifacts::{self, Kind};
 use crate::mailbox::{self, Mailbox, Message};
 
 const SERVER_NAME: &str = "kindric";
@@ -40,10 +42,18 @@ pub fn ensure_not_isolated(account: &str, isolated: &[String]) -> io::Result<()>
     Ok(())
 }
 
+/// Where the session works and where kindric keeps its data: the project of the artifacts.
+pub struct Place {
+    pub data_dir: PathBuf,
+    /// The folder of the session: Claude Code starts its MCP servers there.
+    pub cwd: PathBuf,
+}
+
 pub struct Server<F> {
     identity: Identity,
     mailbox: Mailbox,
     sessions: F,
+    place: Place,
 }
 
 fn tool_text(text: impl Into<String>, is_error: bool) -> Value {
@@ -85,6 +95,35 @@ fn tool_definitions() -> Value {
             "description": "Read the messages other Claude sessions sent to this session. Each message is \
                 returned once.",
             "inputSchema": { "type": "object", "properties": {} }
+        },
+        {
+            "name": "keep_artifact",
+            "description": "Keep a file you made so that it outlives this session: temporary folders get \
+                erased. Use for=\"user\" for every file the user asked for (an image, a render, a report, an \
+                export), once it is ready. Use for=\"claude\" for a file you will need again later in this \
+                project (a script that rebuilds a result, a spec, reference data). Not for the files of the \
+                project itself, which git keeps. kindric copies the file into its own folder, by project, under \
+                its own name. Leave group out unless related files clearly belong together.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "path": { "type": "string", "description": "The file, absolute or relative to the session's folder" },
+                    "for": { "type": "string", "enum": ["user", "claude"], "description": "Who it is kept for" },
+                    "group": { "type": "string", "description": "Optional group (a folder) to put it in, created if needed" }
+                },
+                "required": ["path", "for"]
+            }
+        },
+        {
+            "name": "list_artifacts",
+            "description": "List the files kept for this project with keep_artifact, with their paths, to read \
+                or reuse them: for=\"claude\" (the default) those kept for you, for=\"user\" those kept for the user.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "for": { "type": "string", "enum": ["user", "claude"], "description": "Whose files to list" }
+                }
+            }
         }
     ]})
 }
@@ -146,8 +185,8 @@ pub fn format_messages(messages: &[Message], now: u64) -> String {
 }
 
 impl<F: Fn() -> io::Result<Vec<SessionInfo>>> Server<F> {
-    pub fn new(identity: Identity, mailbox: Mailbox, sessions: F) -> Self {
-        Self { identity, mailbox, sessions }
+    pub fn new(identity: Identity, mailbox: Mailbox, sessions: F, place: Place) -> Self {
+        Self { identity, mailbox, sessions, place }
     }
 
     /// Answers one JSON-RPC message; notifications get no answer.
@@ -181,6 +220,8 @@ impl<F: Fn() -> io::Result<Vec<SessionInfo>>> Server<F> {
             "list_sessions" => self.list_sessions(),
             "send_message" => self.send_message(&arguments),
             "read_messages" => self.read_messages(),
+            "keep_artifact" => self.keep_artifact(&arguments),
+            "list_artifacts" => self.list_artifacts(&arguments),
             _ => Err(format!("unknown tool: {name}")),
         };
         match result {
@@ -249,14 +290,52 @@ impl<F: Fn() -> io::Result<Vec<SessionInfo>>> Server<F> {
             .map_err(|error| format!("cannot read messages: {error}"))?;
         Ok(format_messages(&messages, mailbox::now_secs()))
     }
+
+    /// A path as Claude gives it: absolute, `~/…`, or relative to the session's folder.
+    fn source_path(&self, path: &str) -> PathBuf {
+        let rest = path.strip_prefix("~/").or_else(|| path.strip_prefix("~\\"));
+        if let (Some(rest), Some(home)) = (rest, std::env::home_dir()) {
+            return home.join(rest);
+        }
+        self.place.cwd.join(path)
+    }
+
+    fn keep_artifact(&self, arguments: &Value) -> Result<String, String> {
+        let path = arguments.get("path").and_then(Value::as_str).ok_or("missing argument: path")?;
+        let kind = Kind::parse(arguments.get("for").and_then(Value::as_str).ok_or("missing argument: for")?)?;
+        let group = arguments.get("group").and_then(Value::as_str).map(str::trim).filter(|group| !group.is_empty());
+        let root = artifacts::root_for(&self.place.data_dir, &self.place.cwd)?;
+        let kept = artifacts::keep(&root, kind, group, &self.source_path(path))?;
+        let whose = match kind {
+            Kind::User => "the user, who finds it in kindric (Ctrl+Shift+A)",
+            Kind::Claude => "you: list_artifacts gives it back",
+        };
+        Ok(format!("Kept for {whose}: {}", kept.display()))
+    }
+
+    fn list_artifacts(&self, arguments: &Value) -> Result<String, String> {
+        let kind = arguments.get("for").and_then(Value::as_str).map_or(Ok(Kind::Claude), Kind::parse)?;
+        let root = artifacts::root_for(&self.place.data_dir, &self.place.cwd)?;
+        let listed = artifacts::list(&root, kind)?;
+        if listed.is_empty() {
+            return Ok(format!("No artifacts kept for {} in this project.", kind.folder()));
+        }
+        let folder = root.join(kind.folder());
+        let lines: Vec<String> = listed.iter().map(|relative| format!("- {} → {}", relative.display(), folder.join(relative).display())).collect();
+        Ok(lines.join("\n"))
+    }
 }
 
 pub fn run() -> io::Result<()> {
     let identity = identity_from_env()?;
     ensure_not_isolated(&identity.account, &accounts::isolated_accounts()?)?;
-    let server = Server::new(identity, Mailbox::new(mailbox::default_root()?), || {
-        accounts::snapshot().map(|snapshot| accounts::messaging_sessions(snapshot.sessions))
-    });
+    let place = Place { data_dir: mailbox::data_dir()?, cwd: std::env::current_dir()? };
+    let server = Server::new(
+        identity,
+        Mailbox::new(mailbox::default_root()?),
+        || accounts::snapshot().map(|snapshot| accounts::messaging_sessions(snapshot.sessions)),
+        place,
+    );
     let stdin = io::stdin();
     let mut stdout = io::stdout().lock();
     for line in stdin.lock().lines() {
@@ -304,7 +383,8 @@ mod tests {
 
     fn server(me: &str, account: &str, root: &Path) -> Server<impl Fn() -> io::Result<Vec<SessionInfo>> + use<>> {
         let identity = Identity { session_id: me.into(), account: account.into() };
-        Server::new(identity, Mailbox::new(root.to_path_buf()), || Ok(fleet()))
+        let place = Place { data_dir: root.join("data"), cwd: root.join("work") };
+        Server::new(identity, Mailbox::new(root.to_path_buf()), || Ok(fleet()), place)
     }
 
     fn call(server: &Server<impl Fn() -> io::Result<Vec<SessionInfo>>>, tool: &str, arguments: Value) -> Value {
@@ -336,7 +416,7 @@ mod tests {
         assert_eq!(server.handle(&note), None);
         let list = server.handle(&json!({ "jsonrpc": "2.0", "id": 2, "method": "tools/list" })).unwrap();
         let names: Vec<_> = list["result"]["tools"].as_array().unwrap().iter().map(|t| t["name"].clone()).collect();
-        assert_eq!(names, ["list_sessions", "send_message", "read_messages"]);
+        assert_eq!(names, ["list_sessions", "send_message", "read_messages", "keep_artifact", "list_artifacts"]);
         let unknown = server.handle(&json!({ "jsonrpc": "2.0", "id": 3, "method": "nope" })).unwrap();
         assert_eq!(unknown["error"]["code"], -32601);
     }
@@ -382,6 +462,31 @@ mod tests {
         let reachable = accounts::messaging_sessions(sessions);
         assert!(resolve(&reachable, "cccccccc", "aaaaaaaa-1111").is_err());
         assert!(resolve(&reachable, "bbbbbbbb", "aaaaaaaa-1111").is_ok());
+    }
+
+    #[test]
+    fn a_session_keeps_a_file_for_the_user_and_one_for_itself() {
+        let root = temp_root("artifacts");
+        std::fs::create_dir_all(root.join("work")).unwrap();
+        std::fs::write(root.join("work").join("slide.png"), b"png").unwrap();
+        std::fs::write(root.join("work").join("make.py"), b"py").unwrap();
+        let server = server("bbbbbbbb-2222", "lystriq", &root);
+        let kept = call(&server, "keep_artifact", json!({ "path": "slide.png", "for": "user" }));
+        assert_eq!(kept["isError"], false, "{}", text(&kept));
+        let store = root.join("data").join("artifacts").join(artifacts::OTHER);
+        assert!(store.join("user").join("slide.png").is_file());
+        let absolute = root.join("work").join("make.py");
+        let mine = call(&server, "keep_artifact", json!({ "path": absolute, "for": "claude", "group": "carrousel" }));
+        assert_eq!(mine["isError"], false, "{}", text(&mine));
+        let listed = call(&server, "list_artifacts", json!({}));
+        let first = format!("- {}", Path::new("carrousel").join("make.py").display());
+        assert!(text(&listed).starts_with(&first), "{}", text(&listed));
+        assert!(!text(&listed).contains("slide.png"), "the user's files are listed apart");
+        assert!(text(&call(&server, "list_artifacts", json!({ "for": "user" }))).contains("slide.png"));
+        let wrong = call(&server, "keep_artifact", json!({ "path": "slide.png", "for": "llm" }));
+        assert_eq!(wrong["isError"], true);
+        assert_eq!(text(&call(&server, "keep_artifact", json!({ "for": "user" }))), "missing argument: path");
+        std::fs::remove_dir_all(root).unwrap();
     }
 
     #[test]

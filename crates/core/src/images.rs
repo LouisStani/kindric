@@ -96,7 +96,8 @@ pub fn last_turn_text(transcript_tail: &str) -> String {
     texts.join("\n")
 }
 
-fn is_image_name(text: &str) -> bool {
+/// Whether `text` ends like the name of an image file shown in kindric.
+pub fn is_image_name(text: &str) -> bool {
     let lower = text.to_lowercase();
     EXTENSIONS.iter().any(|extension| lower.ends_with(extension) && lower.len() > extension.len())
 }
