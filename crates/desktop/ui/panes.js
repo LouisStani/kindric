@@ -43,6 +43,16 @@ export function terminalOptions() {
   };
 }
 
+const IMAGE_TYPES = { png: "image/png", jpg: "image/jpeg", jpeg: "image/jpeg", gif: "image/gif", webp: "image/webp" };
+
+function imageType(path) {
+  return IMAGE_TYPES[path.split(".").pop().toLowerCase()] ?? "";
+}
+
+function fileName(path) {
+  return path.split(/[\\/]/).pop();
+}
+
 export function loadWebgl(terminal) {
   try {
     const webgl = new WebglAddon.WebglAddon();
@@ -72,6 +82,12 @@ class PaneView {
     const head = element("div", "pane-head");
     head.append(element("span", "prompt", "~ $"), this.title, this.account, this.progress, this.done);
     this.screen = element("div", "screen");
+    // Over the top of the terminal, which keeps its size: Claude Code does not draw again.
+    this.gallery = element("div", "pane-images");
+    this.gallery.hidden = true;
+    this.screen.append(this.gallery);
+    this.shownImages = "";
+    this.imageUrls = [];
     this.placeholder = element("p", "placeholder", "select a session");
     this.element.append(head, this.screen, this.placeholder);
     this.terminal = new Terminal(terminalOptions());
@@ -104,6 +120,40 @@ class PaneView {
     this.element.classList.toggle("finished", finished);
   }
 
+  // The images the session's last turn proposed; none hides the band.
+  async showImages(paths) {
+    const shown = paths.join("\n");
+    if (shown === this.shownImages) return;
+    this.shownImages = shown;
+    for (const url of this.imageUrls) URL.revokeObjectURL(url);
+    this.imageUrls = [];
+    this.gallery.replaceChildren();
+    this.gallery.hidden = paths.length === 0;
+    const loaded = await Promise.all(
+      paths.map((path) =>
+        invoke("image_bytes", { path }).then(
+          (bytes) => ({ path, bytes }),
+          (error) => ({ path, error: `${error}` }),
+        ),
+      ),
+    );
+    // Another list came while these were read.
+    if (this.shownImages !== shown) return;
+    for (const { path, bytes, error } of loaded) {
+      if (error !== undefined) {
+        this.gallery.append(element("p", "image-error", error));
+        continue;
+      }
+      const url = URL.createObjectURL(new Blob([bytes], { type: imageType(path) }));
+      this.imageUrls.push(url);
+      const image = element("img");
+      image.src = url;
+      image.alt = fileName(path);
+      image.title = path;
+      this.gallery.append(image);
+    }
+  }
+
   forward(command, args) {
     if (!this.current || this.current.ended) return;
     invoke(command, { pane: this.id, ...args }).catch((error) => console.error(error));
@@ -129,6 +179,7 @@ class PaneView {
   }
 
   dispose() {
+    for (const url of this.imageUrls) URL.revokeObjectURL(url);
     this.observer.disconnect();
     this.terminal.dispose();
   }
@@ -144,7 +195,7 @@ function leaves(node, found = []) {
 }
 
 export class Panes {
-  constructor(container, bar, { keyFilter, onChange, onError, titleOf, isFinished, markOf, progressOf }) {
+  constructor(container, bar, { keyFilter, onChange, onError, titleOf, isFinished, markOf, progressOf, imagesOf }) {
     this.container = container;
     this.bar = bar;
     this.keyFilter = keyFilter;
@@ -154,6 +205,7 @@ export class Panes {
     this.isFinished = isFinished;
     this.markOf = markOf;
     this.progressOf = progressOf;
+    this.imagesOf = imagesOf;
     this.state = null;
     this.views = new Map();
     // Tab id → its page and the shape it was built for.
@@ -295,7 +347,9 @@ export class Panes {
     for (const leaf of this.allLeaves()) {
       const key = leaf.session;
       const title = key === null ? "" : this.titleOf(key);
-      this.view(leaf.id).label(key, title, key !== null && this.isFinished(key), key === null ? null : this.progressOf(key));
+      const view = this.view(leaf.id);
+      view.label(key, title, key !== null && this.isFinished(key), key === null ? null : this.progressOf(key));
+      view.showImages(key === null ? [] : this.imagesOf(key));
     }
   }
 

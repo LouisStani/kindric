@@ -778,6 +778,7 @@ const panes = new Panes(document.getElementById("panes"), document.getElementByI
   isFinished,
   markOf,
   progressOf: (key) => rowOf(key)?.progress ?? null,
+  imagesOf: (key) => rowOf(key)?.images ?? [],
 });
 
 const sessionDirectory = directoryField("new-form");
