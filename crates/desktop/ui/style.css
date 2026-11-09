@@ -387,6 +387,9 @@ ol, ul {
    welcome screen above them gets the clicks. */
 #panes {
   flex: 1;
+  /* Otherwise the panes never get narrower than their terminals, which keep the width
+     they were measured at: the page overflows and scrolls sideways. */
+  min-width: 0;
   min-height: 0;
   display: flex;
   padding: var(--gap);

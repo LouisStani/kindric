@@ -1,7 +1,7 @@
 // The tabs and panes on the right. Rust owns them (tabs.rs, layout.rs): every change is a
 // command, and this module only draws what it gets back.
 
-import { mark } from "./trace.js";
+import { mark, traced } from "./trace.js";
 
 const { invoke, Channel } = window.__TAURI__.core;
 
@@ -56,9 +56,13 @@ function fileName(path) {
 export function loadWebgl(terminal) {
   try {
     const webgl = new WebglAddon.WebglAddon();
-    webgl.onContextLoss(() => webgl.dispose());
+    webgl.onContextLoss(() => {
+      mark("webgl context lost", performance.now());
+      webgl.dispose();
+    });
     terminal.loadAddon(webgl);
   } catch (error) {
+    mark("webgl unavailable", performance.now());
     console.warn("WebGL unavailable, using the DOM renderer:", error);
   }
 }
@@ -212,6 +216,8 @@ export class Panes {
     this.pages = new Map();
     this.tabDrag = false;
     this.tabDropped = -Infinity;
+    // Terminals moved in the page since the last render: moving one loses what it drew.
+    this.moved = [];
   }
 
   // The terminals take the colors of the theme just applied.
@@ -298,6 +304,7 @@ export class Panes {
       page.replaceChildren(root);
       built = { page, shape };
       this.pages.set(tab.id, built);
+      this.moved.push(...leaves(tab.layout.root).map((leaf) => this.view(leaf.id)));
     }
     for (const leaf of leaves(tab.layout.root)) {
       const view = this.view(leaf.id);
@@ -334,6 +341,10 @@ export class Panes {
     // xterm measures its cells when opened, so only panes on screen are opened; every pane
     // is created in the active tab.
     for (const leaf of leaves(this.layout().root)) this.view(leaf.id).openOnce();
+    for (const view of this.moved) {
+      if (view.opened) view.terminal.refresh(0, view.terminal.rows - 1);
+    }
+    this.moved = [];
     this.renderBar();
     this.decorate();
     this.focus();
@@ -431,7 +442,10 @@ export class Panes {
     event.preventDefault();
     const row = node.direction === "row";
     let ratio = node.ratio;
+    const start = performance.now();
+    let moves = 0;
     const move = (moved) => {
+      moves += 1;
       const box = split.getBoundingClientRect();
       const offset = row ? moved.clientX - box.left : moved.clientY - box.top;
       ratio = Math.min(Math.max(offset / (row ? box.width : box.height), 0.1), 0.9);
@@ -441,6 +455,7 @@ export class Panes {
     const release = async () => {
       document.removeEventListener("mousemove", move);
       document.removeEventListener("mouseup", release);
+      mark(`drag split (${moves} moves)`, start);
       this.render(await invoke("resize_split", { split: node.id, ratio }));
     };
     document.addEventListener("mousemove", move);
@@ -448,7 +463,7 @@ export class Panes {
   }
 
   async focusPane(id) {
-    if (id !== this.layout().active) this.render(await invoke("focus_pane", { pane: id }));
+    if (id !== this.layout().active) await traced("focus pane (click)", async () => this.render(await invoke("focus_pane", { pane: id })));
   }
 
   async step(step) {

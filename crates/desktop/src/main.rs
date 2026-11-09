@@ -626,6 +626,7 @@ fn write_input(shared: State<'_, Shared>, pane: PaneId, data: String) -> Result<
 
 #[tauri::command]
 fn resize_pane(shared: State<'_, Shared>, pane: PaneId, columns: u16, rows: u16) -> Result<(), String> {
+    let _span = shared.trace.span("resize_pane");
     let workspace = shared.workspace();
     let (_, attached) = workspace.attached.get(&pane).ok_or("no session in this pane")?;
     attached.resize(columns, rows).map_err(|error| error.to_string())
