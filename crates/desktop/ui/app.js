@@ -811,6 +811,13 @@ try {
 await listen("pane-ended", (event) => panes.ended(event.payload));
 await listen("tabs", (event) => panes.render(event.payload));
 await listen("sessions", (event) => render(event.payload));
+// Tauri takes files dropped on the window itself and gives their paths here, at a place in
+// physical pixels.
+await listen("tauri://drag-drop", ({ payload }) => {
+  if (document.querySelector("dialog[open]") || !payload.paths?.length) return;
+  const ratio = window.devicePixelRatio || 1;
+  panes.dropFiles(payload.paths, payload.position.x / ratio, payload.position.y / ratio);
+});
 await panes.load();
 render(await invoke("current_list"));
 // Since the page started loading.

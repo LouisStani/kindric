@@ -22,6 +22,13 @@ function shapeOf(node) {
   return node.kind === "leaf" ? node.id : [node.direction, node.ratio, shapeOf(node.first), shapeOf(node.second)];
 }
 
+// A file path as a terminal pastes it on a drop: a `\` before any character that is not a letter,
+// a digit or plainly safe, `\` of Windows paths included. Claude Code takes the escapes out again,
+// and attaches the file as an image when its name ends like one.
+export function escapedPath(path) {
+  return path.replace(/[^\p{L}\p{N}._/~+\-:@,=]/gu, (character) => `\\${character}`);
+}
+
 export function sameSession(key, session) {
   return key !== null && key.account === session.account && key.short_id === session.short_id;
 }
@@ -331,6 +338,23 @@ export class Panes {
 
   focus() {
     if (!document.querySelector("dialog[open]")) this.active().terminal.focus();
+  }
+
+  // Files dropped from outside the window, at (x, y) in the page: their paths go to the session of
+  // the pane under the pointer, else of the active pane. One paste each, so that Claude Code still
+  // recognizes an image among several files.
+  async dropFiles(paths, x, y) {
+    const under = document.elementFromPoint(x, y);
+    const leaf = leaves(this.layout().root).find((node) => this.view(node.id).element.contains(under));
+    const id = leaf?.id ?? this.layout().active;
+    const view = this.view(id);
+    if (!view.current || view.current.ended) {
+      this.onError("no session in this pane to drop files into");
+      return;
+    }
+    await this.focusPane(id);
+    for (const path of paths) view.terminal.paste(`${escapedPath(path)} `);
+    view.terminal.focus();
   }
 
   // A project tab follows the mouse along the bar, among the other project tabs: "other"
