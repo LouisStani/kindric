@@ -180,7 +180,11 @@ mod tests {
         assert!(watcher.ensure(&[(root.clone(), RecursiveMode::Recursive)]).is_empty());
         fs::read(root.join("roster.json")).unwrap();
         fs::read_dir(&root).unwrap().for_each(drop);
-        assert!(matches!(watcher.wait(Duration::from_millis(500), Duration::from_millis(50), Duration::from_secs(1)), Wake::TimedOut));
+        match watcher.wait(Duration::from_millis(500), Duration::from_millis(50), Duration::from_secs(1)) {
+            Wake::TimedOut => {},
+            Wake::Changed(paths) => panic!("woken by a change of {paths:?}"),
+            Wake::Closed => panic!("the watcher stopped"),
+        }
         fs::remove_dir_all(root).unwrap();
     }
 }
