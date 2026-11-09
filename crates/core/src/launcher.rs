@@ -103,6 +103,13 @@ fn run_backgrounded(mut command: Command, directory: &Path) -> Result<String, St
     parse_backgrounded_id(&text).ok_or_else(|| format!("no session id in: {}", text.trim()))
 }
 
+/// Whether `error`, from `launch`, is Claude Code refusing a folder the account has not trusted
+/// yet, which `attach::trust_command` lets it ask about. The home directory is refused too, but
+/// its trust is never saved: asking would not help, and Claude Code's text says so.
+pub fn needs_trust(error: &str) -> bool {
+    error.contains("Workspace not trusted") && !error.contains("home directory")
+}
+
 /// The memory zone a session started in `directory` receives, by name, and the zones that could
 /// not be read on the way. An isolated account receives no zone whatever this says.
 pub fn memory_zone(directory: &Path) -> Result<(Option<String>, Vec<String>), String> {
@@ -186,6 +193,16 @@ mod tests {
         assert_eq!(parse_backgrounded_id(output), Some("378ce649".into()));
         assert_eq!(parse_backgrounded_id("error: nope"), None);
         assert_eq!(parse_backgrounded_id("backgrounded · ../x · y"), None);
+    }
+
+    /// The texts of Claude Code 2.1.319, behind `run_backgrounded`'s prefix.
+    #[test]
+    fn only_a_folder_whose_trust_can_be_saved_needs_trust() {
+        let refused = "cannot start the session: Workspace not trusted. Run `claude` in /tmp/x once and accept the trust prompt, then retry.";
+        assert!(needs_trust(refused));
+        let home = "cannot start the session: Workspace not trusted. /home/u is your home directory, and for security home-directory trust is never saved, so running `claude` here first won't help.";
+        assert!(!needs_trust(home));
+        assert!(!needs_trust("cannot start the session: error: unknown option"));
     }
 
     #[test]

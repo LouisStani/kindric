@@ -2,6 +2,7 @@ import { DirectoryField } from "./directories.js";
 import { Panes, sameSession } from "./panes.js";
 import { applyTheme, nextTheme, THEMES } from "./themes.js";
 import { mark, startTrace, traced } from "./trace.js";
+import { askTrust } from "./trust.js";
 import { checkItems, hasToDo } from "./welcome.js";
 
 const { invoke } = window.__TAURI__.core;
@@ -444,6 +445,16 @@ function openNewSessionForm() {
   fields.account.focus();
 }
 
+// Claude Code refused a folder the account has not trusted yet: it asks, in its own window, and
+// the form is sent again once that window is closed.
+function offerTrust(message, account, directory) {
+  const trust = document.createElement("button");
+  trust.type = "button";
+  trust.textContent = "trust it";
+  trust.addEventListener("click", () => askTrust(account, directory, () => document.getElementById("new-form").requestSubmit()));
+  message.replaceChildren(`${account} has not trusted this folder yet.`, trust);
+}
+
 async function startNewSession(event) {
   event.preventDefault();
   const form = event.target;
@@ -462,9 +473,11 @@ async function startNewSession(event) {
   try {
     created = await invoke("new_session", { account, directory: fields.directory.value, name: fields.name.value });
   } catch (error) {
+    const text = error.message ?? `${error}`;
     // Escape may have closed the form while the session was starting.
-    if (dialog.open) message.textContent = `${error}`;
-    else setStatus(`${error}`);
+    if (!dialog.open) setStatus(text);
+    else if (error.trust) offerTrust(message, account, fields.directory.value);
+    else message.textContent = text;
     button.disabled = false;
     return;
   }
@@ -778,6 +791,7 @@ document.getElementById("project-form").addEventListener("submit", addProject);
 document.getElementById("rename-form").addEventListener("submit", renameSession);
 document.getElementById("hide-form").addEventListener("submit", hideSession);
 document.getElementById("hide-cancel").addEventListener("click", () => document.getElementById("confirm-hide").close());
+document.getElementById("trust-done").addEventListener("click", () => document.getElementById("trust").close());
 document.getElementById("picker-query").addEventListener("input", filterPicker);
 document.getElementById("picker-query").addEventListener("keydown", onPickerKey);
 for (const dialog of document.querySelectorAll("dialog")) {
