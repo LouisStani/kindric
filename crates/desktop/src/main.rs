@@ -12,7 +12,7 @@ mod trace;
 mod view;
 
 use std::collections::HashMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 use std::sync::{Mutex, MutexGuard, PoisonError};
 use std::time::{Duration, Instant};
@@ -20,10 +20,11 @@ use std::time::{Duration, Instant};
 use kindric_core::attach::{attach_command, stop_command, trust_command};
 use kindric_core::launcher::{self, Request, resolve_directory};
 use kindric_core::mailbox::Mailbox;
-use kindric_core::{accounts, checks, mailbox, refresher};
+use kindric_core::accounts::SessionInfo;
+use kindric_core::{accounts, checks, images, mailbox, refresher};
 use serde::Serialize;
 use serde::de::DeserializeOwned;
-use tauri::ipc::{Channel, InvokeResponseBody};
+use tauri::ipc::{Channel, InvokeResponseBody, Response};
 use tauri::{AppHandle, Emitter, Manager, RunEvent, State};
 
 use crate::layout::{PaneId, SessionKey, Shown};
@@ -630,9 +631,37 @@ fn resize_pane(shared: State<'_, Shared>, pane: PaneId, columns: u16, rows: u16)
     attached.resize(columns, rows).map_err(|error| error.to_string())
 }
 
+/// Larger image files are not shown.
+const LARGEST_IMAGE: u64 = 32 * 1024 * 1024;
+
+/// The bytes of an image a session proposed; the page can read no other file.
+#[tauri::command(async)]
+fn image_bytes(shared: State<'_, Shared>, path: String) -> Result<Response, String> {
+    let _span = shared.trace.span("image_bytes");
+    let proposed = shared.view.lock().unwrap_or_else(PoisonError::into_inner).sessions.iter().any(|row| row.images.contains(&path));
+    if !proposed {
+        return Err(format!("{path}: no session proposes this image now"));
+    }
+    let size = std::fs::metadata(&path).map_err(|error| format!("cannot read {path}: {error}"))?.len();
+    if size > LARGEST_IMAGE {
+        return Err(format!("{path}: {} MiB, too large to show (32 MiB at most)", size / (1024 * 1024)));
+    }
+    std::fs::read(&path).map(Response::new).map_err(|error| format!("cannot read {path}: {error}"))
+}
+
+/// The images the last turn of `session` proposed; none when the files cannot be found.
+fn proposed_images(session: &SessionInfo, implicit_default: bool) -> Vec<String> {
+    let Ok(paths) = accounts::paths() else {
+        return Vec::new();
+    };
+    let account_dir = accounts::dir_of(&paths, &session.account, implicit_default);
+    images::proposed(&account_dir, &session.session_id, Path::new(&session.cwd), std::env::home_dir().as_deref())
+}
+
 fn publish(app: &AppHandle, update: refresher::Update) -> bool {
     let shared = app.state::<Shared>();
     let start = Instant::now();
+    let implicit_default = update.as_ref().is_ok_and(|(snapshot, _)| snapshot.implicit_default);
     if let Ok((snapshot, _)) = &update {
         for (account, took) in &snapshot.timings {
             shared.trace.record(&format!("agents {account}"), *took);
@@ -643,6 +672,7 @@ fn publish(app: &AppHandle, update: refresher::Update) -> bool {
     let view = {
         let mut current = shared.view.lock().unwrap_or_else(PoisonError::into_inner);
         let mut next = view::apply(&current, update, tabs.watched());
+        view::propose_images(&mut next, &current, |session| proposed_images(session, implicit_default));
         view::assign(&mut next, &tabs, &prefs);
         next.errors.splice(0..0, shared.startup_errors.iter().cloned());
         // The same list again (the 30-second refresh, mostly): the page has nothing to draw.
@@ -838,6 +868,7 @@ fn main() -> ExitCode {
             trace,
             write_input,
             resize_pane,
+            image_bytes,
             open_trust,
             trust_input,
             trust_resize,
