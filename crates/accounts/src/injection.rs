@@ -20,7 +20,15 @@ const STARTUP_DIR: &str = "startup";
 const OUTSIDE_FILE: &str = "startup-outside.md";
 /// What a session outside every zone is told, after `global/` and `setup/`.
 pub const OUTSIDE_LINE: &str = "Ce dossier n'appartient à aucune zone de la mémoire kindric. Si la session travaille sur un projet, propose à l'utilisateur de lui créer une zone.";
+/// Ends every startup file. It leans on the tools being there: an isolated account has none,
+/// and its sessions read the same file as the others of the zone.
+pub const ARTIFACTS_LINE: &str = "Fichiers à garder : un fichier que l'utilisateur a demandé (image, rendu, rapport, export) → outil `keep_artifact` du serveur kindric avec `for=user`, dès qu'il est prêt. Un fichier dont tu auras besoin plus tard dans ce projet (script qui refait un résultat, spec, données) → `for=claude`. Ce qui a été gardé pour toi : `list_artifacts`. Sans ces outils (compte isolé), rien à faire.";
 const PLUGINS_DIR: &str = "plugins";
+
+/// The parts of a startup file that are not empty, one paragraph each.
+fn paragraphs(parts: &[&str]) -> String {
+    parts.iter().filter(|part| !part.is_empty()).copied().collect::<Vec<_>>().join("\n\n")
+}
 
 #[derive(Debug, Default, PartialEq, Eq)]
 pub struct Injection {
@@ -114,7 +122,7 @@ pub fn prepare(memory: &Memory, data_dir: &Path, project: &str, directory: &Path
 /// never removed, for a session that resumes.
 fn prepare_outside(memory: &Memory, data_dir: &Path) -> io::Result<Injection> {
     let shared = memory.shared_startup_text()?;
-    let text = if shared.is_empty() { OUTSIDE_LINE.to_string() } else { format!("{shared}\n\n{OUTSIDE_LINE}") };
+    let text = paragraphs(&[&shared, OUTSIDE_LINE, ARTIFACTS_LINE]);
     create_private_dir(data_dir)?;
     let file = data_dir.join(OUTSIDE_FILE);
     write_atomic(&file, &text)?;
@@ -148,7 +156,7 @@ fn outcome_warning(file: &str, outcome: Outcome) -> Option<String> {
 /// The file is written even when empty, and never removed: a session started earlier with this
 /// path reads it again when it resumes.
 fn write_startup_file(memory: &Memory, data_dir: &Path, project: &str) -> io::Result<Option<PathBuf>> {
-    let text = memory.startup_text(project)?;
+    let text = paragraphs(&[&memory.startup_text(project)?, ARTIFACTS_LINE]);
     let dir = data_dir.join(STARTUP_DIR);
     create_private_dir(&dir)?;
     let file = dir.join(format!("{project}.md"));
@@ -295,7 +303,7 @@ mod tests {
         let injection = for_directory(&root, &memory, &data, &elsewhere, false);
         let file = data.join("startup-outside.md");
         assert_eq!(injection, Injection { args: vec!["--append-system-prompt-file".into(), file.clone().into_os_string()], warnings: Vec::new() });
-        assert_eq!(fs::read_to_string(file).unwrap(), format!("RULE\n\nMACHINE\n\n{OUTSIDE_LINE}"));
+        assert_eq!(fs::read_to_string(file).unwrap(), format!("RULE\n\nMACHINE\n\n{OUTSIDE_LINE}\n\n{ARTIFACTS_LINE}"));
         assert_eq!(fs::read_dir(&elsewhere).unwrap().count(), 0, "no instructions written");
         assert!(!data.join("plugins").exists(), "no skills");
         fs::remove_dir_all(root).unwrap();
@@ -371,7 +379,7 @@ mod tests {
         ];
         assert_eq!(injection, Injection { args: expected, warnings: Vec::new() });
         let text = fs::read_to_string(startup).unwrap();
-        assert_eq!(text, "RULE");
+        assert_eq!(text, format!("RULE\n\n{ARTIFACTS_LINE}"));
         assert!(fs::read_to_string(s.project.join("CLAUDE.md")).unwrap().ends_with("PROJECT RULES\n"));
         assert!(s.project.join("AGENTS.md").is_file());
         assert!(s.plugin().join(".claude-plugin/plugin.json").is_file());
@@ -380,9 +388,12 @@ mod tests {
     }
 
     #[test]
-    fn an_empty_zone_passes_no_option_and_writes_nothing_in_the_project() {
+    fn an_empty_zone_gets_only_the_artifacts_line_and_writes_nothing_in_the_project() {
         let s = setup("empty");
-        assert_eq!(s.prepare(), Injection::default());
+        let startup = s.data.join("startup").join("p.md");
+        let expected = Injection { args: vec!["--append-system-prompt-file".into(), startup.clone().into_os_string()], warnings: Vec::new() };
+        assert_eq!(s.prepare(), expected);
+        assert_eq!(fs::read_to_string(startup).unwrap(), ARTIFACTS_LINE);
         assert_eq!(fs::read_dir(&s.project).unwrap().count(), 0);
         s.finish();
     }
@@ -425,7 +436,7 @@ mod tests {
         s.prepare();
         s.memory_file("projets/p/skills.md", "");
         let injection = s.prepare();
-        assert!(injection.args.is_empty());
+        assert!(!injection.args.contains(&OsString::from("--plugin-dir")), "{:?}", injection.args);
         assert!(s.plugin().join(".claude-plugin/plugin.json").is_file());
         assert!(!s.plugin().join("skills").exists());
         s.finish();
@@ -438,7 +449,7 @@ mod tests {
         s.memory_file("projets/p/skills.md", "../perso\nmissing\n");
         let injection = s.prepare();
         assert_eq!(injection.warnings, ["skills.md: no skill named ../perso", "skills.md: no skill named missing"]);
-        assert!(injection.args.is_empty());
+        assert!(!injection.args.contains(&OsString::from("--plugin-dir")), "{:?}", injection.args);
         assert!(!s.plugin().join("skills").exists());
         s.finish();
     }
@@ -487,7 +498,7 @@ mod tests {
         let _ = fs::remove_dir_all(&root);
         let injection = prepare_outside(&Memory::at(root.join("memory")), &root.join("data")).unwrap();
         assert_eq!(injection.args.len(), 2);
-        assert_eq!(fs::read_to_string(root.join("data/startup-outside.md")).unwrap(), OUTSIDE_LINE);
+        assert_eq!(fs::read_to_string(root.join("data/startup-outside.md")).unwrap(), format!("{OUTSIDE_LINE}\n\n{ARTIFACTS_LINE}"));
         fs::remove_dir_all(root).unwrap();
     }
 
@@ -530,7 +541,7 @@ mod tests {
         s.memory_file("global/rules.md", &big);
         let injection = s.prepare();
         assert_eq!(injection.warnings, ["memory opened at startup: 30 KB, above the 30 KB warning"]);
-        assert_eq!(fs::read_to_string(s.data.join("startup/p.md")).unwrap(), big);
+        assert_eq!(fs::read_to_string(s.data.join("startup/p.md")).unwrap(), format!("{big}\n\n{ARTIFACTS_LINE}"));
         s.finish();
     }
 }
