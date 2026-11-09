@@ -4,6 +4,7 @@ import { applyTheme, nextTheme, THEMES } from "./themes.js";
 import { mark, startTrace, traced } from "./trace.js";
 import { askTrust } from "./trust.js";
 import { checkItems, hasToDo } from "./welcome.js";
+import { ArtifactsWindow } from "./artifacts.js";
 
 const { invoke } = window.__TAURI__.core;
 const { listen } = window.__TAURI__.event;
@@ -379,6 +380,12 @@ function openMessages(session) {
   return loadMessages();
 }
 
+// Ctrl+Shift+A: what sessions kept for the user in the project of the visible tab.
+function openArtifacts() {
+  const project = panes.activeTab().project;
+  return artifactsWindow.open(project ? project.directory : null, project ? project.name : "other");
+}
+
 // Ctrl+Shift+M: the messages of the session of the active pane.
 function openActiveMessages() {
   const key = panes.activeSession();
@@ -700,6 +707,7 @@ const SHORTCUTS = [
   { group: "tabs", keys: "ctrl+shift+h", help: "previous tab", run: () => panes.tabStep(-1) },
   { group: "tabs", keys: "ctrl+shift+l", help: "next tab", run: () => panes.tabStep(1) },
   { group: "tabs", keys: "ctrl+shift+#", help: "tab n", run: (digit) => panes.goTab(digit) },
+  { group: "app", keys: "ctrl+shift+a", help: "artifacts of this project", run: openArtifacts },
   { group: "app", keys: "ctrl+shift+e", help: "next theme", run: cycleTheme },
   { group: "app", keys: "f1", help: "what is left to set up, and these shortcuts", run: openHelp },
 ];
@@ -778,7 +786,10 @@ const panes = new Panes(document.getElementById("panes"), document.getElementByI
   isFinished,
   markOf,
   progressOf: (key) => rowOf(key)?.progress ?? null,
+  imagesOf: (key) => rowOf(key)?.images ?? [],
 });
+
+const artifactsWindow = new ArtifactsWindow(document.getElementById("artifacts"), { onError: setStatus });
 
 const sessionDirectory = directoryField("new-form");
 const projectDirectory = directoryField("project-form");

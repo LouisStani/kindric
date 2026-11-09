@@ -5,8 +5,26 @@ const { invoke } = window.__TAURI__.core;
 
 let enabled = false;
 
+// A frame drawn this much after the one before is a jerk the eye sees.
+const LONG_FRAME_MS = 50;
+
 export async function startTrace() {
   enabled = (await invoke("trace_enabled").catch(() => false)) === true;
+  if (enabled) watchFrames();
+}
+
+// Records every long frame while the window is shown: when the page stutters, and how badly.
+function watchFrames() {
+  let last = performance.now();
+  const frame = (now) => {
+    const gap = now - last;
+    last = now;
+    if (gap > LONG_FRAME_MS && document.visibilityState === "visible") {
+      invoke("trace", { what: "long frame", ms: gap }).catch(() => {});
+    }
+    requestAnimationFrame(frame);
+  };
+  requestAnimationFrame(frame);
 }
 
 // `start` comes from performance.now().

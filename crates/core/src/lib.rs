@@ -1,6 +1,8 @@
 pub mod accounts;
+pub mod artifacts;
 pub mod attach;
 pub mod checks;
+pub mod images;
 pub mod launcher;
 pub mod mailbox;
 pub mod mcp;

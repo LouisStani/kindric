@@ -12,7 +12,7 @@ mod trace;
 mod view;
 
 use std::collections::HashMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 use std::sync::{Mutex, MutexGuard, PoisonError};
 use std::time::{Duration, Instant};
@@ -20,10 +20,12 @@ use std::time::{Duration, Instant};
 use kindric_core::attach::{attach_command, stop_command, trust_command};
 use kindric_core::launcher::{self, Request, resolve_directory};
 use kindric_core::mailbox::Mailbox;
-use kindric_core::{accounts, checks, mailbox, refresher};
+use kindric_core::accounts::SessionInfo;
+use kindric_core::artifacts::{self, Kind};
+use kindric_core::{accounts, checks, images, mailbox, refresher};
 use serde::Serialize;
 use serde::de::DeserializeOwned;
-use tauri::ipc::{Channel, InvokeResponseBody};
+use tauri::ipc::{Channel, InvokeResponseBody, Response};
 use tauri::{AppHandle, Emitter, Manager, RunEvent, State};
 
 use crate::layout::{PaneId, SessionKey, Shown};
@@ -625,14 +627,154 @@ fn write_input(shared: State<'_, Shared>, pane: PaneId, data: String) -> Result<
 
 #[tauri::command]
 fn resize_pane(shared: State<'_, Shared>, pane: PaneId, columns: u16, rows: u16) -> Result<(), String> {
+    let _span = shared.trace.span("resize_pane");
     let workspace = shared.workspace();
     let (_, attached) = workspace.attached.get(&pane).ok_or("no session in this pane")?;
     attached.resize(columns, rows).map_err(|error| error.to_string())
 }
 
+/// Larger image files are not shown.
+const LARGEST_IMAGE: u64 = 32 * 1024 * 1024;
+
+/// The bytes of an image a session proposed; the page can read no other file.
+#[tauri::command(async)]
+fn image_bytes(shared: State<'_, Shared>, path: String) -> Result<Response, String> {
+    let _span = shared.trace.span("image_bytes");
+    let proposed = shared.view.lock().unwrap_or_else(PoisonError::into_inner).sessions.iter().any(|row| row.images.contains(&path));
+    if !proposed {
+        return Err(format!("{path}: no session proposes this image now"));
+    }
+    let size = std::fs::metadata(&path).map_err(|error| format!("cannot read {path}: {error}"))?.len();
+    if size > LARGEST_IMAGE {
+        return Err(format!("{path}: {} MiB, too large to show (32 MiB at most)", size / (1024 * 1024)));
+    }
+    std::fs::read(&path).map(Response::new).map_err(|error| format!("cannot read {path}: {error}"))
+}
+
+/// The user's artifacts of `project` (a tab's folder; None for "other").
+fn artifacts_root(project: Option<&str>) -> Result<PathBuf, String> {
+    let data = mailbox::data_dir().map_err(|error| error.to_string())?;
+    Ok(artifacts::root_of_project(&data, project.map(Path::new)))
+}
+
+#[derive(Serialize)]
+struct ArtifactFile {
+    name: String,
+    /// Seconds since 1970.
+    modified: u64,
+    image: bool,
+}
+
+/// A block of the artifacts window: the unsorted files (no name), then each group.
+#[derive(Serialize)]
+struct ArtifactGroup {
+    name: Option<String>,
+    files: Vec<ArtifactFile>,
+}
+
+/// The unsorted files first, then every group by name, empty ones included.
+#[tauri::command(async)]
+fn artifacts_view(shared: State<'_, Shared>, project: Option<String>) -> Result<Vec<ArtifactGroup>, String> {
+    let _span = shared.trace.span("artifacts_view");
+    let root = artifacts_root(project.as_deref())?;
+    let listed = artifacts::entries(&root, Kind::User)?;
+    let names = std::iter::once(None).chain(artifacts::groups(&root, Kind::User)?.into_iter().map(Some));
+    Ok(names
+        .map(|name| {
+            let files = listed
+                .iter()
+                .filter(|file| file.group == name)
+                .map(|file| ArtifactFile { name: file.name.clone(), modified: file.modified, image: images::is_image_name(&file.name) })
+                .collect();
+            ArtifactGroup { name, files }
+        })
+        .collect())
+}
+
+#[tauri::command(async)]
+fn move_artifact(project: Option<String>, group: Option<String>, name: String, to: Option<String>) -> Result<(), String> {
+    artifacts::move_to(&artifacts_root(project.as_deref())?, Kind::User, group.as_deref(), &name, to.as_deref()).map(drop)
+}
+
+#[tauri::command(async)]
+fn create_artifact_group(project: Option<String>, group: String) -> Result<(), String> {
+    artifacts::create_group(&artifacts_root(project.as_deref())?, Kind::User, group.trim())
+}
+
+#[tauri::command(async)]
+fn rename_artifact_group(project: Option<String>, from: String, to: String) -> Result<(), String> {
+    artifacts::rename_group(&artifacts_root(project.as_deref())?, Kind::User, &from, to.trim())
+}
+
+/// Its files go back to the unsorted ones.
+#[tauri::command(async)]
+fn remove_artifact_group(project: Option<String>, group: String) -> Result<(), String> {
+    artifacts::remove_group(&artifacts_root(project.as_deref())?, Kind::User, &group)
+}
+
+#[tauri::command(async)]
+fn delete_artifact(project: Option<String>, group: Option<String>, name: String) -> Result<(), String> {
+    artifacts::delete(&artifacts_root(project.as_deref())?, Kind::User, group.as_deref(), &name)
+}
+
+/// The bytes of a kept image, for its thumbnail and its full view.
+#[tauri::command(async)]
+fn artifact_bytes(project: Option<String>, group: Option<String>, name: String) -> Result<Response, String> {
+    let path = artifacts::file_path(&artifacts_root(project.as_deref())?, Kind::User, group.as_deref(), &name)?;
+    let size = std::fs::metadata(&path).map_err(|error| format!("cannot read {name}: {error}"))?.len();
+    if size > LARGEST_IMAGE {
+        return Err(format!("{name}: {} MiB, too large to show (32 MiB at most)", size / (1024 * 1024)));
+    }
+    std::fs::read(&path).map(Response::new).map_err(|error| format!("cannot read {name}: {error}"))
+}
+
+/// The program that opens a file with its usual app, on each system.
+fn system_opener(path: &Path) -> std::process::Command {
+    #[cfg(windows)]
+    {
+        let mut command = std::process::Command::new("cmd");
+        command.args(["/C", "start", ""]).arg(path);
+        command
+    }
+    #[cfg(target_os = "macos")]
+    {
+        let mut command = std::process::Command::new("open");
+        command.arg(path);
+        command
+    }
+    #[cfg(all(unix, not(target_os = "macos")))]
+    {
+        let mut command = std::process::Command::new("xdg-open");
+        command.arg(path);
+        command
+    }
+}
+
+/// Opens a kept file with the app the system gives it, without waiting for it.
+#[tauri::command(async)]
+fn open_artifact(project: Option<String>, group: Option<String>, name: String) -> Result<(), String> {
+    let path = artifacts::file_path(&artifacts_root(project.as_deref())?, Kind::User, group.as_deref(), &name)?;
+    let mut command = system_opener(&path);
+    command.stdin(std::process::Stdio::null()).stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null());
+    let mut child = command.spawn().map_err(|error| format!("cannot open {name}: {error}"))?;
+    // Reaped in the background: the opener ends once it has handed the file over.
+    std::thread::spawn(move || child.wait());
+    Ok(())
+}
+
+/// The images the last turn of `session` proposed; none when the files cannot be found.
+fn proposed_images(session: &SessionInfo, implicit_default: bool) -> Vec<String> {
+    let Ok(paths) = accounts::paths() else {
+        return Vec::new();
+    };
+    let account_dir = accounts::dir_of(&paths, &session.account, implicit_default);
+    images::proposed(&account_dir, &session.session_id, Path::new(&session.cwd), std::env::home_dir().as_deref())
+}
+
 fn publish(app: &AppHandle, update: refresher::Update) -> bool {
     let shared = app.state::<Shared>();
     let start = Instant::now();
+    let implicit_default = update.as_ref().is_ok_and(|(snapshot, _)| snapshot.implicit_default);
     if let Ok((snapshot, _)) = &update {
         for (account, took) in &snapshot.timings {
             shared.trace.record(&format!("agents {account}"), *took);
@@ -643,6 +785,7 @@ fn publish(app: &AppHandle, update: refresher::Update) -> bool {
     let view = {
         let mut current = shared.view.lock().unwrap_or_else(PoisonError::into_inner);
         let mut next = view::apply(&current, update, tabs.watched());
+        view::propose_images(&mut next, &current, |session| proposed_images(session, implicit_default));
         view::assign(&mut next, &tabs, &prefs);
         next.errors.splice(0..0, shared.startup_errors.iter().cloned());
         // The same list again (the 30-second refresh, mostly): the page has nothing to draw.
@@ -838,6 +981,15 @@ fn main() -> ExitCode {
             trace,
             write_input,
             resize_pane,
+            image_bytes,
+            artifacts_view,
+            move_artifact,
+            create_artifact_group,
+            rename_artifact_group,
+            remove_artifact_group,
+            delete_artifact,
+            artifact_bytes,
+            open_artifact,
             open_trust,
             trust_input,
             trust_resize,
