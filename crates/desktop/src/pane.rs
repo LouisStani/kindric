@@ -65,6 +65,9 @@ impl Pane {
         for name in &command.env_remove {
             builder.env_remove(name);
         }
+        if let Some(directory) = &command.directory {
+            builder.cwd(directory);
+        }
         let child = pair.slave.spawn_command(builder).map_err(pty_error)?;
         drop(pair.slave);
         let reader = pair.master.try_clone_reader().map_err(pty_error)?;
@@ -130,6 +133,7 @@ mod tests {
             args: vec!["-c".into(), script.into()],
             env: Vec::new(),
             env_remove: Vec::new(),
+            directory: None,
         }
     }
 
@@ -194,6 +198,18 @@ mod tests {
         assert!(text.contains("[unset]"), "{text:?}");
     }
 
+    /// How Claude Code is started in the folder it asks about.
+    #[test]
+    #[cfg(unix)]
+    fn the_program_starts_in_the_directory_given() {
+        let directory = std::env::temp_dir().canonicalize().expect("temp dir");
+        let mut command = shell("printf '[%s]' \"$(pwd -P)\"");
+        command.directory = Some(directory.clone());
+        let (_pane, seen) = open(&command, 80, 24);
+        let text = wait_for(&seen, "]");
+        assert!(text.contains(&format!("[{}]", directory.display())), "{text:?}");
+    }
+
     #[test]
     #[cfg(unix)]
     fn typed_input_reaches_the_program() {
@@ -244,6 +260,7 @@ mod tests {
             args: vec!["/C".into(), "echo ready".into()],
             env: Vec::new(),
             env_remove: Vec::new(),
+            directory: None,
         };
         let (mut pane, seen) = open(&command, 80, 24);
         // ConPTY first asks where the cursor is and holds the output until a terminal

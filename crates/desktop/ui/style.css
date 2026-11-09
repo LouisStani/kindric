@@ -790,6 +790,42 @@ input:focus, select:focus {
   cursor: pointer;
 }
 
+/* Claude Code's trust question fits in 80 columns. */
+#trust {
+  width: min(760px, 92vw);
+}
+
+#trust-folder, #trust-message {
+  margin: 0 0 8px;
+  font-size: 12px;
+  color: var(--muted);
+}
+
+#trust-message:empty {
+  display: none;
+}
+
+#trust-screen {
+  height: 360px;
+  margin-bottom: 10px;
+  padding: 8px 10px;
+  background: var(--terminal);
+  border-radius: var(--radius);
+}
+
+#trust-done, #new-message button {
+  font-weight: 700;
+  color: var(--on-active);
+  background: var(--active);
+  border-color: var(--active);
+  cursor: pointer;
+}
+
+#new-message button {
+  margin-left: 8px;
+  padding: 2px 8px;
+}
+
 #picker-query {
   width: 100%;
 }

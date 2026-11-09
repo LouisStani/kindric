@@ -17,7 +17,7 @@ use std::process::ExitCode;
 use std::sync::{Mutex, MutexGuard, PoisonError};
 use std::time::{Duration, Instant};
 
-use kindric_core::attach::{attach_command, stop_command};
+use kindric_core::attach::{attach_command, stop_command, trust_command};
 use kindric_core::launcher::{self, Request, resolve_directory};
 use kindric_core::mailbox::Mailbox;
 use kindric_core::{accounts, checks, mailbox, refresher};
@@ -65,11 +65,24 @@ struct Shared {
     settings_file: Result<PathBuf, String>,
     /// Off unless `KINDRIC_TRACE` is set.
     trace: Trace,
+    trust: Mutex<Trust>,
+}
+
+/// The Claude Code that asks whether a folder is trusted, over the new-session form.
+/// `generation` tells its end apart from that of one closed before.
+#[derive(Default)]
+struct Trust {
+    generation: u64,
+    asking: Option<Pane>,
 }
 
 impl Shared {
     fn workspace(&self) -> MutexGuard<'_, Workspace> {
         self.workspace.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+
+    fn trust(&self) -> MutexGuard<'_, Trust> {
+        self.trust.lock().unwrap_or_else(PoisonError::into_inner)
     }
 
     fn prefs(&self) -> Prefs {
@@ -107,9 +120,23 @@ fn start_session(account: String, directory: &str, name: &str) -> Result<Created
     Ok(Created { account: request.account, short_id: launched.short_id, warnings: launched.warnings, directory: request.directory })
 }
 
+/// Why a session did not start, and whether Claude Code can be asked to trust its folder.
+#[derive(Serialize)]
+struct StartError {
+    message: String,
+    trust: bool,
+}
+
+impl From<String> for StartError {
+    fn from(message: String) -> Self {
+        let trust = launcher::needs_trust(&message);
+        Self { message, trust }
+    }
+}
+
 /// Starting a session takes a few seconds: it runs off the window's thread.
 #[tauri::command]
-async fn new_session(app: AppHandle, shared: State<'_, Shared>, account: String, directory: String, name: String) -> Result<Created, String> {
+async fn new_session(app: AppHandle, shared: State<'_, Shared>, account: String, directory: String, name: String) -> Result<Created, StartError> {
     let _span = shared.trace.span("new_session");
     let mut created = tauri::async_runtime::spawn_blocking(move || start_session(account, &directory, &name))
         .await
@@ -635,10 +662,85 @@ fn publish(app: &AppHandle, update: refresher::Update) -> bool {
     emitted
 }
 
-/// Leaves no `claude attach` behind when the window closes.
+/// Starts Claude Code in `directory` on `account`, not in the background, so that it asks whether
+/// the folder is trusted; Claude Code keeps the answer. One at a time: a second closes the first.
+/// Returns the generation that `trust-ended` will carry.
+#[tauri::command]
+fn open_trust(
+    app: AppHandle,
+    shared: State<'_, Shared>,
+    account: String,
+    directory: String,
+    columns: u16,
+    rows: u16,
+    output: Channel<InvokeResponseBody>,
+) -> Result<u64, String> {
+    let home = std::env::home_dir().ok_or("HOME is not set")?;
+    let directory = resolve_directory(&directory, &home)?;
+    let implicit = implicit_default(&account)?;
+    let mut trust = shared.trust();
+    if let Some(previous) = trust.asking.take() {
+        pane::detach(previous);
+    }
+    trust.generation += 1;
+    let generation = trust.generation;
+    let ended = app.clone();
+    let asking = Pane::open(
+        &trust_command(&account, &directory, implicit),
+        columns,
+        rows,
+        move |bytes| {
+            let _ = output.send(InvokeResponseBody::Raw(bytes.to_vec()));
+        },
+        // Waits for the lock held here, so it always sees this one recorded.
+        move || end_trust(&ended, generation),
+    )
+    .map_err(|error| format!("cannot start Claude Code in {}: {error}", directory.display()))?;
+    trust.asking = Some(asking);
+    Ok(generation)
+}
+
+/// Claude Code ended by itself in the trust window: answered no, or quit.
+fn end_trust(app: &AppHandle, generation: u64) {
+    let shared = app.state::<Shared>();
+    {
+        let mut trust = shared.trust();
+        if trust.generation != generation || trust.asking.is_none() {
+            return;
+        }
+        trust.asking = None;
+    }
+    let _ = app.emit("trust-ended", generation);
+}
+
+#[tauri::command]
+fn trust_input(shared: State<'_, Shared>, data: String) -> Result<(), String> {
+    let mut trust = shared.trust();
+    let asking = trust.asking.as_mut().ok_or("Claude Code is not asking about a folder")?;
+    asking.write(data.as_bytes()).map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+fn trust_resize(shared: State<'_, Shared>, columns: u16, rows: u16) -> Result<(), String> {
+    let trust = shared.trust();
+    let asking = trust.asking.as_ref().ok_or("Claude Code is not asking about a folder")?;
+    asking.resize(columns, rows).map_err(|error| error.to_string())
+}
+
+/// The trust window was closed: its Claude Code ends, its answer already kept.
+#[tauri::command]
+fn close_trust(shared: State<'_, Shared>) {
+    if let Some(asking) = shared.trust().asking.take() {
+        pane::detach(asking);
+    }
+}
+
+/// Leaves no `claude attach`, and no Claude Code asking about a folder, behind when the window closes.
 fn detach_on_exit(app: &AppHandle, event: RunEvent) {
     if let RunEvent::Exit = event {
-        app.state::<Shared>().workspace().attached.clear();
+        let shared = app.state::<Shared>();
+        shared.workspace().attached.clear();
+        shared.trust().asking = None;
     }
 }
 
@@ -699,6 +801,7 @@ fn main() -> ExitCode {
         settings: Mutex::new(chosen),
         settings_file,
         trace: timings,
+        trust: Mutex::new(Trust::default()),
     };
     let built = tauri::Builder::default()
         .manage(shared)
@@ -734,7 +837,11 @@ fn main() -> ExitCode {
             trace_enabled,
             trace,
             write_input,
-            resize_pane
+            resize_pane,
+            open_trust,
+            trust_input,
+            trust_resize,
+            close_trust
         ])
         .setup(|app| {
             let handle = app.handle().clone();

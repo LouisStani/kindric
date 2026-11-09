@@ -27,7 +27,7 @@ export function sameSession(key, session) {
 }
 
 // The terminal colors come from the art direction in style.css, so a theme changes them too.
-function terminalOptions() {
+export function terminalOptions() {
   const style = getComputedStyle(document.documentElement);
   const variable = (name) => style.getPropertyValue(name).trim();
   return {
@@ -43,7 +43,7 @@ function terminalOptions() {
   };
 }
 
-function loadWebgl(terminal) {
+export function loadWebgl(terminal) {
   try {
     const webgl = new WebglAddon.WebglAddon();
     webgl.onContextLoss(() => webgl.dispose());

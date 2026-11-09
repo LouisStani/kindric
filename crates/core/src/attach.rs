@@ -1,6 +1,7 @@
 //! The commands that show a background session in a terminal or stop it, the same for every
-//! interface.
+//! interface, and the one that lets Claude Code ask whether a folder is trusted.
 
+use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use crate::accounts::{LAUNCHER, default_removed_env};
@@ -12,6 +13,8 @@ pub struct AttachCommand {
     pub env: Vec<(String, String)>,
     /// Variables the program must not inherit.
     pub env_remove: Vec<String>,
+    /// Where the program starts; None keeps the app's own directory.
+    pub directory: Option<PathBuf>,
 }
 
 fn colours() -> Vec<(String, String)> {
@@ -28,6 +31,7 @@ pub fn attach_command(account: &str, short_id: &str, implicit_default: bool) -> 
             args: ["attach", short_id].map(String::from).to_vec(),
             env: colours(),
             env_remove: default_removed_env().into_iter().map(String::from).collect(),
+            directory: None,
         };
     }
     AttachCommand {
@@ -35,6 +39,30 @@ pub fn attach_command(account: &str, short_id: &str, implicit_default: bool) -> 
         args: ["run", account, "attach", short_id].map(String::from).to_vec(),
         env: colours(),
         env_remove: Vec::new(),
+        directory: None,
+    }
+}
+
+/// Claude Code itself, not in the background, in `directory`: `claude --bg` refuses a folder the
+/// account has not trusted, and only this asks. Claude Code keeps the answer in its own files.
+/// `kindric-accounts run <account>`, or `claude` without `CLAUDE_CONFIG_DIR` on the implicit
+/// `default`.
+pub fn trust_command(account: &str, directory: &Path, implicit_default: bool) -> AttachCommand {
+    if implicit_default {
+        return AttachCommand {
+            program: "claude".into(),
+            args: Vec::new(),
+            env: colours(),
+            env_remove: default_removed_env().into_iter().map(String::from).collect(),
+            directory: Some(directory.to_path_buf()),
+        };
+    }
+    AttachCommand {
+        program: LAUNCHER.into(),
+        args: ["run", account].map(String::from).to_vec(),
+        env: colours(),
+        env_remove: Vec::new(),
+        directory: Some(directory.to_path_buf()),
     }
 }
 
@@ -66,6 +94,26 @@ mod tests {
         assert!(command.env.contains(&("TERM".into(), "xterm-256color".into())));
         assert!(command.env.contains(&("COLORTERM".into(), "truecolor".into())));
         assert!(command.env_remove.is_empty());
+        assert_eq!(command.directory, None);
+    }
+
+    #[test]
+    fn asks_for_trust_through_kindric_accounts_in_the_folder() {
+        let command = trust_command("lystriq", Path::new("/work/api"), false);
+        assert_eq!(command.program, "kindric-accounts");
+        assert_eq!(command.args, ["run", "lystriq"]);
+        assert_eq!(command.directory, Some(PathBuf::from("/work/api")));
+        assert!(command.env.contains(&("TERM".into(), "xterm-256color".into())));
+        assert!(command.env_remove.is_empty());
+    }
+
+    #[test]
+    fn the_implicit_default_asks_for_trust_with_claude_alone() {
+        let command = trust_command("default", Path::new("/work/api"), true);
+        assert_eq!(command.program, "claude");
+        assert!(command.args.is_empty());
+        assert_eq!(command.directory, Some(PathBuf::from("/work/api")));
+        assert!(command.env_remove.contains(&"CLAUDE_CONFIG_DIR".to_string()));
     }
 
     #[test]
