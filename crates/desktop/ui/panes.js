@@ -1,7 +1,7 @@
 // The tabs and panes on the right. Rust owns them (tabs.rs, layout.rs): every change is a
 // command, and this module only draws what it gets back.
 
-import { mark } from "./trace.js";
+import { mark, traced } from "./trace.js";
 
 const { invoke, Channel } = window.__TAURI__.core;
 
@@ -50,12 +50,26 @@ export function terminalOptions() {
   };
 }
 
+const IMAGE_TYPES = { png: "image/png", jpg: "image/jpeg", jpeg: "image/jpeg", gif: "image/gif", webp: "image/webp" };
+
+export function imageType(path) {
+  return IMAGE_TYPES[path.split(".").pop().toLowerCase()] ?? "";
+}
+
+function fileName(path) {
+  return path.split(/[\\/]/).pop();
+}
+
 export function loadWebgl(terminal) {
   try {
     const webgl = new WebglAddon.WebglAddon();
-    webgl.onContextLoss(() => webgl.dispose());
+    webgl.onContextLoss(() => {
+      mark("webgl context lost", performance.now());
+      webgl.dispose();
+    });
     terminal.loadAddon(webgl);
   } catch (error) {
+    mark("webgl unavailable", performance.now());
     console.warn("WebGL unavailable, using the DOM renderer:", error);
   }
 }
@@ -74,11 +88,17 @@ class PaneView {
     this.element = element("div", "pane");
     this.title = element("span", "head-title");
     this.account = element("span", "head-account");
-    this.done = element("span", "head-done", "done");
+    this.done = element("span", "head-done", "✓ done");
     this.progress = element("span", "head-progress");
     const head = element("div", "pane-head");
     head.append(element("span", "prompt", "~ $"), this.title, this.account, this.progress, this.done);
     this.screen = element("div", "screen");
+    // Over the top of the terminal, which keeps its size: Claude Code does not draw again.
+    this.gallery = element("div", "pane-images");
+    this.gallery.hidden = true;
+    this.screen.append(this.gallery);
+    this.shownImages = "";
+    this.imageUrls = [];
     this.placeholder = element("p", "placeholder", "select a session");
     this.element.append(head, this.screen, this.placeholder);
     this.terminal = new Terminal(terminalOptions());
@@ -111,6 +131,40 @@ class PaneView {
     this.element.classList.toggle("finished", finished);
   }
 
+  // The images the session's last turn proposed; none hides the band.
+  async showImages(paths) {
+    const shown = paths.join("\n");
+    if (shown === this.shownImages) return;
+    this.shownImages = shown;
+    for (const url of this.imageUrls) URL.revokeObjectURL(url);
+    this.imageUrls = [];
+    this.gallery.replaceChildren();
+    this.gallery.hidden = paths.length === 0;
+    const loaded = await Promise.all(
+      paths.map((path) =>
+        invoke("image_bytes", { path }).then(
+          (bytes) => ({ path, bytes }),
+          (error) => ({ path, error: `${error}` }),
+        ),
+      ),
+    );
+    // Another list came while these were read.
+    if (this.shownImages !== shown) return;
+    for (const { path, bytes, error } of loaded) {
+      if (error !== undefined) {
+        this.gallery.append(element("p", "image-error", error));
+        continue;
+      }
+      const url = URL.createObjectURL(new Blob([new Uint8Array(bytes)], { type: imageType(path) }));
+      this.imageUrls.push(url);
+      const image = element("img");
+      image.src = url;
+      image.alt = fileName(path);
+      image.title = path;
+      this.gallery.append(image);
+    }
+  }
+
   forward(command, args) {
     if (!this.current || this.current.ended) return;
     invoke(command, { pane: this.id, ...args }).catch((error) => console.error(error));
@@ -136,6 +190,7 @@ class PaneView {
   }
 
   dispose() {
+    for (const url of this.imageUrls) URL.revokeObjectURL(url);
     this.observer.disconnect();
     this.terminal.dispose();
   }
@@ -151,7 +206,7 @@ function leaves(node, found = []) {
 }
 
 export class Panes {
-  constructor(container, bar, { keyFilter, onChange, onError, titleOf, isFinished, markOf, progressOf }) {
+  constructor(container, bar, { keyFilter, onChange, onError, titleOf, isFinished, markOf, progressOf, imagesOf }) {
     this.container = container;
     this.bar = bar;
     this.keyFilter = keyFilter;
@@ -161,12 +216,15 @@ export class Panes {
     this.isFinished = isFinished;
     this.markOf = markOf;
     this.progressOf = progressOf;
+    this.imagesOf = imagesOf;
     this.state = null;
     this.views = new Map();
     // Tab id → its page and the shape it was built for.
     this.pages = new Map();
     this.tabDrag = false;
     this.tabDropped = -Infinity;
+    // Terminals moved in the page since the last render: moving one loses what it drew.
+    this.moved = [];
   }
 
   // The terminals take the colors of the theme just applied.
@@ -253,6 +311,7 @@ export class Panes {
       page.replaceChildren(root);
       built = { page, shape };
       this.pages.set(tab.id, built);
+      this.moved.push(...leaves(tab.layout.root).map((leaf) => this.view(leaf.id)));
     }
     for (const leaf of leaves(tab.layout.root)) {
       const view = this.view(leaf.id);
@@ -289,6 +348,10 @@ export class Panes {
     // xterm measures its cells when opened, so only panes on screen are opened; every pane
     // is created in the active tab.
     for (const leaf of leaves(this.layout().root)) this.view(leaf.id).openOnce();
+    for (const view of this.moved) {
+      if (view.opened) view.terminal.refresh(0, view.terminal.rows - 1);
+    }
+    this.moved = [];
     this.renderBar();
     this.decorate();
     this.focus();
@@ -302,7 +365,9 @@ export class Panes {
     for (const leaf of this.allLeaves()) {
       const key = leaf.session;
       const title = key === null ? "" : this.titleOf(key);
-      this.view(leaf.id).label(key, title, key !== null && this.isFinished(key), key === null ? null : this.progressOf(key));
+      const view = this.view(leaf.id);
+      view.label(key, title, key !== null && this.isFinished(key), key === null ? null : this.progressOf(key));
+      view.showImages(key === null ? [] : this.imagesOf(key));
     }
   }
 
@@ -401,7 +466,10 @@ export class Panes {
     event.preventDefault();
     const row = node.direction === "row";
     let ratio = node.ratio;
+    const start = performance.now();
+    let moves = 0;
     const move = (moved) => {
+      moves += 1;
       const box = split.getBoundingClientRect();
       const offset = row ? moved.clientX - box.left : moved.clientY - box.top;
       ratio = Math.min(Math.max(offset / (row ? box.width : box.height), 0.1), 0.9);
@@ -411,6 +479,7 @@ export class Panes {
     const release = async () => {
       document.removeEventListener("mousemove", move);
       document.removeEventListener("mouseup", release);
+      mark(`drag split (${moves} moves)`, start);
       this.render(await invoke("resize_split", { split: node.id, ratio }));
     };
     document.addEventListener("mousemove", move);
@@ -418,7 +487,7 @@ export class Panes {
   }
 
   async focusPane(id) {
-    if (id !== this.layout().active) this.render(await invoke("focus_pane", { pane: id }));
+    if (id !== this.layout().active) await traced("focus pane (click)", async () => this.render(await invoke("focus_pane", { pane: id })));
   }
 
   async step(step) {

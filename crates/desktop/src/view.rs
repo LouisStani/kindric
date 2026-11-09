@@ -41,6 +41,8 @@ pub struct SessionRow {
     pub unread: usize,
     /// Claude finished a turn here and it has not been looked at since.
     pub finished: bool,
+    /// The image files Claude's last turn proposed, shown in the pane until the next prompt.
+    pub images: Vec<String>,
     /// Kept for Ctrl+P, which searches the same fields as the terminal picker.
     #[serde(skip)]
     pub info: SessionInfo,
@@ -92,6 +94,7 @@ fn row(position: usize, session: &SessionInfo, unread: usize, finished: bool) ->
         tab: 0,
         unread,
         finished,
+        images: Vec::new(),
         info: session.clone(),
         position,
     }
@@ -162,6 +165,19 @@ pub fn apply(previous: &ListView, update: Update, watched: Option<&SessionKey>) 
             sessions: previous.sessions.clone(),
             errors: vec![format!("session list unavailable: {error}")],
         },
+    }
+}
+
+/// The images of a session in `next`: looked up with `lookup` when its turn just ended, kept
+/// while it waits, gone once it works again (a prompt) or after a pause. The first list has none.
+pub fn propose_images(next: &mut ListView, previous: &ListView, lookup: impl Fn(&SessionInfo) -> Vec<String>) {
+    for row in &mut next.sessions {
+        let before = previous.sessions.iter().find(|before| before.info.session_id == row.info.session_id);
+        row.images = match (row.info.state, before.map(|before| before.info.state)) {
+            (SessionState::Waiting, Some(SessionState::Working)) => lookup(&row.info),
+            (SessionState::Waiting, Some(SessionState::Waiting)) => before.map(|before| before.images.clone()).unwrap_or_default(),
+            _ => Vec::new(),
+        };
     }
 }
 
@@ -502,6 +518,42 @@ mod tests {
         let known = known_directories(&projects, &ListView::default(), Path::new("/home/u"));
         assert_eq!(known.len(), 10);
         assert_eq!(known[9], tilde(Path::new("/home/u/p9"), Path::new("/home/u")));
+    }
+
+    fn with_images(previous: &ListView, sessions: Vec<SessionInfo>) -> ListView {
+        let mut next = refresh(previous, sessions, None);
+        propose_images(&mut next, previous, |session| vec![format!("{}.png", session.name)]);
+        next
+    }
+
+    fn images(view: &ListView) -> Vec<Vec<String>> {
+        view.sessions.iter().map(|row| row.images.clone()).collect()
+    }
+
+    #[test]
+    fn images_come_at_the_end_of_a_turn_and_go_at_the_next_prompt() {
+        let first = with_images(&ListView::default(), vec![in_state("louis", "a", SessionState::Waiting)]);
+        assert_eq!(images(&first), [Vec::<String>::new()], "the first list proposes nothing");
+        let working = with_images(&first, vec![in_state("louis", "a", SessionState::Working)]);
+        assert_eq!(images(&working), [Vec::<String>::new()]);
+        let done = with_images(&working, vec![in_state("louis", "a", SessionState::Waiting)]);
+        assert_eq!(images(&done), [vec!["a.png".to_string()]]);
+        let mut kept = refresh(&done, vec![in_state("louis", "a", SessionState::Waiting)], None);
+        propose_images(&mut kept, &done, |_| panic!("only looked up when a turn ends"));
+        assert_eq!(images(&kept), [vec!["a.png".to_string()]]);
+        let prompted = with_images(&kept, vec![in_state("louis", "a", SessionState::Working)]);
+        assert_eq!(images(&prompted), [Vec::<String>::new()]);
+        let paused = with_images(&done, vec![in_state("louis", "a", SessionState::Paused)]);
+        assert_eq!(images(&paused), [Vec::<String>::new()]);
+    }
+
+    #[test]
+    fn a_failed_refresh_keeps_the_images() {
+        let working = with_images(&ListView::default(), vec![in_state("louis", "a", SessionState::Working)]);
+        let done = with_images(&working, vec![in_state("louis", "a", SessionState::Waiting)]);
+        let mut failed = apply(&done, Err("HOME is not set".into()), None);
+        propose_images(&mut failed, &done, |_| Vec::new());
+        assert_eq!(images(&failed), [vec!["a.png".to_string()]]);
     }
 
     #[test]
