@@ -178,6 +178,12 @@ mod tests {
         fs::write(root.join("roster.json"), b"{}").unwrap();
         let mut watcher = ChangeWatcher::new().unwrap();
         assert!(watcher.ensure(&[(root.clone(), RecursiveMode::Recursive)]).is_empty());
+        // macOS can report the folder and the file written above after watching has started:
+        // those reports go first, so that only the reads below are tested.
+        let quiet_by = Instant::now() + Duration::from_secs(5);
+        while Instant::now() < quiet_by
+            && matches!(watcher.wait(Duration::from_millis(300), Duration::from_millis(50), Duration::from_secs(1)), Wake::Changed(_))
+        {}
         fs::read(root.join("roster.json")).unwrap();
         fs::read_dir(&root).unwrap().for_each(drop);
         match watcher.wait(Duration::from_millis(500), Duration::from_millis(50), Duration::from_secs(1)) {
