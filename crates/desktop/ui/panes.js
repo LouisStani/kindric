@@ -45,7 +45,7 @@ export function terminalOptions() {
 
 const IMAGE_TYPES = { png: "image/png", jpg: "image/jpeg", jpeg: "image/jpeg", gif: "image/gif", webp: "image/webp" };
 
-function imageType(path) {
+export function imageType(path) {
   return IMAGE_TYPES[path.split(".").pop().toLowerCase()] ?? "";
 }
 
