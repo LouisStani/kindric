@@ -24,6 +24,31 @@ pub enum Direction {
     Column,
 }
 
+/// Where a new pane goes in the pane it cuts: before is left or above, after is right or below.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Side {
+    Before,
+    After,
+}
+
+/// Side by side unless the pane is taller than wide.
+fn direction_for(width: f64, height: f64) -> Direction {
+    if width >= height { Direction::Row } else { Direction::Column }
+}
+
+/// The side of a new pane that puts `pointer`, measured from the top left corner of the pane cut,
+/// inside it: the cut is in the middle. After when the pointer is not over that pane.
+pub fn side_under(width: f64, height: f64, pointer: Option<(f64, f64)>) -> Side {
+    let Some((x, y)) = pointer.filter(|&(x, y)| (0.0..width).contains(&x) && (0.0..height).contains(&y)) else {
+        return Side::After;
+    };
+    let before = match direction_for(width, height) {
+        Direction::Row => x < width / 2.0,
+        Direction::Column => y < height / 2.0,
+    };
+    if before { Side::Before } else { Side::After }
+}
+
 #[derive(Clone, Debug, PartialEq, Serialize)]
 #[serde(tag = "kind", rename_all = "lowercase")]
 pub enum Node {
@@ -135,21 +160,20 @@ impl Layout {
     }
 
     /// Cuts the active pane in two, side by side unless it is taller than wide. The new,
-    /// empty pane gets the focus.
-    pub fn split(&mut self, ids: &mut Ids, width: f64, height: f64) -> PaneId {
-        let direction = if width >= height { Direction::Row } else { Direction::Column };
+    /// empty pane goes on `side` and gets the focus.
+    pub fn split(&mut self, ids: &mut Ids, width: f64, height: f64, side: Side) -> PaneId {
+        let direction = direction_for(width, height);
         let split_id = ids.take();
         let pane = ids.take();
         let active = self.active;
         if let Some(node) = find_mut(&mut self.root, active) {
-            let old = std::mem::replace(node, Node::Leaf { id: 0, session: None });
-            *node = Node::Split {
-                id: split_id,
-                direction,
-                ratio: 0.5,
-                first: Box::new(old),
-                second: Box::new(Node::Leaf { id: pane, session: None }),
+            let old = Box::new(std::mem::replace(node, Node::Leaf { id: 0, session: None }));
+            let new = Box::new(Node::Leaf { id: pane, session: None });
+            let (first, second) = match side {
+                Side::Before => (new, old),
+                Side::After => (old, new),
             };
+            *node = Node::Split { id: split_id, direction, ratio: 0.5, first, second };
             self.active = pane;
         }
         pane
@@ -256,9 +280,9 @@ mod tests {
     /// Four panes: 1 | (3 above (5 | 7)).
     fn four_panes() -> Layout {
         let (mut layout, mut ids) = fresh();
-        layout.split(&mut ids, 1000.0, 500.0);
-        layout.split(&mut ids, 500.0, 600.0);
-        layout.split(&mut ids, 500.0, 300.0);
+        layout.split(&mut ids, 1000.0, 500.0, Side::After);
+        layout.split(&mut ids, 500.0, 600.0, Side::After);
+        layout.split(&mut ids, 500.0, 300.0, Side::After);
         layout
     }
 
@@ -272,23 +296,49 @@ mod tests {
     #[test]
     fn split_direction_follows_the_shape_of_the_pane() {
         let (mut wide, mut ids) = fresh();
-        wide.split(&mut ids, 1000.0, 500.0);
+        wide.split(&mut ids, 1000.0, 500.0, Side::After);
         assert_eq!(direction_of_root(&wide), Some(Direction::Row));
         let (mut tall, mut ids) = fresh();
-        tall.split(&mut ids, 500.0, 1000.0);
+        tall.split(&mut ids, 500.0, 1000.0, Side::After);
         assert_eq!(direction_of_root(&tall), Some(Direction::Column));
         let (mut square, mut ids) = fresh();
-        square.split(&mut ids, 500.0, 500.0);
+        square.split(&mut ids, 500.0, 500.0, Side::After);
         assert_eq!(direction_of_root(&square), Some(Direction::Row));
     }
 
     #[test]
     fn the_new_pane_comes_after_the_split_one_and_gets_the_focus() {
         let (mut layout, mut ids) = fresh();
-        let pane = layout.split(&mut ids, 1000.0, 500.0);
+        let pane = layout.split(&mut ids, 1000.0, 500.0, Side::After);
         assert_eq!(layout.leaves(), [1, pane]);
         assert_eq!(layout.active(), pane);
         assert_eq!(four_panes().leaves(), [1, 3, 5, 7]);
+    }
+
+    #[test]
+    fn the_new_pane_goes_where_the_pointer_is() {
+        assert_eq!(side_under(1000.0, 500.0, Some((100.0, 400.0))), Side::Before);
+        assert_eq!(side_under(1000.0, 500.0, Some((900.0, 100.0))), Side::After);
+        assert_eq!(side_under(500.0, 1000.0, Some((400.0, 100.0))), Side::Before);
+        assert_eq!(side_under(500.0, 1000.0, Some((100.0, 900.0))), Side::After);
+    }
+
+    #[test]
+    fn without_the_pointer_over_the_pane_the_new_pane_goes_after() {
+        assert_eq!(side_under(1000.0, 500.0, None), Side::After);
+        assert_eq!(side_under(1000.0, 500.0, Some((-10.0, 100.0))), Side::After);
+        assert_eq!(side_under(1000.0, 500.0, Some((100.0, 500.0))), Side::After);
+    }
+
+    #[test]
+    fn a_new_pane_before_comes_first_and_gets_the_focus() {
+        let (mut layout, mut ids) = fresh();
+        let pane = layout.split(&mut ids, 1000.0, 500.0, Side::Before);
+        assert_eq!(layout.leaves(), [pane, 1]);
+        assert_eq!(layout.active(), pane);
+        let above = layout.split(&mut ids, 500.0, 1000.0, Side::Before);
+        assert_eq!(direction_of_root(&layout), Some(Direction::Row));
+        assert_eq!(layout.leaves(), [above, pane, 1]);
     }
 
     #[test]
@@ -321,7 +371,7 @@ mod tests {
         let (mut layout, mut ids) = fresh();
         assert_eq!(layout.close(), None);
         assert_eq!(layout.leaves(), [1]);
-        layout.split(&mut ids, 1000.0, 500.0);
+        layout.split(&mut ids, 1000.0, 500.0, Side::After);
         assert!(layout.close().is_some());
         assert_eq!(layout.close(), None);
         assert_eq!(layout.leaves(), [1]);
@@ -351,7 +401,7 @@ mod tests {
     #[test]
     fn ratio_is_bounded_and_unknown_splits_are_ignored() {
         let (mut layout, mut ids) = fresh();
-        layout.split(&mut ids, 1000.0, 500.0);
+        layout.split(&mut ids, 1000.0, 500.0, Side::After);
         let ratio = |layout: &Layout| match &layout.root {
             Node::Split { ratio, .. } => *ratio,
             Node::Leaf { .. } => f32::NAN,
@@ -374,7 +424,7 @@ mod tests {
     fn a_session_shown_elsewhere_moves_the_focus_instead_of_attaching_twice() {
         let (mut layout, mut ids) = fresh();
         assert_eq!(layout.show(1, key("aaa")), Some(Shown::Attach));
-        let second = layout.split(&mut ids, 1000.0, 500.0);
+        let second = layout.split(&mut ids, 1000.0, 500.0, Side::After);
         assert_eq!(layout.show(second, key("aaa")), Some(Shown::Already(1)));
         assert_eq!(layout.active(), 1);
         assert_eq!(layout.show(second, key("bbb")), Some(Shown::Attach));
@@ -393,7 +443,7 @@ mod tests {
     #[test]
     fn the_page_gets_the_tree_and_the_active_pane() {
         let (mut layout, mut ids) = fresh();
-        layout.split(&mut ids, 1000.0, 500.0);
+        layout.split(&mut ids, 1000.0, 500.0, Side::After);
         layout.show(3, key("aaa"));
         let json = serde_json::to_value(&layout).unwrap_or_default();
         assert_eq!(json["active"], 3);
@@ -408,7 +458,7 @@ mod tests {
         assert_eq!(layout.active_session(), None);
         layout.show(1, key("aaa"));
         assert_eq!(layout.active_session(), Some(&key("aaa")));
-        layout.split(&mut ids, 1000.0, 500.0);
+        layout.split(&mut ids, 1000.0, 500.0, Side::After);
         assert_eq!(layout.active_session(), None, "the new pane is empty");
         layout.focus(1);
         assert_eq!(layout.active_session(), Some(&key("aaa")));
