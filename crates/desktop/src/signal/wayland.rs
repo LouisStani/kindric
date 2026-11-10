@@ -1,14 +1,15 @@
 //! The haze on Wayland: one layer-shell surface per screen, over every window, taking no input,
 //! so the mouse and keyboard go through. The haze and the message on top are drawn on the
-//! processor once per size, at the screen's scale, then faded in over a few frames. Virtual screens
-//! (`HEADLESS-…`) are left bare: a skill captures windows there.
+//! processor once per size, at the screen's scale. The compositor fades it in, as it does every
+//! layer surface (Hyprland's `layersIn`): stepping a fade here, buffer after buffer, only made it
+//! jerky. Virtual screens (`HEADLESS-…`) are left bare: a skill captures windows there.
 
 use std::path::Path;
 use std::process::Command;
 use std::time::{Duration, SystemTime};
 
 use fontdue::{Font, FontSettings};
-use smithay_client_toolkit::compositor::{CompositorHandler, CompositorState, FrameCallbackData, Region};
+use smithay_client_toolkit::compositor::{CompositorHandler, CompositorState, Region};
 use smithay_client_toolkit::output::{OutputHandler, OutputState};
 use smithay_client_toolkit::reexports::client::globals::registry_queue_init;
 use smithay_client_toolkit::reexports::client::protocol::{wl_output, wl_shm, wl_surface};
@@ -26,8 +27,6 @@ use super::{LIFETIME, haze_alpha, over, premultiplied};
 
 /// How often the process looks at its file: `off` shows within this.
 pub const WATCH: Duration = Duration::from_millis(40);
-/// Frames of the fade in.
-const FADE_FRAMES: u32 = 6;
 /// The message, in surface pixels: its size, the room around it in its pill, and the pill's
 /// distance from the top of the screen.
 const TEXT_SIZE: f32 = 15.0;
@@ -52,9 +51,7 @@ struct Screen {
     scale: u32,
     /// Size of the buffer, in buffer pixels.
     size: Option<(u32, u32)>,
-    /// Every pixel at full strength, premultiplied, for the size above.
-    image: Vec<[u8; 4]>,
-    frame: u32,
+    drawn: bool,
 }
 
 struct Haze {
@@ -116,7 +113,7 @@ pub fn show(rgb: [u8; 3], message: &str, pid_file: &Path) -> Result<(), String> 
         layer.set_keyboard_interactivity(KeyboardInteractivity::None);
         layer.set_size(0, 0);
         layer.commit();
-        haze.screens.push(Screen { layer, _no_input: no_input, scale, size: None, image: Vec::new(), frame: 0 });
+        haze.screens.push(Screen { layer, _no_input: no_input, scale, size: None, drawn: false });
     }
     if haze.screens.is_empty() {
         return Err("no screen to show the signal on".to_string());
@@ -124,7 +121,7 @@ pub fn show(rgb: [u8; 3], message: &str, pid_file: &Path) -> Result<(), String> 
     let mut announced = false;
     while !haze.closed {
         queue.blocking_dispatch(&mut haze).map_err(|error| format!("Wayland: {error}"))?;
-        if !announced && haze.screens.iter().all(|screen| screen.frame > 0) {
+        if !announced && haze.screens.iter().all(|screen| screen.drawn) {
             announced = true;
             announce(pid_file)?;
         }
@@ -236,33 +233,31 @@ fn announce(pid_file: &Path) -> Result<(), String> {
 }
 
 impl Haze {
-    /// Draws one step of the fade on `surface`, and asks for the next frame until the last.
-    fn draw(&mut self, handle: &QueueHandle<Self>, surface: &wl_surface::WlSurface) {
-        let Some(screen) = self.screens.iter_mut().find(|screen| screen.layer.wl_surface() == surface) else {
+    /// Draws the haze and the message on the screen of `layer`, at its size.
+    fn draw(&mut self, layer: &LayerSurface) {
+        let (rgb, font, message) = (self.rgb, self.font.as_ref(), self.message.as_str());
+        let Some(screen) = self.screens.iter_mut().find(|screen| &screen.layer == layer) else {
             return;
         };
         let Some((width, height)) = screen.size else {
             return;
         };
-        screen.frame = (screen.frame + 1).min(FADE_FRAMES);
-        let strength = screen.frame as f32 / FADE_FRAMES as f32;
         let (Ok(stride), Ok(signed_width), Ok(signed_height)) = (i32::try_from(width * 4), i32::try_from(width), i32::try_from(height)) else {
             return;
         };
         let Ok((buffer, canvas)) = self.pool.create_buffer(signed_width, signed_height, stride, wl_shm::Format::Argb8888) else {
             return;
         };
+        let label = font.map(|font| rasterize(font, message, TEXT_SIZE * screen.scale as f32));
         let (pixels, _) = canvas.as_chunks_mut::<4>();
-        for (pixel, full) in pixels.iter_mut().zip(&screen.image) {
-            *pixel = full.map(|channel| (f32::from(channel) * strength).round() as u8);
+        for (pixel, drawn) in pixels.iter_mut().zip(compose(width, height, screen.scale, rgb, label.as_ref())) {
+            *pixel = drawn;
         }
         let surface = screen.layer.wl_surface();
         surface.damage_buffer(0, 0, signed_width, signed_height);
-        if screen.frame < FADE_FRAMES {
-            surface.frame(handle, FrameCallbackData(surface.clone()));
-        }
         if buffer.attach_to(surface).is_ok() {
             screen.layer.commit();
+            screen.drawn = true;
         }
     }
 }
@@ -272,9 +267,7 @@ impl CompositorHandler for Haze {
 
     fn transform_changed(&mut self, _: &Connection, _: &QueueHandle<Self>, _: &wl_surface::WlSurface, _: wl_output::Transform) {}
 
-    fn frame(&mut self, _: &Connection, handle: &QueueHandle<Self>, surface: &wl_surface::WlSurface, _: u32) {
-        self.draw(handle, surface);
-    }
+    fn frame(&mut self, _: &Connection, _: &QueueHandle<Self>, _: &wl_surface::WlSurface, _: u32) {}
 
     fn surface_enter(&mut self, _: &Connection, _: &QueueHandle<Self>, _: &wl_surface::WlSurface, _: &wl_output::WlOutput) {}
 
@@ -299,24 +292,16 @@ impl LayerShellHandler for Haze {
         self.closed = self.screens.is_empty();
     }
 
-    fn configure(&mut self, _: &Connection, handle: &QueueHandle<Self>, layer: &LayerSurface, configure: LayerSurfaceConfigure, _: u32) {
-        let surface = layer.wl_surface().clone();
-        let (rgb, font, message) = (self.rgb, self.font.as_ref(), self.message.as_str());
-        let Some(screen) = self.screens.iter_mut().find(|screen| screen.layer.wl_surface() == &surface) else {
+    fn configure(&mut self, _: &Connection, _: &QueueHandle<Self>, layer: &LayerSurface, configure: LayerSurfaceConfigure, _: u32) {
+        let Some(screen) = self.screens.iter_mut().find(|screen| &screen.layer == layer) else {
             return;
         };
         let (width, height) = (configure.new_size.0 * screen.scale, configure.new_size.1 * screen.scale);
         if width == 0 || height == 0 || screen.size == Some((width, height)) {
             return;
         }
-        if screen.size.is_some() {
-            // A new size: drawn again at the strength reached.
-            screen.frame = screen.frame.saturating_sub(1);
-        }
-        let label = font.map(|font| rasterize(font, message, TEXT_SIZE * screen.scale as f32));
         screen.size = Some((width, height));
-        screen.image = compose(width, height, screen.scale, rgb, label.as_ref());
-        self.draw(handle, &surface);
+        self.draw(layer);
     }
 }
 
