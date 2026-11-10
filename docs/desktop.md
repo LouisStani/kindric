@@ -107,7 +107,7 @@ Clicking a chip opens the session in the active pane of its project's tab, movin
 | `Ctrl+Shift+H` / `Ctrl+Shift+L` | Previous / next tab |
 | `Ctrl+Shift+1` … `Ctrl+Shift+9` | Tab n |
 | **App** | |
-| `Ctrl+,` | Settings: accounts |
+| `Ctrl+,` | Settings: accounts, memory, shortcuts |
 | `Ctrl+Shift+E` | Next theme |
 | `F1` | Setup checklist and these shortcuts |
 
@@ -117,9 +117,13 @@ Unlike the terminal interface, the number of a session changes with its state: `
 
 ## Settings
 
-`Ctrl+,` lists the accounts of kindric-accounts: logged in or not, plan, running sessions, isolated. **add** creates an account and opens Claude Code's login in a window of the app. **log in** does the same for an account that is logged out. **remove** takes an account off the list after you confirm; its folder stays on disk.
+`Ctrl+,` opens the settings with the cursor in a search field: type to find a setting in every category, or pick a category on the left (Up and Down from the search). Escape empties the search, then closes.
+
+The accounts section lists the accounts of kindric-accounts: logged in or not, plan, running sessions, isolated. **add** creates an account and opens Claude Code's login in a window of the app. **log in** does the same for an account that is logged out. **remove** takes an account off the list after you confirm; its folder stays on disk.
 
 The memory section sets the size above which a session is warned about the memory it opens at startup: 30 KB by default. It is a warning, nothing is cut. The value is kept in `~/.config/claude-accounts/memory-warning`.
+
+The shortcuts section changes the key of an action: press **change**, then the new keys. A key needs Ctrl or Alt (F1 to F12 alone are fine), and one already taken is refused with the name of its action. **reset** gives the action its own key back. Changed keys are kept in `settings.json`.
 
 ## Themes
 

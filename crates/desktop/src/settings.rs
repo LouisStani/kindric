@@ -1,5 +1,6 @@
 //! What the app keeps about itself, in `settings.json` (see `store`): the theme chosen with
-//! Ctrl+Shift+E. And the theme of `theme.json`, colors only.
+//! Ctrl+Shift+E and the shortcuts changed in the settings. And the theme of `theme.json`, colors
+//! only.
 
 use std::collections::BTreeMap;
 
@@ -32,6 +33,28 @@ pub const COLORS: [&str; 19] = [
 pub struct Settings {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub theme: Option<String>,
+    /// Shortcut id → its keys, for the shortcuts changed only.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub keys: BTreeMap<String, String>,
+}
+
+const MODIFIERS: [&str; 3] = ["ctrl", "shift", "alt"];
+
+/// The id of a shortcut: lowercase words joined by `-`.
+pub fn is_shortcut_id(id: &str) -> bool {
+    (1..=32).contains(&id.len()) && id.split('-').all(|word| !word.is_empty() && word.chars().all(|c| c.is_ascii_lowercase()))
+}
+
+/// Keys as the page names them: `ctrl`, `shift`, `alt` at most once each and in that order, then
+/// one key of letters and digits (`d`, `f5`, `comma`). Nothing else is saved.
+pub fn is_key_name(keys: &str) -> bool {
+    let mut parts: Vec<&str> = keys.split('+').collect();
+    let Some(key) = parts.pop() else {
+        return false;
+    };
+    let key_ok = (1..=16).contains(&key.len()) && key.chars().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit());
+    let mut rest = MODIFIERS.iter();
+    key_ok && parts.iter().all(|part| rest.by_ref().any(|modifier| modifier == part))
 }
 
 /// `#rgb`, `#rrggbb` or `#rrggbbaa`: nothing else reaches the page's CSS.
@@ -101,7 +124,37 @@ mod tests {
     #[test]
     fn only_a_chosen_theme_is_written() {
         assert_eq!(serde_json::to_string(&Settings::default()).unwrap(), "{}");
-        let chosen = Settings { theme: Some("paper".into()) };
+        let chosen = Settings { theme: Some("paper".into()), ..Settings::default() };
         assert_eq!(serde_json::to_string(&chosen).unwrap(), r#"{"theme":"paper"}"#);
+    }
+
+    #[test]
+    fn a_settings_file_without_keys_still_reads_and_changed_keys_are_kept() {
+        let old: Settings = serde_json::from_str(r#"{"theme":"paper"}"#).unwrap();
+        assert!(old.keys.is_empty());
+        let mut changed = old.clone();
+        changed.keys.insert("split".into(), "ctrl+alt+d".into());
+        let json = serde_json::to_string(&changed).unwrap();
+        assert_eq!(json, r#"{"theme":"paper","keys":{"split":"ctrl+alt+d"}}"#);
+        assert_eq!(serde_json::from_str::<Settings>(&json).unwrap(), changed);
+    }
+
+    #[test]
+    fn only_key_names_of_the_page_are_taken() {
+        for keys in ["ctrl+alt+d", "f5", "ctrl+comma", "ctrl+shift+alt+bracketleft", "alt+3"] {
+            assert!(is_key_name(keys), "{keys:?} refused");
+        }
+        for keys in ["", "ctrl+", "+d", "<script>", "shift+ctrl+d", "ctrl+ctrl+d", "meta+d", "ctrl+D", "ctrl+averyveryverylongkey"] {
+            assert!(!is_key_name(keys), "{keys:?} taken");
+        }
+    }
+
+    #[test]
+    fn shortcut_ids_are_plain_words() {
+        assert!(is_shortcut_id("new-session"));
+        assert!(is_shortcut_id("split"));
+        for id in ["", "New", "a--b", "-a", "a b", "../x"] {
+            assert!(!is_shortcut_id(id), "{id:?} taken");
+        }
     }
 }

@@ -649,6 +649,29 @@ fn set_theme(shared: State<'_, Shared>, name: String) -> Result<(), String> {
     Ok(())
 }
 
+/// A shortcut changed in the settings, saved before it counts; None gives it its own keys back.
+#[tauri::command]
+fn set_key(shared: State<'_, Shared>, id: String, keys: Option<String>) -> Result<(), String> {
+    if !settings::is_shortcut_id(&id) {
+        return Err(format!("unknown shortcut {id:?}"));
+    }
+    if let Some(keys) = &keys
+        && !settings::is_key_name(keys)
+    {
+        return Err(format!("{keys:?} is not a key the app can use"));
+    }
+    let path = shared.settings_file.as_ref()?;
+    let mut saved = shared.settings.lock().unwrap_or_else(PoisonError::into_inner);
+    let mut next = saved.clone();
+    match keys {
+        Some(keys) => next.keys.insert(id, keys),
+        None => next.keys.remove(&id),
+    };
+    store::save(path, &next).map_err(|error| format!("cannot save {}: {error}", path.display()))?;
+    *saved = next;
+    Ok(())
+}
+
 /// The colors of `theme.json`, read again each time it is chosen; None without the file.
 #[tauri::command(async)]
 fn custom_theme() -> Result<Option<std::collections::BTreeMap<String, String>>, String> {
@@ -1080,6 +1103,7 @@ fn main() -> ExitCode {
             forget_account,
             memory_warning,
             set_memory_warning,
+            set_key,
             helper_input,
             helper_resize,
             close_helper
