@@ -36,14 +36,14 @@
       <button type="submit">start</button>
     </form>
   </dialog>
-  <dialog id="trust">
-    <h1>trust this folder</h1>
-    <p class="muted">answer Claude Code below, then press done: kindric starts the session again.</p>
-    <p id="trust-folder"></p>
-    <div id="trust-screen"></div>
-    <p id="trust-message"></p>
+  <dialog id="helper">
+    <h1 id="helper-title"></h1>
+    <p class="muted" id="helper-hint"></p>
+    <p id="helper-subject"></p>
+    <div id="helper-screen"></div>
+    <p id="helper-message"></p>
     <div class="buttons">
-      <button type="button" id="trust-done">done</button>
+      <button type="button" id="helper-done">done</button>
     </div>
   </dialog>
   <dialog id="new-project">
@@ -72,6 +72,18 @@
         <button type="submit">hide</button>
       </div>
     </form>
+  </dialog>
+  <dialog id="settings">
+    <h1>settings</h1>
+    <section class="settings-section">
+      <h2>accounts</h2>
+      <ul class="accounts-list"></ul>
+      <form class="accounts-add">
+        <label>new account <input name="name" placeholder="e.g. work" spellcheck="false" autocomplete="off"></label>
+        <button type="submit">add</button>
+      </form>
+      <p class="accounts-message"></p>
+    </section>
   </dialog>
   <dialog id="artifacts" tabindex="-1">
     <h1 class="artifacts-title">artifacts</h1>

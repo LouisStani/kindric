@@ -107,12 +107,17 @@ Clicking a chip opens the session in the active pane of its project's tab, movin
 | `Ctrl+Shift+H` / `Ctrl+Shift+L` | Previous / next tab |
 | `Ctrl+Shift+1` … `Ctrl+Shift+9` | Tab n |
 | **App** | |
+| `Ctrl+,` | Settings: accounts |
 | `Ctrl+Shift+E` | Next theme |
 | `F1` | Setup checklist and these shortcuts |
 
 Unlike the terminal interface, the number of a session changes with its state: `Alt+1` is always the session that needs you most.
 
 **On macOS**, `Cmd` replaces `Ctrl` everywhere (`Cmd+N`, `Cmd+Shift+T`…), so all `Ctrl` keys go to the terminal. Copy and paste are `Cmd+C` and `Cmd+V`. Previous / next pane are `Cmd+[` and `Cmd+]`, since `Cmd+H` hides the app.
+
+## Settings
+
+`Ctrl+,` lists the accounts of kindric-accounts: logged in or not, plan, running sessions, isolated. **add** creates an account and opens Claude Code's login in a window of the app. **log in** does the same for an account that is logged out. **remove** takes an account off the list after you confirm; its folder stays on disk.
 
 ## Themes
 

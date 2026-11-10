@@ -829,22 +829,22 @@ input:focus, select:focus {
   cursor: pointer;
 }
 
-/* Claude Code's trust question fits in 80 columns. */
-#trust {
+/* Claude Code's trust question and login fit in 80 columns. */
+#helper {
   width: min(760px, 92vw);
 }
 
-#trust-folder, #trust-message {
+#helper-subject, #helper-message {
   margin: 0 0 8px;
   font-size: 12px;
   color: var(--muted);
 }
 
-#trust-message:empty {
+#helper-message:empty {
   display: none;
 }
 
-#trust-screen {
+#helper-screen {
   height: 360px;
   margin-bottom: 10px;
   padding: 8px 10px;
@@ -852,7 +852,7 @@ input:focus, select:focus {
   border-radius: var(--radius);
 }
 
-#trust-done, #new-message button {
+#helper-done, #new-message button {
   font-weight: 700;
   color: var(--on-active);
   background: var(--active);
@@ -1058,4 +1058,88 @@ input:focus, select:focus {
 
 .help-group span {
   color: var(--muted);
+}
+
+/* Settings (Ctrl+,): one section per subject, accounts first. */
+#settings {
+  width: min(640px, 90vw);
+}
+
+.settings-section h2 {
+  margin: 0 0 8px;
+  font-size: 13px;
+  color: var(--muted);
+}
+
+.accounts-list {
+  display: grid;
+  gap: 8px;
+  margin: 0 0 12px;
+  padding: 0;
+  list-style: none;
+}
+
+.account {
+  display: grid;
+  grid-template-columns: minmax(0, 12ch) 10ch minmax(0, 1fr) auto;
+  gap: 6px 12px;
+  align-items: baseline;
+}
+
+.account-name {
+  overflow: hidden;
+  font-weight: 700;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.account-state.logged-in {
+  color: var(--done);
+}
+
+.account-state.logged-out {
+  color: var(--waiting);
+}
+
+.account-state.unknown {
+  color: var(--error);
+}
+
+.account-actions {
+  display: flex;
+  gap: 6px;
+}
+
+.account-confirm {
+  grid-column: 1 / -2;
+  color: var(--text);
+}
+
+.account-actions .danger {
+  color: var(--error);
+  border-color: var(--error);
+}
+
+.accounts-add {
+  display: flex;
+  gap: 8px;
+  align-items: end;
+}
+
+.accounts-add label {
+  display: grid;
+  flex: 1;
+  gap: 4px;
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.accounts-message {
+  margin: 8px 0 0;
+  font-size: 12px;
+  color: var(--error);
+}
+
+.accounts-message:empty {
+  display: none;
 }
