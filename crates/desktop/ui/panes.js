@@ -225,6 +225,11 @@ export class Panes {
     this.tabDropped = -Infinity;
     // Terminals moved in the page since the last render: moving one loses what it drew.
     this.moved = [];
+    // Where the mouse was last seen in the window, or null once it left: a split puts the new
+    // pane under it.
+    this.pointer = null;
+    document.addEventListener("mousemove", (event) => (this.pointer = { x: event.clientX, y: event.clientY }), true);
+    document.documentElement.addEventListener("mouseleave", () => (this.pointer = null));
   }
 
   // The terminals take the colors of the theme just applied.
@@ -285,6 +290,11 @@ export class Panes {
     if (node.kind === "leaf") {
       const view = this.view(node.id);
       view.element.onmousedown = () => this.focusPane(node.id);
+      // The pane under the mouse is the active one, unless a button is held (a selection, a
+      // separator or a tab being dragged) or a dialog is open over the panes.
+      view.element.onmouseenter = (event) => {
+        if (event.buttons === 0 && !document.querySelector("dialog[open]")) this.focusPane(node.id, "hover");
+      };
       return view.element;
     }
     const split = element("div", `split ${node.direction}`);
@@ -486,8 +496,8 @@ export class Panes {
     document.addEventListener("mouseup", release);
   }
 
-  async focusPane(id) {
-    if (id !== this.layout().active) await traced("focus pane (click)", async () => this.render(await invoke("focus_pane", { pane: id })));
+  async focusPane(id, cause = "click") {
+    if (id !== this.layout().active) await traced(`focus pane (${cause})`, async () => this.render(await invoke("focus_pane", { pane: id })));
   }
 
   async step(step) {
@@ -496,7 +506,8 @@ export class Panes {
 
   async split() {
     const box = this.active().element.getBoundingClientRect();
-    this.render(await invoke("split_pane", { width: box.width, height: box.height }));
+    const pointer = this.pointer && [this.pointer.x - box.left, this.pointer.y - box.top];
+    this.render(await invoke("split_pane", { width: box.width, height: box.height, pointer }));
   }
 
   async close() {

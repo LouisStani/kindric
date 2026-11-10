@@ -6,7 +6,7 @@ use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
-use crate::layout::{Ids, Layout, PaneId, SessionKey, Shown};
+use crate::layout::{Ids, Layout, PaneId, SessionKey, Shown, Side};
 use crate::projects::{self, Project};
 
 #[derive(Clone, Debug, PartialEq, Serialize)]
@@ -88,10 +88,10 @@ impl Tabs {
         self.tabs[self.index()].layout.active_session()
     }
 
-    /// Splits the active pane of the active tab.
-    pub fn split(&mut self, width: f64, height: f64) {
+    /// Splits the active pane of the active tab; the new pane goes on `side`.
+    pub fn split(&mut self, width: f64, height: f64, side: Side) {
         let index = self.index();
-        self.tabs[index].layout.split(&mut self.ids, width, height);
+        self.tabs[index].layout.split(&mut self.ids, width, height, side);
     }
 
     /// A tab for `project`, with one empty pane, after the others so their numbers do not
@@ -281,9 +281,9 @@ mod tests {
     #[test]
     fn pane_ids_are_unique_across_tabs() {
         let mut tabs = Tabs::default();
-        tabs.split(1000.0, 500.0);
+        tabs.split(1000.0, 500.0, Side::After);
         add(&mut tabs);
-        tabs.split(1000.0, 500.0);
+        tabs.split(1000.0, 500.0, Side::After);
         add(&mut tabs);
         let mut all = panes(&tabs);
         assert_eq!(all.len(), 5);
@@ -306,7 +306,7 @@ mod tests {
     fn closing_a_tab_returns_its_panes_and_focuses_the_previous_tab() {
         let mut tabs = Tabs::default();
         add(&mut tabs);
-        tabs.split(1000.0, 500.0);
+        tabs.split(1000.0, 500.0, Side::After);
         let middle = panes(&tabs)[1..].to_vec();
         add(&mut tabs);
         tabs.go(2);
@@ -437,7 +437,7 @@ mod tests {
     #[test]
     fn a_session_shown_in_the_same_tab_gets_the_focus_and_leaves_nothing() {
         let mut tabs = Tabs::default();
-        tabs.split(1000.0, 500.0);
+        tabs.split(1000.0, 500.0, Side::After);
         let shown = active_tab(&tabs).layout.leaves()[0];
         tabs.show(shown, key("aaa"));
         tabs.current_mut().focus_step(1);

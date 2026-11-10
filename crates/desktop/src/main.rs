@@ -1,5 +1,6 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+mod claim;
 mod layout;
 mod messages;
 mod pane;
@@ -28,6 +29,7 @@ use serde::de::DeserializeOwned;
 use tauri::ipc::{Channel, InvokeResponseBody, Response};
 use tauri::{AppHandle, Emitter, Manager, RunEvent, State};
 
+use crate::claim::Claim;
 use crate::layout::{PaneId, SessionKey, Shown};
 use crate::messages::MessageRow;
 use crate::pane::Pane;
@@ -39,12 +41,13 @@ use crate::trace::Trace;
 use crate::view::{ListView, SessionRow};
 
 /// The tabs, their panes and the sessions attached in them. `generation` changes with every attach, so
-/// the end of a session that was since replaced in its pane is ignored.
+/// the end of a session that was since replaced in its pane is ignored. The claim keeps other kindric
+/// windows from showing the same session.
 #[derive(Default)]
 struct Workspace {
     tabs: Tabs,
     generation: u64,
-    attached: HashMap<PaneId, (u64, Pane)>,
+    attached: HashMap<PaneId, (u64, Pane, Claim)>,
 }
 
 struct Shared {
@@ -68,6 +71,8 @@ struct Shared {
     /// Off unless `KINDRIC_TRACE` is set.
     trace: Trace,
     trust: Mutex<Trust>,
+    /// Where the locks of the sessions shown here are taken, or why they cannot be.
+    claims_dir: Result<PathBuf, String>,
 }
 
 /// The Claude Code that asks whether a folder is trusted, over the new-session form.
@@ -241,7 +246,7 @@ fn tabs(shared: State<'_, Shared>) -> Tabs {
 
 /// Takes the session out of `pane`, without waiting for its attaching process to end.
 fn detach(workspace: &mut Workspace, pane: PaneId) {
-    if let Some((_, attached)) = workspace.attached.remove(&pane) {
+    if let Some((_, attached, _)) = workspace.attached.remove(&pane) {
         pane::detach(attached);
     }
 }
@@ -281,11 +286,13 @@ fn respond(app: &AppHandle, shared: &Shared, workspace: MutexGuard<'_, Workspace
     tabs
 }
 
+/// `pointer` is where the mouse is, from the top left corner of the active pane, if known: the new
+/// pane goes under it.
 #[tauri::command]
-fn split_pane(app: AppHandle, shared: State<'_, Shared>, width: f64, height: f64) -> Tabs {
+fn split_pane(app: AppHandle, shared: State<'_, Shared>, width: f64, height: f64, pointer: Option<(f64, f64)>) -> Tabs {
     let _span = shared.trace.span("split_pane");
     let mut workspace = shared.workspace();
-    workspace.tabs.split(width, height);
+    workspace.tabs.split(width, height, layout::side_under(width, height, pointer));
     respond(&app, &shared, workspace)
 }
 
@@ -496,7 +503,7 @@ fn end_session(app: &AppHandle, pane: PaneId, generation: u64) {
     let shared = app.state::<Shared>();
     let tabs = {
         let mut workspace = shared.workspace();
-        if workspace.attached.get(&pane).map(|(current, _)| *current) != Some(generation) {
+        if workspace.attached.get(&pane).map(|(current, ..)| *current) != Some(generation) {
             return;
         }
         workspace.attached.remove(&pane);
@@ -526,7 +533,7 @@ fn open_session(
     let implicit = implicit_default(&account)?;
     let mut workspace = shared.workspace();
     let key = SessionKey { account: account.clone(), short_id: short_id.clone() };
-    let left = match workspace.tabs.show(pane, key) {
+    let left = match workspace.tabs.show(pane, key.clone()) {
         None => return Err(format!("no pane {pane}")),
         Some((Shown::Already(_), _)) => return Ok(Opened { tabs: respond(&app, &shared, workspace), generation: None }),
         Some((Shown::Attach, left)) => left,
@@ -538,6 +545,14 @@ fn open_session(
             detach(&mut workspace, pane);
         }
     }
+    // Taken once the panes of this window that showed the session have let it go.
+    let claim = match shared.claims_dir.as_ref().map_err(Clone::clone).and_then(|directory| claim::claim(directory, &key)) {
+        Ok(claim) => claim,
+        Err(error) => {
+            workspace.tabs.clear(pane);
+            return Err(error);
+        },
+    };
     workspace.generation += 1;
     let generation = workspace.generation;
     let ended = app.clone();
@@ -559,7 +574,7 @@ fn open_session(
     );
     match opened {
         Ok(attached) => {
-            workspace.attached.insert(pane, (generation, attached));
+            workspace.attached.insert(pane, (generation, attached, claim));
             Ok(Opened { tabs: respond(&app, &shared, workspace), generation: Some(generation) })
         },
         Err(error) => {
@@ -621,7 +636,7 @@ fn trace(shared: State<'_, Shared>, what: String, ms: f64) {
 #[tauri::command]
 fn write_input(shared: State<'_, Shared>, pane: PaneId, data: String) -> Result<(), String> {
     let mut workspace = shared.workspace();
-    let (_, attached) = workspace.attached.get_mut(&pane).ok_or("no session in this pane")?;
+    let (_, attached, _) = workspace.attached.get_mut(&pane).ok_or("no session in this pane")?;
     attached.write(data.as_bytes()).map_err(|error| error.to_string())
 }
 
@@ -629,7 +644,7 @@ fn write_input(shared: State<'_, Shared>, pane: PaneId, data: String) -> Result<
 fn resize_pane(shared: State<'_, Shared>, pane: PaneId, columns: u16, rows: u16) -> Result<(), String> {
     let _span = shared.trace.span("resize_pane");
     let workspace = shared.workspace();
-    let (_, attached) = workspace.attached.get(&pane).ok_or("no session in this pane")?;
+    let (_, attached, _) = workspace.attached.get(&pane).ok_or("no session in this pane")?;
     attached.resize(columns, rows).map_err(|error| error.to_string())
 }
 
@@ -945,6 +960,9 @@ fn main() -> ExitCode {
         settings_file,
         trace: timings,
         trust: Mutex::new(Trust::default()),
+        claims_dir: mailbox::data_dir()
+            .map(|directory| directory.join("attached"))
+            .map_err(|error| format!("cannot tell whether another kindric window shows a session: {error}")),
     };
     let built = tauri::Builder::default()
         .manage(shared)
