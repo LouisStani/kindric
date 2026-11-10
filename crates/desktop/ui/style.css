@@ -1061,9 +1061,6 @@ input:focus, select:focus {
 }
 
 /* Settings (Ctrl+,): one section per subject, accounts first. */
-#settings {
-  width: min(640px, 90vw);
-}
 
 .settings-section h2 {
   margin: 0 0 8px;
@@ -1144,8 +1141,8 @@ input:focus, select:focus {
   display: none;
 }
 
-.settings-section + .settings-section {
-  margin-top: 18px;
+.settings-section {
+  margin-bottom: 18px;
 }
 
 .memory-warning {
@@ -1171,5 +1168,122 @@ input:focus, select:focus {
 }
 
 .memory-message:empty {
+  display: none;
+}
+
+/* A search on top, the categories on the left, the content scrolls on its own: the window keeps
+   its size from one category to the next. */
+#settings {
+  width: min(760px, 92vw);
+}
+
+.settings-search {
+  width: 100%;
+  margin-bottom: 12px;
+}
+
+.settings-body {
+  display: grid;
+  grid-template-columns: 14ch minmax(0, 1fr);
+  gap: 16px;
+  height: min(520px, 64vh);
+}
+
+.settings-categories {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.settings-categories li {
+  padding: 4px 8px;
+  border-radius: var(--radius);
+  color: var(--muted);
+  cursor: pointer;
+}
+
+.settings-categories li.chosen {
+  color: var(--on-active);
+  background: var(--active);
+}
+
+.settings-categories.bypassed li {
+  color: var(--faint);
+}
+
+.settings-content {
+  overflow-y: auto;
+  padding-right: 4px;
+}
+
+/* The category's name is on the left already; a search shows it above its lines. */
+.settings-content:not(.searching) .settings-section h2 {
+  display: none;
+}
+
+.settings-section[hidden], .settings-content [data-search][hidden], .shortcuts-group[hidden] {
+  display: none;
+}
+
+.settings-empty {
+  margin: 0;
+}
+
+.shortcuts-group {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 16ch 18ch;
+  gap: 4px 12px;
+  align-items: center;
+}
+
+.shortcuts-group + .shortcuts-group {
+  margin-top: 12px;
+}
+
+.shortcuts-group h3 {
+  grid-column: 1 / -1;
+  margin: 0 0 2px;
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--faint);
+}
+
+.shortcut {
+  display: contents;
+}
+
+.shortcut-help {
+  color: var(--muted);
+}
+
+.shortcut kbd {
+  font-family: var(--font);
+  font-weight: 700;
+  color: var(--waiting);
+}
+
+.shortcut kbd.waiting {
+  font-weight: 400;
+  color: var(--active);
+}
+
+.shortcut-actions {
+  display: flex;
+  gap: 6px;
+  justify-content: end;
+}
+
+.shortcut-actions button {
+  padding: 2px 8px;
+  font-size: 12px;
+}
+
+.shortcuts-message {
+  margin: 8px 0 0;
+  font-size: 12px;
+}
+
+.shortcuts-message:empty {
   display: none;
 }

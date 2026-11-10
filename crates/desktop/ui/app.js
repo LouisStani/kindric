@@ -170,7 +170,7 @@ function renderChips(view) {
   if (!view.loaded) {
     chips.replaceChildren(element("li", "chip-note", "loading…"));
   } else if (sessions.length === 0) {
-    chips.replaceChildren(element("li", "chip-note", `no sessions here · ${CONTROL}+n starts one`));
+    chips.replaceChildren(element("li", "chip-note", `no sessions here · ${keyText("new-session")} starts one`));
   } else {
     const more = element("li", "chip more");
     more.addEventListener("click", openPicker);
@@ -611,7 +611,7 @@ function confirmHide() {
   form.dataset.account = session.account;
   form.dataset.shortId = session.short_id;
   document.getElementById("hide-question").textContent =
-    `Stop "${session.label}" and hide it from the bar? Its conversation is kept; ${CONTROL}+p brings it back.`;
+    `Stop "${session.label}" and hide it from the bar? Its conversation is kept; ${keyText("find-session")} brings it back.`;
   document.getElementById("confirm-hide").showModal();
   form.querySelector("button[type=submit]").focus();
 }
@@ -630,7 +630,7 @@ async function hideSession(event) {
     setStatus(`${error}`);
     return;
   }
-  setStatus(`${session.label} hidden · ${CONTROL}+p brings it back`);
+  setStatus(`${session.label} hidden · ${keyText("find-session")} brings it back`);
 }
 
 function onPickerKey(event) {
@@ -681,44 +681,95 @@ async function pasteText() {
 
 // A Mac takes Cmd for the app and leaves Ctrl to the terminal.
 const MAC =/Mac/.test(navigator.platform || navigator.userAgent);
-// How the app's modifier is written in notices.
-const CONTROL = MAC ? "cmd" : "ctrl";
 
 // Keys the app keeps for itself, like `command_for` in the terminal interface; F1 lists
 // them from here, so the help cannot drift. "ctrl" is Cmd on a Mac, "#" a digit from 1 to 9,
 // which `run` gets; `mac` replaces keys a Mac keeps for itself (Cmd+H hides the app).
-// `pane` keys act only from a pane: elsewhere, in a form, the field gets them.
+// `pane` keys act only from a pane: elsewhere, in a form, the field gets them. `id` names a
+// shortcut in `settings.json`, where the keys changed in the settings are kept.
 const SHORTCUTS = [
-  { group: "sessions", keys: "ctrl+n", help: "start a new session", run: openNewSessionForm },
-  { group: "sessions", keys: "ctrl+p", help: "find a session of this tab", run: openPicker },
-  { group: "sessions", keys: "alt+#", help: "open chip n of the bar", run: (digit) => showNumber(digit) },
-  { group: "sessions", keys: "alt+h", help: "open the previous chip", run: () => stepSession(-1) },
-  { group: "sessions", keys: "alt+l", help: "open the next chip", run: () => stepSession(1) },
-  { group: "sessions", keys: "f2", help: "give a short name", run: openRenameForm },
-  { group: "sessions", keys: "ctrl+shift+k", help: `stop and hide (${CONTROL}+p brings it back)`, run: confirmHide },
-  { group: "sessions", keys: "ctrl+shift+m", help: "read its messages", run: openActiveMessages },
-  { group: "panes", keys: "ctrl+shift+d", help: "split the pane", run: () => panes.split() },
-  { group: "panes", keys: "ctrl+shift+w", help: "close the pane (the session keeps running)", run: () => panes.close() },
-  { group: "panes", keys: "ctrl+h", mac: "ctrl+bracketleft", help: "previous pane", run: () => panes.step(-1) },
-  { group: "panes", keys: "ctrl+l", mac: "ctrl+bracketright", help: "next pane", run: () => panes.step(1) },
-  { group: "panes", keys: "ctrl+shift+c", mac: "ctrl+c", pane: true, help: "copy the selection", run: copySelection },
-  { group: "panes", keys: "ctrl+shift+v", mac: "ctrl+v", pane: true, help: "paste text (ctrl+v: an image, for Claude Code)", run: pasteText },
-  { group: "tabs", keys: "ctrl+shift+t", help: "add a project", run: openProjectForm },
-  { group: "tabs", keys: "ctrl+shift+x", help: "remove this project (its sessions keep running)", run: closeTab },
-  { group: "tabs", keys: "ctrl+shift+h", help: "previous tab", run: () => panes.tabStep(-1) },
-  { group: "tabs", keys: "ctrl+shift+l", help: "next tab", run: () => panes.tabStep(1) },
-  { group: "tabs", keys: "ctrl+shift+#", help: "tab n", run: (digit) => panes.goTab(digit) },
-  { group: "app", keys: "ctrl+shift+a", help: "artifacts of this project", run: openArtifacts },
-  { group: "app", keys: "ctrl+comma", help: "settings: accounts", run: () => settingsWindow.open() },
-  { group: "app", keys: "ctrl+shift+e", help: "next theme", run: cycleTheme },
-  { group: "app", keys: "f1", help: "what is left to set up, and these shortcuts", run: openHelp },
+  { group: "sessions", id: "new-session", keys: "ctrl+n", help: "start a new session", run: openNewSessionForm },
+  { group: "sessions", id: "find-session", keys: "ctrl+p", help: "find a session of this tab", run: openPicker },
+  { group: "sessions", id: "open-chip", keys: "alt+#", help: "open chip n of the bar", run: (digit) => showNumber(digit) },
+  { group: "sessions", id: "previous-chip", keys: "alt+h", help: "open the previous chip", run: () => stepSession(-1) },
+  { group: "sessions", id: "next-chip", keys: "alt+l", help: "open the next chip", run: () => stepSession(1) },
+  { group: "sessions", id: "rename", keys: "f2", help: "give a short name", run: openRenameForm },
+  { group: "sessions", id: "hide", keys: "ctrl+shift+k", help: () => `stop and hide (${keyText("find-session")} brings it back)`, run: confirmHide },
+  { group: "sessions", id: "messages", keys: "ctrl+shift+m", help: "read its messages", run: openActiveMessages },
+  { group: "panes", id: "split", keys: "ctrl+shift+d", help: "split the pane", run: () => panes.split() },
+  { group: "panes", id: "close-pane", keys: "ctrl+shift+w", help: "close the pane (the session keeps running)", run: () => panes.close() },
+  { group: "panes", id: "previous-pane", keys: "ctrl+h", mac: "ctrl+bracketleft", help: "previous pane", run: () => panes.step(-1) },
+  { group: "panes", id: "next-pane", keys: "ctrl+l", mac: "ctrl+bracketright", help: "next pane", run: () => panes.step(1) },
+  { group: "panes", id: "copy", keys: "ctrl+shift+c", mac: "ctrl+c", pane: true, help: "copy the selection", run: copySelection },
+  { group: "panes", id: "paste", keys: "ctrl+shift+v", mac: "ctrl+v", pane: true, help: "paste text (ctrl+v: an image, for Claude Code)", run: pasteText },
+  { group: "tabs", id: "add-project", keys: "ctrl+shift+t", help: "add a project", run: openProjectForm },
+  { group: "tabs", id: "remove-project", keys: "ctrl+shift+x", help: "remove this project (its sessions keep running)", run: closeTab },
+  { group: "tabs", id: "previous-tab", keys: "ctrl+shift+h", help: "previous tab", run: () => panes.tabStep(-1) },
+  { group: "tabs", id: "next-tab", keys: "ctrl+shift+l", help: "next tab", run: () => panes.tabStep(1) },
+  { group: "tabs", id: "tab-n", keys: "ctrl+shift+#", help: "tab n", run: (digit) => panes.goTab(digit) },
+  { group: "app", id: "artifacts", keys: "ctrl+shift+a", help: "artifacts of this project", run: openArtifacts },
+  { group: "app", id: "settings", keys: "ctrl+comma", help: "settings: accounts, memory, shortcuts", run: () => settingsWindow.open() },
+  { group: "app", id: "next-theme", keys: "ctrl+shift+e", help: "next theme", run: cycleTheme },
+  { group: "app", id: "help", keys: "f1", help: "what is left to set up, and these shortcuts", run: openHelp },
 ];
-// The keys of `shortcut` on this system.
-function keysOf(shortcut) {
+// Shortcut id → keys, for those changed in the settings.
+let changedKeys = {};
+
+// The keys a shortcut has before any change, on this system.
+function defaultKeysOf(shortcut) {
   return MAC ? (shortcut.mac ?? shortcut.keys) : shortcut.keys;
 }
 
-const SHORTCUT_KEYS = new Map(SHORTCUTS.map((shortcut) => [keysOf(shortcut), shortcut]));
+// The keys of `shortcut` now.
+function keysOf(shortcut) {
+  return changedKeys[shortcut.id] ?? defaultKeysOf(shortcut);
+}
+
+function shortcutById(id) {
+  return SHORTCUTS.find((shortcut) => shortcut.id === id);
+}
+
+// How the keys of the shortcut `id` are shown now: "Ctrl+P".
+function keyText(id) {
+  return shownKeys(keysOf(shortcutById(id)));
+}
+
+function helpOf(shortcut) {
+  return typeof shortcut.help === "function" ? shortcut.help() : shortcut.help;
+}
+
+let SHORTCUT_KEYS = new Map();
+
+function indexShortcuts() {
+  SHORTCUT_KEYS = new Map(SHORTCUTS.map((shortcut) => [keysOf(shortcut), shortcut]));
+}
+// The default keys until settings.json is read.
+indexShortcuts();
+
+// What the settings window needs to show and change the shortcuts.
+const shortcutSettings = {
+  list: () =>
+    SHORTCUTS.map((shortcut) => ({
+      id: shortcut.id,
+      group: shortcut.group,
+      help: helpOf(shortcut),
+      keys: keysOf(shortcut),
+      shown: shownKeys(keysOf(shortcut)),
+      changed: shortcut.id in changedKeys,
+      fixed: keysOf(shortcut).includes("#"),
+      isDefault: (keys) => keys === defaultKeysOf(shortcut),
+    })),
+  nameOf: (event) => shortcutName(event),
+  shown: (keys) => shownKeys(keys),
+  mac: MAC,
+  // Saved first: a key that cannot be saved does not change.
+  async set(id, keys) {
+    await invoke("set_key", { id, keys });
+    if (keys === null) delete changedKeys[id];
+    else changedKeys[id] = keys;
+    indexShortcuts();
+  },
+};
 
 // How `event` is named in SHORTCUTS, Cmd playing Ctrl on a Mac; null when it holds the
 // modifier left to the terminal (Ctrl on a Mac, Super elsewhere).
@@ -754,7 +805,7 @@ function openHelp() {
     const section = element("section", "help-group");
     section.append(element("h2", "", group));
     for (const shortcut of SHORTCUTS.filter((entry) => entry.group === group)) {
-      section.append(element("kbd", "", shownKeys(keysOf(shortcut))), element("span", "", shortcut.help));
+      section.append(element("kbd", "", shownKeys(keysOf(shortcut))), element("span", "", helpOf(shortcut)));
     }
     return section;
   });
@@ -792,7 +843,7 @@ const panes = new Panes(document.getElementById("panes"), document.getElementByI
 });
 
 const artifactsWindow = new ArtifactsWindow(document.getElementById("artifacts"), { onError: setStatus });
-const settingsWindow = new SettingsWindow(document.getElementById("settings"));
+const settingsWindow = new SettingsWindow(document.getElementById("settings"), { shortcuts: shortcutSettings });
 
 const sessionDirectory = directoryField("new-form");
 const projectDirectory = directoryField("project-form");
@@ -816,7 +867,10 @@ for (const dialog of document.querySelectorAll("dialog")) {
 await Promise.all([document.fonts.load('400 13px "JetBrains Mono"'), document.fonts.load('700 13px "JetBrains Mono"')]);
 await startTrace();
 // Before the first terminal, which takes its colors when created.
-currentTheme = (await invoke("settings")).theme ?? "ember";
+const savedSettings = await invoke("settings");
+currentTheme = savedSettings.theme ?? "ember";
+changedKeys = savedSettings.keys ?? {};
+indexShortcuts();
 try {
   await showTheme(currentTheme);
 } catch (error) {

@@ -75,23 +75,35 @@
   </dialog>
   <dialog id="settings">
     <h1>settings</h1>
-    <section class="settings-section">
+    <input class="settings-search" placeholder="search settings" spellcheck="false" autocomplete="off">
+    <div class="settings-body">
+    <ul class="settings-categories"></ul>
+    <div class="settings-content">
+    <section class="settings-section" data-category="accounts">
       <h2>accounts</h2>
       <ul class="accounts-list"></ul>
-      <form class="accounts-add">
+      <form class="accounts-add" data-search="new account add create">
         <label>new account <input name="name" placeholder="e.g. work" spellcheck="false" autocomplete="off"></label>
         <button type="submit">add</button>
       </form>
       <p class="accounts-message"></p>
     </section>
-    <section class="settings-section">
+    <section class="settings-section" data-category="memory">
       <h2>memory</h2>
-      <form class="memory-warning">
+      <form class="memory-warning" data-search="memory warning size kb startup budget">
         <label>warn when a session opens more than <input name="kb" inputmode="numeric" maxlength="4" spellcheck="false" autocomplete="off"> KB at startup</label>
         <button type="submit">save</button>
       </form>
       <p class="memory-message muted"></p>
     </section>
+    <section class="settings-section" data-category="shortcuts">
+      <h2>shortcuts</h2>
+      <div class="shortcuts-list"></div>
+      <p class="shortcuts-message muted"></p>
+    </section>
+    <p class="settings-empty muted" hidden>nothing matches.</p>
+    </div>
+    </div>
   </dialog>
   <dialog id="artifacts" tabindex="-1">
     <h1 class="artifacts-title">artifacts</h1>
