@@ -88,7 +88,7 @@ impl Refresher {
     }
 
     /// New directories to watch appear only when the account list changes.
-    fn watch_accounts(&mut self, snapshot: &mut Snapshot) {
+    fn watch_accounts(&mut self, snapshot: &mut Snapshot, registry_dir: &Path) {
         let (Ok(watcher), Ok(mailbox)) = (&mut self.watcher, &self.mailbox) else {
             return;
         };
@@ -96,7 +96,7 @@ impl Refresher {
             return;
         }
         let dirs: Vec<PathBuf> = self.account_dirs.iter().map(|(_, dir)| dir.clone()).collect();
-        snapshot.errors.extend(watcher.ensure(&watcher::targets(&dirs, mailbox.root())));
+        snapshot.errors.extend(watcher.ensure(&watcher::targets(&dirs, mailbox.root(), registry_dir)));
         self.watched_accounts = snapshot.accounts.clone();
     }
 
@@ -143,7 +143,7 @@ impl Refresher {
         if let Err(error) = &self.watcher {
             snapshot.errors.push(error.clone());
         }
-        self.watch_accounts(&mut snapshot);
+        self.watch_accounts(&mut snapshot, &paths.config_dir);
         let unread = self.unread_counts(&mut snapshot);
         Ok((snapshot, unread))
     }

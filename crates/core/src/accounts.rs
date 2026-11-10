@@ -6,7 +6,8 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 pub use kindric_accounts::registry::DEFAULT_ACCOUNT;
-use kindric_accounts::{Paths, launch, registry};
+pub use kindric_accounts::status::AccountStatus;
+use kindric_accounts::{Paths, account, launch, registry, status};
 use serde::Deserialize;
 
 use crate::progress;
@@ -336,6 +337,24 @@ pub fn registered(paths: &Paths) -> io::Result<(Vec<String>, Vec<String>)> {
     Ok((accounts, isolated))
 }
 
+/// Login state, plan, sessions and isolation of every account of kindric-accounts, queried in
+/// parallel: the accounts of the settings.
+pub fn statuses(paths: &Paths) -> io::Result<Vec<AccountStatus>> {
+    let names = registry::list_accounts(paths).map_err(library_error)?;
+    status::collect(paths, &names).map_err(library_error)
+}
+
+/// Creates the account `name`, as `kindric-accounts add` does; returns what it warned about
+/// while linking the shared setup.
+pub fn add_account(paths: &Paths, name: &str) -> io::Result<Vec<String>> {
+    account::add(paths, name).map(|created| created.warnings).map_err(library_error)
+}
+
+/// Takes `name` off the list of accounts; its directory stays.
+pub fn forget_account(paths: &Paths, name: &str) -> io::Result<()> {
+    account::forget(paths, name).map_err(library_error)
+}
+
 /// Queries `accounts` in parallel.
 pub fn query_accounts(paths: &Paths, accounts: &[String], implicit_default: bool) -> Vec<Queried> {
     let handles: Vec<_> = accounts
@@ -398,6 +417,42 @@ pub fn snapshot() -> io::Result<Snapshot> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Accounts under a fresh folder, nothing read from the environment.
+    fn scratch_paths(label: &str) -> (PathBuf, Paths) {
+        let root = std::env::temp_dir().join(format!("kindric-accounts-{label}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let home = root.join("home");
+        std::fs::create_dir_all(&home).expect("home");
+        let paths = Paths::from_roots(root.join("config"), root.join("data"), home);
+        (root, paths)
+    }
+
+    #[test]
+    fn an_added_account_is_listed_and_a_forgotten_one_keeps_its_directory() {
+        let (root, paths) = scratch_paths("add-forget");
+        add_account(&paths, "essai").expect("add");
+        assert_eq!(registry::list_accounts(&paths).expect("list"), ["essai"]);
+        let dir = paths.account_dir("essai");
+        assert!(dir.is_dir());
+        forget_account(&paths, "essai").expect("forget");
+        assert!(registry::list_accounts(&paths).expect("list").is_empty());
+        assert!(dir.is_dir(), "the directory stays");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn adding_twice_default_or_a_bad_name_is_an_error_saying_why() {
+        let (root, paths) = scratch_paths("add-errors");
+        add_account(&paths, "essai").expect("add");
+        let twice = add_account(&paths, "essai").expect_err("twice").to_string();
+        assert!(twice.contains("already exists"), "{twice}");
+        let default = add_account(&paths, DEFAULT_ACCOUNT).expect_err("default").to_string();
+        assert!(default.contains("reserved"), "{default}");
+        assert!(add_account(&paths, "../out").is_err());
+        assert!(forget_account(&paths, "absent").is_err());
+        let _ = std::fs::remove_dir_all(&root);
+    }
 
     const AGENTS: &str = r#"[
         {"id":"a40b6e33","name":"boss-fight","kind":"background","status":"busy","pid":170869,

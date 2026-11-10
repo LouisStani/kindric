@@ -12,7 +12,8 @@ use notify::{RecommendedWatcher, RecursiveMode, Watcher};
 /// `sessions/` gets a file per running session, rewritten when its state changes;
 /// `daemon/` holds the roster of background sessions; `jobs/<id>/` their state.
 /// `.claude.json` is left out on purpose: Claude Code rewrites it all the time.
-pub fn targets(account_dirs: &[PathBuf], mailbox_root: &Path) -> Vec<(PathBuf, RecursiveMode)> {
+/// `registry_dir` holds the list of accounts: one added or removed shows at once.
+pub fn targets(account_dirs: &[PathBuf], mailbox_root: &Path, registry_dir: &Path) -> Vec<(PathBuf, RecursiveMode)> {
     let mut targets: Vec<(PathBuf, RecursiveMode)> = account_dirs
         .iter()
         .flat_map(|dir| {
@@ -23,6 +24,7 @@ pub fn targets(account_dirs: &[PathBuf], mailbox_root: &Path) -> Vec<(PathBuf, R
             ]
         })
         .collect();
+    targets.push((registry_dir.to_path_buf(), RecursiveMode::NonRecursive));
     targets.push((mailbox_root.to_path_buf(), RecursiveMode::Recursive));
     targets
 }
@@ -106,10 +108,11 @@ mod tests {
     use std::time::Instant;
 
     #[test]
-    fn targets_cover_each_account_and_the_mailbox() {
+    fn targets_cover_each_account_the_list_of_accounts_and_the_mailbox() {
         let dirs = [PathBuf::from("/a/louis"), PathBuf::from("/a/pro")];
-        let targets = targets(&dirs, Path::new("/m"));
-        assert_eq!(targets.len(), 7);
+        let targets = targets(&dirs, Path::new("/m"), Path::new("/c"));
+        assert_eq!(targets.len(), 8);
+        assert!(targets.contains(&(PathBuf::from("/c"), RecursiveMode::NonRecursive)));
         assert!(targets.contains(&(PathBuf::from("/a/pro/jobs"), RecursiveMode::Recursive)));
         assert!(targets.contains(&(PathBuf::from("/a/louis/sessions"), RecursiveMode::NonRecursive)));
         assert_eq!(targets.last(), Some(&(PathBuf::from("/m"), RecursiveMode::Recursive)));

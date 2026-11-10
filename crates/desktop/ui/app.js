@@ -2,9 +2,10 @@ import { DirectoryField } from "./directories.js";
 import { Panes, sameSession } from "./panes.js";
 import { applyTheme, nextTheme, THEMES } from "./themes.js";
 import { mark, startTrace, traced } from "./trace.js";
-import { askTrust } from "./trust.js";
+import { askTrust } from "./helper.js";
 import { checkItems, hasToDo } from "./welcome.js";
 import { ArtifactsWindow } from "./artifacts.js";
+import { SettingsWindow } from "./settings.js";
 
 const { invoke } = window.__TAURI__.core;
 const { listen } = window.__TAURI__.event;
@@ -708,6 +709,7 @@ const SHORTCUTS = [
   { group: "tabs", keys: "ctrl+shift+l", help: "next tab", run: () => panes.tabStep(1) },
   { group: "tabs", keys: "ctrl+shift+#", help: "tab n", run: (digit) => panes.goTab(digit) },
   { group: "app", keys: "ctrl+shift+a", help: "artifacts of this project", run: openArtifacts },
+  { group: "app", keys: "ctrl+comma", help: "settings: accounts", run: () => settingsWindow.open() },
   { group: "app", keys: "ctrl+shift+e", help: "next theme", run: cycleTheme },
   { group: "app", keys: "f1", help: "what is left to set up, and these shortcuts", run: openHelp },
 ];
@@ -737,7 +739,7 @@ export function shortcutFor(event) {
   return { ...shortcut, run: () => shortcut.run(digit ? Number(digit[1]) : undefined) };
 }
 
-const SHOWN = { "#": "1..9", ctrl: MAC ? "Cmd" : "Ctrl", bracketleft: "[", bracketright: "]" };
+const SHOWN = { "#": "1..9", ctrl: MAC ? "Cmd" : "Ctrl", bracketleft: "[", bracketright: "]", comma: "," };
 
 // "ctrl+shift+#" → "Ctrl+Shift+1..9", "Cmd+Shift+1..9" on a Mac.
 function shownKeys(keys) {
@@ -790,6 +792,7 @@ const panes = new Panes(document.getElementById("panes"), document.getElementByI
 });
 
 const artifactsWindow = new ArtifactsWindow(document.getElementById("artifacts"), { onError: setStatus });
+const settingsWindow = new SettingsWindow(document.getElementById("settings"));
 
 const sessionDirectory = directoryField("new-form");
 const projectDirectory = directoryField("project-form");
@@ -802,7 +805,7 @@ document.getElementById("project-form").addEventListener("submit", addProject);
 document.getElementById("rename-form").addEventListener("submit", renameSession);
 document.getElementById("hide-form").addEventListener("submit", hideSession);
 document.getElementById("hide-cancel").addEventListener("click", () => document.getElementById("confirm-hide").close());
-document.getElementById("trust-done").addEventListener("click", () => document.getElementById("trust").close());
+document.getElementById("helper-done").addEventListener("click", () => document.getElementById("helper").close());
 document.getElementById("picker-query").addEventListener("input", filterPicker);
 document.getElementById("picker-query").addEventListener("keydown", onPickerKey);
 for (const dialog of document.querySelectorAll("dialog")) {

@@ -18,7 +18,7 @@ use std::process::ExitCode;
 use std::sync::{Mutex, MutexGuard, PoisonError};
 use std::time::{Duration, Instant};
 
-use kindric_core::attach::{attach_command, stop_command, trust_command};
+use kindric_core::attach::{AttachCommand, attach_command, login_command, stop_command, trust_command};
 use kindric_core::launcher::{self, Request, resolve_directory};
 use kindric_core::mailbox::Mailbox;
 use kindric_core::accounts::SessionInfo;
@@ -70,17 +70,18 @@ struct Shared {
     settings_file: Result<PathBuf, String>,
     /// Off unless `KINDRIC_TRACE` is set.
     trace: Trace,
-    trust: Mutex<Trust>,
+    helper: Mutex<Helper>,
     /// Where the locks of the sessions shown here are taken, or why they cannot be.
     claims_dir: Result<PathBuf, String>,
 }
 
-/// The Claude Code that asks whether a folder is trusted, over the new-session form.
-/// `generation` tells its end apart from that of one closed before.
+/// The Claude Code shown in a terminal over a dialog: asking whether a folder is trusted, or
+/// signing an account in. One at a time. `generation` tells its end apart from that of one closed
+/// before.
 #[derive(Default)]
-struct Trust {
+struct Helper {
     generation: u64,
-    asking: Option<Pane>,
+    running: Option<Pane>,
 }
 
 impl Shared {
@@ -88,8 +89,8 @@ impl Shared {
         self.workspace.lock().unwrap_or_else(PoisonError::into_inner)
     }
 
-    fn trust(&self) -> MutexGuard<'_, Trust> {
-        self.trust.lock().unwrap_or_else(PoisonError::into_inner)
+    fn helper(&self) -> MutexGuard<'_, Helper> {
+        self.helper.lock().unwrap_or_else(PoisonError::into_inner)
     }
 
     fn prefs(&self) -> Prefs {
@@ -175,6 +176,31 @@ async fn add_messages_server(shared: State<'_, Shared>) -> Result<Vec<checks::Li
     })
     .await
     .map_err(|error| error.to_string())?
+}
+
+/// The accounts of the settings: login state, plan, sessions, isolation. Asks Claude Code about
+/// each, so off the window's thread.
+#[tauri::command]
+async fn account_statuses(shared: State<'_, Shared>) -> Result<Vec<accounts::AccountStatus>, String> {
+    let _span = shared.trace.span("account_statuses");
+    tauri::async_runtime::spawn_blocking(|| accounts::paths().and_then(|paths| accounts::statuses(&paths)))
+        .await
+        .map_err(|error| error.to_string())?
+        .map_err(|error| format!("cannot read the accounts: {error}"))
+}
+
+/// Creates an account of kindric-accounts; returns its warnings, if any.
+#[tauri::command]
+fn add_account(name: String) -> Result<Vec<String>, String> {
+    let paths = accounts::paths().map_err(|error| error.to_string())?;
+    accounts::add_account(&paths, name.trim()).map_err(|error| error.to_string())
+}
+
+/// Takes an account off the list of kindric-accounts; its directory stays.
+#[tauri::command]
+fn forget_account(name: String) -> Result<(), String> {
+    let paths = accounts::paths().map_err(|error| error.to_string())?;
+    accounts::forget_account(&paths, &name).map_err(|error| error.to_string())
 }
 
 /// The accounts listed and the number of sessions, which the welcome list depends on.
@@ -820,9 +846,39 @@ fn publish(app: &AppHandle, update: refresher::Update) -> bool {
     emitted
 }
 
+/// Runs `command` in the helper window, closing the one running before. Returns the generation
+/// that `helper-ended` will carry.
+fn start_helper(
+    app: &AppHandle,
+    shared: &Shared,
+    command: &AttachCommand,
+    columns: u16,
+    rows: u16,
+    output: Channel<InvokeResponseBody>,
+) -> std::io::Result<u64> {
+    let mut helper = shared.helper();
+    if let Some(previous) = helper.running.take() {
+        pane::detach(previous);
+    }
+    helper.generation += 1;
+    let generation = helper.generation;
+    let ended = app.clone();
+    let running = Pane::open(
+        command,
+        columns,
+        rows,
+        move |bytes| {
+            let _ = output.send(InvokeResponseBody::Raw(bytes.to_vec()));
+        },
+        // Waits for the lock held here, so it always sees this one recorded.
+        move || end_helper(&ended, generation),
+    )?;
+    helper.running = Some(running);
+    Ok(generation)
+}
+
 /// Starts Claude Code in `directory` on `account`, not in the background, so that it asks whether
-/// the folder is trusted; Claude Code keeps the answer. One at a time: a second closes the first.
-/// Returns the generation that `trust-ended` will carry.
+/// the folder is trusted; Claude Code keeps the answer.
 #[tauri::command]
 fn open_trust(
     app: AppHandle,
@@ -836,69 +892,65 @@ fn open_trust(
     let home = std::env::home_dir().ok_or("HOME is not set")?;
     let directory = resolve_directory(&directory, &home)?;
     let implicit = implicit_default(&account)?;
-    let mut trust = shared.trust();
-    if let Some(previous) = trust.asking.take() {
-        pane::detach(previous);
-    }
-    trust.generation += 1;
-    let generation = trust.generation;
-    let ended = app.clone();
-    let asking = Pane::open(
-        &trust_command(&account, &directory, implicit),
-        columns,
-        rows,
-        move |bytes| {
-            let _ = output.send(InvokeResponseBody::Raw(bytes.to_vec()));
-        },
-        // Waits for the lock held here, so it always sees this one recorded.
-        move || end_trust(&ended, generation),
-    )
-    .map_err(|error| format!("cannot start Claude Code in {}: {error}", directory.display()))?;
-    trust.asking = Some(asking);
-    Ok(generation)
+    start_helper(&app, &shared, &trust_command(&account, &directory, implicit), columns, rows, output)
+        .map_err(|error| format!("cannot start Claude Code in {}: {error}", directory.display()))
 }
 
-/// Claude Code ended by itself in the trust window: answered no, or quit.
-fn end_trust(app: &AppHandle, generation: u64) {
+/// Starts the login of `account`, an account of kindric-accounts; Claude Code keeps the credentials.
+#[tauri::command]
+fn open_login(
+    app: AppHandle,
+    shared: State<'_, Shared>,
+    account: String,
+    columns: u16,
+    rows: u16,
+    output: Channel<InvokeResponseBody>,
+) -> Result<u64, String> {
+    start_helper(&app, &shared, &login_command(&account), columns, rows, output)
+        .map_err(|error| format!("cannot start the login of {account}: {error}"))
+}
+
+/// Claude Code ended by itself in the helper window: answered, or quit.
+fn end_helper(app: &AppHandle, generation: u64) {
     let shared = app.state::<Shared>();
     {
-        let mut trust = shared.trust();
-        if trust.generation != generation || trust.asking.is_none() {
+        let mut helper = shared.helper();
+        if helper.generation != generation || helper.running.is_none() {
             return;
         }
-        trust.asking = None;
+        helper.running = None;
     }
-    let _ = app.emit("trust-ended", generation);
+    let _ = app.emit("helper-ended", generation);
 }
 
 #[tauri::command]
-fn trust_input(shared: State<'_, Shared>, data: String) -> Result<(), String> {
-    let mut trust = shared.trust();
-    let asking = trust.asking.as_mut().ok_or("Claude Code is not asking about a folder")?;
-    asking.write(data.as_bytes()).map_err(|error| error.to_string())
+fn helper_input(shared: State<'_, Shared>, data: String) -> Result<(), String> {
+    let mut helper = shared.helper();
+    let running = helper.running.as_mut().ok_or("Claude Code is not running in this window")?;
+    running.write(data.as_bytes()).map_err(|error| error.to_string())
 }
 
 #[tauri::command]
-fn trust_resize(shared: State<'_, Shared>, columns: u16, rows: u16) -> Result<(), String> {
-    let trust = shared.trust();
-    let asking = trust.asking.as_ref().ok_or("Claude Code is not asking about a folder")?;
-    asking.resize(columns, rows).map_err(|error| error.to_string())
+fn helper_resize(shared: State<'_, Shared>, columns: u16, rows: u16) -> Result<(), String> {
+    let helper = shared.helper();
+    let running = helper.running.as_ref().ok_or("Claude Code is not running in this window")?;
+    running.resize(columns, rows).map_err(|error| error.to_string())
 }
 
-/// The trust window was closed: its Claude Code ends, its answer already kept.
+/// The helper window was closed: its Claude Code ends, what it was asked already kept.
 #[tauri::command]
-fn close_trust(shared: State<'_, Shared>) {
-    if let Some(asking) = shared.trust().asking.take() {
-        pane::detach(asking);
+fn close_helper(shared: State<'_, Shared>) {
+    if let Some(running) = shared.helper().running.take() {
+        pane::detach(running);
     }
 }
 
-/// Leaves no `claude attach`, and no Claude Code asking about a folder, behind when the window closes.
+/// Leaves no `claude attach`, and no Claude Code in the helper window, behind when the window closes.
 fn detach_on_exit(app: &AppHandle, event: RunEvent) {
     if let RunEvent::Exit = event {
         let shared = app.state::<Shared>();
         shared.workspace().attached.clear();
-        shared.trust().asking = None;
+        shared.helper().running = None;
     }
 }
 
@@ -959,7 +1011,7 @@ fn main() -> ExitCode {
         settings: Mutex::new(chosen),
         settings_file,
         trace: timings,
-        trust: Mutex::new(Trust::default()),
+        helper: Mutex::new(Helper::default()),
         claims_dir: mailbox::data_dir()
             .map(|directory| directory.join("attached"))
             .map_err(|error| format!("cannot tell whether another kindric window shows a session: {error}")),
@@ -1009,9 +1061,13 @@ fn main() -> ExitCode {
             artifact_bytes,
             open_artifact,
             open_trust,
-            trust_input,
-            trust_resize,
-            close_trust
+            open_login,
+            account_statuses,
+            add_account,
+            forget_account,
+            helper_input,
+            helper_resize,
+            close_helper
         ])
         .setup(|app| {
             let handle = app.handle().clone();

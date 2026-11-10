@@ -66,6 +66,18 @@ pub fn trust_command(account: &str, directory: &Path, implicit_default: bool) ->
     }
 }
 
+/// `kindric-accounts run <account> auth login`: Claude Code signs the account in and keeps the
+/// credentials in the account's own directory. Accounts of kindric-accounts only.
+pub fn login_command(account: &str) -> AttachCommand {
+    AttachCommand {
+        program: LAUNCHER.into(),
+        args: ["run", account, "auth", "login"].map(String::from).to_vec(),
+        env: colours(),
+        env_remove: Vec::new(),
+        directory: None,
+    }
+}
+
 /// `kindric-accounts run <account> stop <short_id>`, or `claude stop <short_id>` on the
 /// implicit `default`: the session stops and keeps its conversation; `attach` starts it again.
 pub fn stop_command(account: &str, short_id: &str, implicit_default: bool) -> Command {
@@ -105,6 +117,16 @@ mod tests {
         assert_eq!(command.directory, Some(PathBuf::from("/work/api")));
         assert!(command.env.contains(&("TERM".into(), "xterm-256color".into())));
         assert!(command.env_remove.is_empty());
+    }
+
+    #[test]
+    fn logs_in_through_kindric_accounts() {
+        let command = login_command("work");
+        assert_eq!(command.program, "kindric-accounts");
+        assert_eq!(command.args, ["run", "work", "auth", "login"]);
+        assert!(command.env.contains(&("TERM".into(), "xterm-256color".into())));
+        assert!(command.env_remove.is_empty());
+        assert_eq!(command.directory, None);
     }
 
     #[test]
