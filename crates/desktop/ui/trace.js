@@ -27,6 +27,11 @@ function watchFrames() {
   requestAnimationFrame(frame);
 }
 
+// A fact without a duration: the size a pane measured, the one it sent.
+export function note(what) {
+  if (enabled) invoke("trace", { what, ms: 0 }).catch(() => {});
+}
+
 // `start` comes from performance.now().
 export function mark(what, start) {
   if (enabled) invoke("trace", { what, ms: performance.now() - start }).catch(() => {});
