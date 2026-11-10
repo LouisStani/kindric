@@ -84,6 +84,11 @@ impl Paths {
         self.config_dir.join("isolated-deny")
     }
 
+    /// The size, in KB, above which sessions are warned about the memory they open at startup.
+    pub fn memory_warning_file(&self) -> PathBuf {
+        self.config_dir.join("memory-warning")
+    }
+
     pub fn home(&self) -> Option<&Path> {
         self.shared_root.parent()
     }

@@ -10,7 +10,7 @@ use std::path::{Path, PathBuf};
 use crate::Paths;
 use crate::files::{create_private_dir, write_atomic};
 use crate::generate::{self, Outcome};
-use crate::memory::{Memory, WARNING_BYTES};
+use crate::memory::{self, Memory};
 use crate::registry;
 
 /// Skills appear in the session as `memory:<name>`.
@@ -58,6 +58,13 @@ fn not_loaded(error: impl std::fmt::Display) -> Injection {
     Injection { args: Vec::new(), warnings: vec![format!("memory not loaded: {error}")] }
 }
 
+/// The size above which a session is warned about the memory it opens at startup, and the file
+/// that sets it.
+pub struct Threshold {
+    pub bytes: u64,
+    pub file: PathBuf,
+}
+
 /// What the memory adds to a conversation of `account` started in `directory`: the zone whose
 /// folders hold it. When it cannot be told whether the account is isolated, the account counts as
 /// isolated.
@@ -66,17 +73,28 @@ pub fn for_session(paths: &Paths, account: &str, directory: &Path) -> Injection 
     let (Some(home), Some(data_dir)) = (paths.home(), paths.kindric_data_dir()) else {
         return not_loaded("the shared configuration has no parent");
     };
-    match Memory::default_root_for(paths) {
-        Ok(root) => injection_for(&Memory::at(root), &data_dir, home, directory, isolated),
+    let (bytes, unreadable) = memory::warning_bytes(paths);
+    let threshold = Threshold { bytes, file: paths.memory_warning_file() };
+    let mut injection = match Memory::default_root_for(paths) {
+        Ok(root) => injection_for(&Memory::at(root), &data_dir, home, directory, isolated, &threshold),
         Err(error) => not_loaded(error),
-    }
+    };
+    injection.warnings.extend(unreadable);
+    injection
 }
 
 /// An isolated account receives nothing here: it gets `global/` alone from `isolation`, with its
 /// rules against reading the rest, and no zone is even looked up. Without a memory folder, nothing
 /// either. A directory outside every zone receives `global/`, `setup/` and `OUTSIDE_LINE`. Nothing
 /// here can stop the session from starting.
-fn injection_for(memory: &Memory, data_dir: &Path, home: &Path, directory: &Path, isolated: bool) -> Injection {
+fn injection_for(
+    memory: &Memory,
+    data_dir: &Path,
+    home: &Path,
+    directory: &Path,
+    isolated: bool,
+    threshold: &Threshold,
+) -> Injection {
     if isolated || !memory.exists() {
         return Injection::default();
     }
@@ -85,8 +103,8 @@ fn injection_for(memory: &Memory, data_dir: &Path, home: &Path, directory: &Path
         Err(error) => return not_loaded(error),
     };
     let prepared = match &lookup.zone {
-        Some(zone) => prepare(memory, data_dir, &zone.name, &zone.folder),
-        None => prepare_outside(memory, data_dir),
+        Some(zone) => prepare(memory, data_dir, &zone.name, &zone.folder, threshold),
+        None => prepare_outside(memory, data_dir, threshold),
     };
     let mut injection = prepared.unwrap_or_else(not_loaded);
     injection.warnings.splice(0..0, lookup.warnings);
@@ -94,7 +112,7 @@ fn injection_for(memory: &Memory, data_dir: &Path, home: &Path, directory: &Path
 }
 
 /// Prepares a session of `project`, which must have a zone, with its instructions in `directory`.
-pub fn prepare(memory: &Memory, data_dir: &Path, project: &str, directory: &Path) -> io::Result<Injection> {
+pub fn prepare(memory: &Memory, data_dir: &Path, project: &str, directory: &Path, threshold: &Threshold) -> io::Result<Injection> {
     let mut injection = Injection::default();
     injection.warnings.extend(write_instructions(memory, project, directory));
 
@@ -111,16 +129,16 @@ pub fn prepare(memory: &Memory, data_dir: &Path, project: &str, directory: &Path
         injection.args.push(dir.into_os_string());
     }
 
-    let size = memory.startup_size(project, WARNING_BYTES)?;
+    let size = memory.startup_size(project, threshold.bytes)?;
     if size.over_warning {
-        injection.warnings.push(size_warning(size.bytes));
+        injection.warnings.push(size_warning(size.bytes, threshold));
     }
     Ok(injection)
 }
 
 /// A session outside every zone: no instructions written, no skills. Like a zone's, the file is
 /// never removed, for a session that resumes.
-fn prepare_outside(memory: &Memory, data_dir: &Path) -> io::Result<Injection> {
+fn prepare_outside(memory: &Memory, data_dir: &Path, threshold: &Threshold) -> io::Result<Injection> {
     let shared = memory.shared_startup_text()?;
     let text = paragraphs(&[&shared, OUTSIDE_LINE, ARTIFACTS_LINE]);
     create_private_dir(data_dir)?;
@@ -128,14 +146,19 @@ fn prepare_outside(memory: &Memory, data_dir: &Path) -> io::Result<Injection> {
     write_atomic(&file, &text)?;
     let mut injection = Injection { args: vec!["--append-system-prompt-file".into(), file.into_os_string()], warnings: Vec::new() };
     let bytes = u64::try_from(text.len()).unwrap_or(u64::MAX);
-    if bytes > WARNING_BYTES {
-        injection.warnings.push(size_warning(bytes));
+    if bytes > threshold.bytes {
+        injection.warnings.push(size_warning(bytes, threshold));
     }
     Ok(injection)
 }
 
-fn size_warning(bytes: u64) -> String {
-    format!("memory opened at startup: {} KB, above the {} KB warning", bytes / 1024, WARNING_BYTES / 1024)
+fn size_warning(bytes: u64, threshold: &Threshold) -> String {
+    format!(
+        "memory opened at startup: {} KB, above the {} KB warning: raise it in kindric's settings or in {}",
+        bytes / 1024,
+        threshold.bytes / 1024,
+        threshold.file.display()
+    )
 }
 
 fn write_instructions(memory: &Memory, project: &str, directory: &Path) -> Vec<String> {
@@ -234,8 +257,12 @@ mod tests {
         (root, memory, directory)
     }
 
+    fn threshold(bytes: u64) -> Threshold {
+        Threshold { bytes, file: PathBuf::from("/c/memory-warning") }
+    }
+
     fn for_directory(root: &Path, memory: &Memory, data_dir: &Path, directory: &Path, isolated: bool) -> Injection {
-        injection_for(memory, data_dir, &root.join("home"), directory, isolated)
+        injection_for(memory, data_dir, &root.join("home"), directory, isolated, &threshold(memory::WARNING_BYTES))
     }
 
     #[test]
@@ -347,7 +374,7 @@ mod tests {
         }
 
         fn prepare(&self) -> Injection {
-            prepare(&self.memory, &self.data, "p", &self.project).unwrap()
+            prepare(&self.memory, &self.data, "p", &self.project, &threshold(memory::WARNING_BYTES)).unwrap()
         }
 
         fn plugin(&self) -> PathBuf {
@@ -496,7 +523,7 @@ mod tests {
     fn outside_every_zone_with_an_empty_memory_the_line_comes_alone() {
         let root = std::env::temp_dir().join(format!("kindric-outside-empty-{}", std::process::id()));
         let _ = fs::remove_dir_all(&root);
-        let injection = prepare_outside(&Memory::at(root.join("memory")), &root.join("data")).unwrap();
+        let injection = prepare_outside(&Memory::at(root.join("memory")), &root.join("data"), &threshold(memory::WARNING_BYTES)).unwrap();
         assert_eq!(injection.args.len(), 2);
         assert_eq!(fs::read_to_string(root.join("data/startup-outside.md")).unwrap(), format!("{OUTSIDE_LINE}\n\n{ARTIFACTS_LINE}"));
         fs::remove_dir_all(root).unwrap();
@@ -507,9 +534,9 @@ mod tests {
         let root = std::env::temp_dir().join(format!("kindric-outside-size-{}", std::process::id()));
         let _ = fs::remove_dir_all(&root);
         fs::create_dir_all(root.join("memory/global")).unwrap();
-        fs::write(root.join("memory/global/rules.md"), "x".repeat(usize::try_from(WARNING_BYTES).unwrap())).unwrap();
-        let injection = prepare_outside(&Memory::at(root.join("memory")), &root.join("data")).unwrap();
-        assert_eq!(injection.warnings, ["memory opened at startup: 30 KB, above the 30 KB warning"]);
+        fs::write(root.join("memory/global/rules.md"), "x".repeat(usize::try_from(memory::WARNING_BYTES).unwrap())).unwrap();
+        let injection = prepare_outside(&Memory::at(root.join("memory")), &root.join("data"), &threshold(memory::WARNING_BYTES)).unwrap();
+        assert_eq!(injection.warnings, ["memory opened at startup: 30 KB, above the 30 KB warning: raise it in kindric's settings or in /c/memory-warning"]);
         fs::remove_dir_all(root).unwrap();
     }
 
@@ -535,12 +562,23 @@ mod tests {
     }
 
     #[test]
+    fn the_warning_follows_the_threshold_set() {
+        let s = setup("threshold");
+        s.memory_file("global/rules.md", &"x".repeat(2 * 1024));
+        let low = prepare(&s.memory, &s.data, "p", &s.project, &threshold(1024)).unwrap();
+        assert_eq!(low.warnings, ["memory opened at startup: 2 KB, above the 1 KB warning: raise it in kindric's settings or in /c/memory-warning"]);
+        let high = prepare(&s.memory, &s.data, "p", &s.project, &threshold(1024 * 1024)).unwrap();
+        assert!(high.warnings.is_empty(), "{:?}", high.warnings);
+        s.finish();
+    }
+
+    #[test]
     fn too_much_at_startup_is_a_warning_and_nothing_is_cut() {
         let s = setup("size");
-        let big = "x".repeat(usize::try_from(WARNING_BYTES).unwrap() + 1);
+        let big = "x".repeat(usize::try_from(memory::WARNING_BYTES).unwrap() + 1);
         s.memory_file("global/rules.md", &big);
         let injection = s.prepare();
-        assert_eq!(injection.warnings, ["memory opened at startup: 30 KB, above the 30 KB warning"]);
+        assert_eq!(injection.warnings, ["memory opened at startup: 30 KB, above the 30 KB warning: raise it in kindric's settings or in /c/memory-warning"]);
         assert_eq!(fs::read_to_string(s.data.join("startup/p.md")).unwrap(), format!("{big}\n\n{ARTIFACTS_LINE}"));
         s.finish();
     }

@@ -119,6 +119,8 @@ Unlike the terminal interface, the number of a session changes with its state: `
 
 `Ctrl+,` lists the accounts of kindric-accounts: logged in or not, plan, running sessions, isolated. **add** creates an account and opens Claude Code's login in a window of the app. **log in** does the same for an account that is logged out. **remove** takes an account off the list after you confirm; its folder stays on disk.
 
+The memory section sets the size above which a session is warned about the memory it opens at startup: 30 KB by default. It is a warning, nothing is cut. The value is kept in `~/.config/claude-accounts/memory-warning`.
+
 ## Themes
 
 `Ctrl+Shift+E` cycles through **ember** (the default), **paper** (light) and **graphite**. The choice is kept in `settings.json`.

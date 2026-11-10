@@ -203,6 +203,19 @@ fn forget_account(name: String) -> Result<(), String> {
     accounts::forget_account(&paths, &name).map_err(|error| error.to_string())
 }
 
+/// The memory warning of the settings, in KB.
+#[tauri::command]
+fn memory_warning() -> Result<u64, String> {
+    let paths = accounts::paths().map_err(|error| error.to_string())?;
+    Ok(accounts::memory_warning_kb(&paths))
+}
+
+#[tauri::command]
+fn set_memory_warning(kb: u64) -> Result<(), String> {
+    let paths = accounts::paths().map_err(|error| error.to_string())?;
+    accounts::set_memory_warning_kb(&paths, kb).map_err(|error| error.to_string())
+}
+
 /// The accounts listed and the number of sessions, which the welcome list depends on.
 fn shown_now(shared: &Shared) -> (Vec<String>, usize) {
     let view = shared.view.lock().unwrap_or_else(PoisonError::into_inner);
@@ -1065,6 +1078,8 @@ fn main() -> ExitCode {
             account_statuses,
             add_account,
             forget_account,
+            memory_warning,
+            set_memory_warning,
             helper_input,
             helper_resize,
             close_helper
