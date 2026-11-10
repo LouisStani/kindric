@@ -1,7 +1,7 @@
 // The tabs and panes on the right. Rust owns them (tabs.rs, layout.rs): every change is a
 // command, and this module only draws what it gets back.
 
-import { mark, traced } from "./trace.js";
+import { mark, note, traced } from "./trace.js";
 
 const { invoke, Channel } = window.__TAURI__.core;
 
@@ -106,8 +106,16 @@ class PaneView {
     this.terminal.loadAddon(this.fit);
     this.terminal.attachCustomKeyEventHandler(keyFilter);
     this.terminal.onData((data) => this.forward("write_input", { data }));
-    this.terminal.onResize(({ cols, rows }) => this.forward("resize_pane", { columns: cols, rows }));
-    this.observer = new ResizeObserver(() => this.fit.fit());
+    this.terminal.onResize(({ cols, rows }) => {
+      note(`pane ${this.id} terminal now ${cols}x${rows}, ${this.current && !this.current.ended ? "sent" : "not sent: no session"}`);
+      this.forward("resize_pane", { columns: cols, rows });
+    });
+    // The last size measured, so the trace notes changes only.
+    this.measured = "";
+    this.observer = new ResizeObserver(() => {
+      this.fit.fit();
+      this.noteMeasure();
+    });
     this.opened = false;
   }
 
@@ -119,6 +127,15 @@ class PaneView {
     loadWebgl(this.terminal);
     this.observer.observe(this.screen);
     this.fit.fit();
+    this.noteMeasure();
+  }
+
+  // In the trace: the screen's size in pixels and the terminal's in cells, when either changes.
+  noteMeasure() {
+    const measured = `${this.screen.clientWidth}x${this.screen.clientHeight}px, terminal ${this.terminal.cols}x${this.terminal.rows}`;
+    if (measured === this.measured) return;
+    this.measured = measured;
+    note(`pane ${this.id} measures ${measured}`);
   }
 
   // The head names the session shown, and says when it finished a turn not looked at yet.

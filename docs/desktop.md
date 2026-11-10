@@ -150,3 +150,12 @@ All in kindric's data folder, next to the mailbox: `~/.local/share/kindric/` on 
 | `sessions.json` | Short names and hidden sessions |
 | `settings.json` | The theme |
 | `theme.json` | Your custom theme, if you write one |
+
+## Signal
+
+`kindric-desktop signal on` covers the edges of the screens with a light haze of the theme's colour, over every window, with a short message at the top: "Claude borrows a window, hands off for a second", in English, French, Spanish, German, Italian or Portuguese after the system's language. `--message "…"` shows another text. Clicks and keys go through it. `kindric-desktop signal off` removes it. A skill calls it before it takes a window away for a moment, so you know not to touch anything.
+
+- `on` returns once the haze shows. Called again, it keeps the haze up.
+- The haze goes by itself 10 seconds after the last `on`, so a skill that fails cannot leave it up.
+- `off` with no haze shown does nothing. Both exit with 0; an error exits with 1.
+- It needs Wayland with the layer shell (Hyprland, Sway, KDE). Elsewhere, `on` says it is not available and exits with 1. Virtual screens (`HEADLESS-…`) stay bare.

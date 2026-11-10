@@ -7,6 +7,7 @@ mod pane;
 mod prefs;
 mod projects;
 mod settings;
+mod signal;
 mod store;
 mod tabs;
 mod trace;
@@ -569,6 +570,7 @@ fn open_session(
     output: Channel<InvokeResponseBody>,
 ) -> Result<Opened, String> {
     let _span = shared.trace.span("open_session");
+    shared.trace.record(&format!("attach {short_id} in pane {pane} at {columns}x{rows}"), Duration::ZERO);
     let implicit = implicit_default(&account)?;
     let mut workspace = shared.workspace();
     let key = SessionKey { account: account.clone(), short_id: short_id.clone() };
@@ -705,6 +707,7 @@ fn write_input(shared: State<'_, Shared>, pane: PaneId, data: String) -> Result<
 #[tauri::command]
 fn resize_pane(shared: State<'_, Shared>, pane: PaneId, columns: u16, rows: u16) -> Result<(), String> {
     let _span = shared.trace.span("resize_pane");
+    shared.trace.record(&format!("pane {pane} resized to {columns}x{rows}"), Duration::ZERO);
     let workspace = shared.workspace();
     let (_, attached, _) = workspace.attached.get(&pane).ok_or("no session in this pane")?;
     attached.resize(columns, rows).map_err(|error| error.to_string())
@@ -1025,6 +1028,10 @@ fn open_trace(errors: &mut Vec<String>) -> Trace {
 }
 
 fn main() -> ExitCode {
+    let args: Vec<String> = std::env::args().skip(1).collect();
+    if let Some(action) = signal::parse(&args) {
+        return signal::run(action);
+    }
     let mut startup_errors = Vec::new();
     let timings = open_trace(&mut startup_errors);
     startup_errors.extend(accounts::check_launcher_version().err().map(|error| error.to_string()));

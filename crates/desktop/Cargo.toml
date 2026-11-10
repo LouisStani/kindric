@@ -13,5 +13,11 @@ serde.workspace = true
 serde_json.workspace = true
 tauri = "2.12"
 
+# The signal's haze over every window: Wayland's layer shell, in pure Rust (no system library).
+[target.'cfg(target_os = "linux")'.dependencies]
+smithay-client-toolkit = { version = "0.21", default-features = false }
+# The signal's message: letters drawn from a system font, in pure Rust.
+fontdue = "0.9"
+
 [build-dependencies]
 tauri-build = "2.7"
