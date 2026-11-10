@@ -144,6 +144,8 @@ Each account gets its own `CLAUDE_CONFIG_DIR`.
 
 Links are checked on every launch. On Linux and macOS, account directories use `700` permissions and the account list uses `600`.
 
+When a session starts with the memory of kindric (`~/.kindric/memory`), kindric-accounts warns if that memory is above 30 KB. Nothing is cut. To change that size, write a number of KB from 1 to 1024 in `~/.config/claude-accounts/memory-warning`.
+
 On Windows, a symbolic link needs developer mode. Without it, folders are shared through junctions and `CLAUDE.md` is copied, then refreshed from `~/.claude` at each launch. If you edit that copy inside an account, it is no longer refreshed and kindric-accounts warns you: copy your changes to `~/.claude/CLAUDE.md`. Accounts live in `%APPDATA%\claude-accounts`.
 
 ## Shared MCP servers

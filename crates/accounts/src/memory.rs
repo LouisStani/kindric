@@ -7,7 +7,7 @@ use std::io;
 use std::path::{Component, Path, PathBuf};
 
 use crate::Paths;
-use crate::files::{create_private_dir, files_under};
+use crate::files::{create_private_dir, files_under, write_atomic};
 use crate::generate::split_header;
 use crate::paths::{MEMORY_ROOT_VARIABLE, expand_home};
 
@@ -17,6 +17,43 @@ use std::os::unix::fs::OpenOptionsExt;
 /// Default size above which the app warns about what sessions open at startup. A warning, not a
 /// cap: nothing is cut or refused above it.
 pub const WARNING_BYTES: u64 = 30 * 1024;
+
+/// Largest warning accepted, in KB.
+pub const MAX_WARNING_KB: u64 = 1024;
+
+/// The size above which sessions are warned, from `memory-warning` (a number of KB on one line),
+/// or `WARNING_BYTES` without the file. An unreadable or invalid file gives the default and a
+/// warning naming it: a session never fails to start for this.
+pub fn warning_bytes(paths: &Paths) -> (u64, Option<String>) {
+    let file = paths.memory_warning_file();
+    match fs::read_to_string(&file) {
+        Ok(text) => match parse_warning_kb(&text) {
+            Some(kb) => (kb * 1024, None),
+            None => (
+                WARNING_BYTES,
+                Some(format!("{}: ignored, expected a number of KB from 1 to {MAX_WARNING_KB}", file.display())),
+            ),
+        },
+        Err(error) if error.kind() == io::ErrorKind::NotFound => (WARNING_BYTES, None),
+        Err(error) => (WARNING_BYTES, Some(format!("{}: ignored: {error}", file.display()))),
+    }
+}
+
+fn parse_warning_kb(text: &str) -> Option<u64> {
+    text.trim().parse::<u64>().ok().filter(|kb| (1..=MAX_WARNING_KB).contains(kb))
+}
+
+/// Writes the warning, in KB, for the sessions started from now on.
+pub fn set_warning_kb(paths: &Paths, kb: u64) -> io::Result<()> {
+    if !(1..=MAX_WARNING_KB).contains(&kb) {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!("the memory warning must be from 1 to {MAX_WARNING_KB} KB, not {kb}"),
+        ));
+    }
+    create_private_dir(&paths.config_dir)?;
+    write_atomic(&paths.memory_warning_file(), &format!("{kb}\n"))
+}
 
 const PROJECTS: &str = "projets";
 const SKILLS_DIR: &str = "skills";
@@ -334,6 +371,48 @@ mod tests {
         let root = std::env::temp_dir().join(format!("kindric-memory-{label}-{}", std::process::id()));
         let _ = fs::remove_dir_all(&root);
         root
+    }
+
+    fn scratch_paths(label: &str) -> (PathBuf, Paths) {
+        let root = scratch(label);
+        let paths = Paths::from_roots(root.join("config"), root.join("data"), root.join("home"));
+        (root, paths)
+    }
+
+    #[test]
+    fn the_warning_is_30_kb_without_the_file_and_what_it_says_with_it() {
+        let (root, paths) = scratch_paths("warning-read");
+        assert_eq!(warning_bytes(&paths), (WARNING_BYTES, None));
+        fs::create_dir_all(&paths.config_dir).unwrap();
+        fs::write(paths.memory_warning_file(), "40\n").unwrap();
+        assert_eq!(warning_bytes(&paths), (40 * 1024, None));
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn an_invalid_warning_file_gives_30_kb_and_a_warning_naming_it() {
+        let (root, paths) = scratch_paths("warning-invalid");
+        fs::create_dir_all(&paths.config_dir).unwrap();
+        for text in ["abc", "0", "2000", ""] {
+            fs::write(paths.memory_warning_file(), text).unwrap();
+            let (bytes, warning) = warning_bytes(&paths);
+            assert_eq!(bytes, WARNING_BYTES, "{text:?}");
+            assert!(warning.expect("a warning").contains("memory-warning"), "{text:?}");
+        }
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn a_warning_written_is_read_back_and_one_out_of_range_is_refused() {
+        let (root, paths) = scratch_paths("warning-write");
+        set_warning_kb(&paths, 64).unwrap();
+        assert_eq!(warning_bytes(&paths), (64 * 1024, None));
+        for kb in [0, MAX_WARNING_KB + 1] {
+            let error = set_warning_kb(&paths, kb).unwrap_err().to_string();
+            assert!(error.contains("from 1 to 1024 KB"), "{error}");
+        }
+        assert_eq!(warning_bytes(&paths), (64 * 1024, None), "a refused value writes nothing");
+        let _ = fs::remove_dir_all(&root);
     }
 
     /// Every path under `root`, relative and sorted.

@@ -7,7 +7,7 @@ use std::time::{Duration, Instant};
 
 pub use kindric_accounts::registry::DEFAULT_ACCOUNT;
 pub use kindric_accounts::status::AccountStatus;
-use kindric_accounts::{Paths, account, launch, registry, status};
+use kindric_accounts::{Paths, account, launch, memory, registry, status};
 use serde::Deserialize;
 
 use crate::progress;
@@ -353,6 +353,17 @@ pub fn add_account(paths: &Paths, name: &str) -> io::Result<Vec<String>> {
 /// Takes `name` off the list of accounts; its directory stays.
 pub fn forget_account(paths: &Paths, name: &str) -> io::Result<()> {
     account::forget(paths, name).map_err(library_error)
+}
+
+/// The size, in KB, above which sessions are warned about the memory they open at startup; the
+/// default when the file that sets it cannot be used.
+pub fn memory_warning_kb(paths: &Paths) -> u64 {
+    memory::warning_bytes(paths).0 / 1024
+}
+
+/// Sets that size for the sessions started from now on.
+pub fn set_memory_warning_kb(paths: &Paths, kb: u64) -> io::Result<()> {
+    memory::set_warning_kb(paths, kb)
 }
 
 /// Queries `accounts` in parallel.

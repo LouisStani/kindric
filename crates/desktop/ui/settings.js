@@ -1,5 +1,6 @@
-// The settings window (Ctrl+,). Its first section is the accounts of kindric-accounts: their
-// state, adding one, logging one in, taking one off the list. Rust does each change and reads
+// The settings window (Ctrl+,). The accounts of kindric-accounts: their state, adding one,
+// logging one in, taking one off the list. The memory: the size above which a session is warned
+// about what it opens at startup. Rust does each change and reads
 // the accounts back (accounts.rs); the session list sees the change by itself (refresher.rs).
 
 import { logIn } from "./helper.js";
@@ -40,14 +41,45 @@ export class SettingsWindow {
       event.preventDefault();
       this.add();
     });
+    this.memoryForm = dialog.querySelector(".memory-warning");
+    this.memoryMessage = dialog.querySelector(".memory-message");
+    this.memoryForm.addEventListener("submit", (event) => {
+      event.preventDefault();
+      this.saveMemoryWarning();
+    });
   }
 
   async open() {
     this.confirming = null;
     this.message.textContent = "";
     this.name.value = "";
+    this.memoryMessage.textContent = "";
     this.dialog.showModal();
-    await this.reload();
+    await Promise.all([this.reload(), this.loadMemoryWarning()]);
+  }
+
+  async loadMemoryWarning() {
+    try {
+      this.memoryForm.elements.kb.value = await invoke("memory_warning");
+    } catch (error) {
+      this.memoryMessage.textContent = `${error}`;
+    }
+  }
+
+  // Counts from the next session: one started already keeps what it opened.
+  async saveMemoryWarning() {
+    const text = this.memoryForm.elements.kb.value.trim();
+    if (!/^[0-9]+$/.test(text)) {
+      this.memoryMessage.textContent = "a number of KB from 1 to 1024.";
+      return;
+    }
+    const kb = Number(text);
+    try {
+      await invoke("set_memory_warning", { kb });
+      this.memoryMessage.textContent = "saved: counts from the next session.";
+    } catch (error) {
+      this.memoryMessage.textContent = `${error}`;
+    }
   }
 
   async reload() {
