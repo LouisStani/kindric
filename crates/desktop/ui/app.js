@@ -1,7 +1,7 @@
 import { DirectoryField } from "./directories.js";
 import { Panes, sameSession } from "./panes.js";
 import { applyTheme, nextTheme, THEMES } from "./themes.js";
-import { mark, startTrace, traced } from "./trace.js";
+import { mark, note, startTrace, traced } from "./trace.js";
 import { askTrust } from "./helper.js";
 import { checkItems, hasToDo } from "./welcome.js";
 import { ArtifactsWindow } from "./artifacts.js";
@@ -862,6 +862,25 @@ document.getElementById("picker-query").addEventListener("keydown", onPickerKey)
 for (const dialog of document.querySelectorAll("dialog")) {
   dialog.addEventListener("close", () => panes.focus());
 }
+
+// A key pressed in a dialog that closes it (Escape, Enter in its form) gives the keyboard back to
+// the pane at once, and WebKitGTK then sends the key's keypress there: xterm would pass it on to
+// Claude Code, and an Escape stops its turn. That keypress stays out of the terminal. Seen in the
+// trace: keydown in the dialog, keypress on the pane's textarea.
+let pressedIn = null;
+document.addEventListener("keydown", (event) => (pressedIn = event.target), true);
+document.addEventListener(
+  "keypress",
+  (event) => {
+    const dialog = pressedIn instanceof Element ? pressedIn.closest("dialog") : null;
+    if (dialog && !dialog.contains(event.target)) {
+      event.preventDefault();
+      event.stopPropagation();
+      note(`keypress ${event.key} from dialog ${dialog.id} kept out of ${event.target.closest?.(".pane") ? "a pane" : "the page"}`);
+    }
+  },
+  true,
+);
 
 // xterm measures its cells with the font it is given: it must be loaded first.
 await Promise.all([document.fonts.load('400 13px "JetBrains Mono"'), document.fonts.load('700 13px "JetBrains Mono"')]);
