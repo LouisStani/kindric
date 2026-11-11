@@ -31,7 +31,7 @@ dir="$HOME/.local/share/claude-accounts/ci1"
 out=$(ANTHROPIC_API_KEY=secret "$bin" run ci1 --resume)
 printf '%s\n' "$out" | grep -qx "CONFIG=$dir" || fail "wrong CLAUDE_CONFIG_DIR: $out"
 printf '%s\n' "$out" | grep -qx 'APIKEY=unset' || fail "ANTHROPIC_API_KEY not removed: $out"
-printf '%s\n' "$out" | grep -qx 'ARGS=--resume' || fail "arguments not passed: $out"
+printf '%s\n' "$out" | grep -qxF "ARGS=--settings $HOME/.local/share/claude-accounts/.shared-settings/ci1.json --resume" || fail "arguments not passed: $out"
 "$bin" isolate ci1 >/dev/null
 [ "$("$bin" isolated --json)" = '["ci1"]' ] || fail "isolated --json"
 printf 'smoke test OK\n'

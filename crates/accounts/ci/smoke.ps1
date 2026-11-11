@@ -31,7 +31,8 @@ $out = & $Bin run ci1 --resume | Out-String
 Remove-Item Env:ANTHROPIC_API_KEY
 if ($out -notmatch [regex]::Escape("CONFIG=$dir")) { Fail "wrong CLAUDE_CONFIG_DIR: $out" }
 if ($out -match 'secret') { Fail "ANTHROPIC_API_KEY not removed: $out" }
-if ($out -notmatch 'ARGS=--resume') { Fail "arguments not passed: $out" }
+# The account's own settings, with the status line of kindric-accounts, come before the arguments.
+if ($out -notmatch 'ARGS=--settings \S*\\\.shared-settings\\ci1\.json --resume') { Fail "arguments not passed: $out" }
 
 & $Bin isolate ci1 | Out-Null
 $isolated = (& $Bin isolated --json | Out-String).Trim()
