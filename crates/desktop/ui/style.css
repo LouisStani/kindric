@@ -617,6 +617,18 @@ ol, ul {
   opacity: 0.6;
 }
 
+/* How many files the session changed: kept whole, after the progress line. */
+.head-changed {
+  flex: none;
+  white-space: nowrap;
+  color: var(--muted);
+}
+
+.pane.active .head-changed {
+  color: var(--on-active);
+  opacity: 0.8;
+}
+
 .progress {
   font-style: italic;
   color: var(--muted);

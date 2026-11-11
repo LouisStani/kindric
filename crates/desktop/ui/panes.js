@@ -90,8 +90,9 @@ class PaneView {
     this.account = element("span", "head-account");
     this.done = element("span", "head-done", "✓ done");
     this.progress = element("span", "head-progress");
+    this.changed = element("span", "head-changed");
     const head = element("div", "pane-head");
-    head.append(element("span", "prompt", "~ $"), this.title, this.account, this.progress, this.done);
+    head.append(element("span", "prompt", "~ $"), this.title, this.account, this.progress, this.changed, this.done);
     this.screen = element("div", "screen");
     // Over the top of the terminal, which keeps its size: Claude Code does not draw again.
     this.gallery = element("div", "pane-images");
@@ -138,12 +139,14 @@ class PaneView {
     note(`pane ${this.id} measures ${measured}`);
   }
 
-  // The head names the session shown, and says when it finished a turn not looked at yet.
-  label(key, title, finished, progress) {
+  // The head names the session shown, says how many files it changed in its repositories, and
+  // when it finished a turn not looked at yet.
+  label(key, title, finished, progress, changed) {
     setText(this.title, key === null ? "empty" : title);
     setText(this.account, key === null ? "" : `· ${key.account}`);
     setText(this.progress, key === null || !progress ? "" : `· ${progress}`);
     this.progress.title = progress || "";
+    setText(this.changed, key === null || !changed ? "" : `· ${changed} ${changed === 1 ? "file" : "files"}`);
     this.done.hidden = !finished;
     this.element.classList.toggle("finished", finished);
   }
@@ -223,7 +226,7 @@ function leaves(node, found = []) {
 }
 
 export class Panes {
-  constructor(container, bar, { keyFilter, onChange, onError, titleOf, isFinished, markOf, progressOf, imagesOf }) {
+  constructor(container, bar, { keyFilter, onChange, onError, titleOf, isFinished, markOf, progressOf, changedOf, imagesOf }) {
     this.container = container;
     this.bar = bar;
     this.keyFilter = keyFilter;
@@ -233,6 +236,7 @@ export class Panes {
     this.isFinished = isFinished;
     this.markOf = markOf;
     this.progressOf = progressOf;
+    this.changedOf = changedOf;
     this.imagesOf = imagesOf;
     this.state = null;
     this.views = new Map();
@@ -393,7 +397,8 @@ export class Panes {
       const key = leaf.session;
       const title = key === null ? "" : this.titleOf(key);
       const view = this.view(leaf.id);
-      view.label(key, title, key !== null && this.isFinished(key), key === null ? null : this.progressOf(key));
+      const known = key !== null;
+      view.label(key, title, known && this.isFinished(key), known ? this.progressOf(key) : null, known ? this.changedOf(key) : null);
       view.showImages(key === null ? [] : this.imagesOf(key));
     }
   }
