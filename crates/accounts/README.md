@@ -114,7 +114,7 @@ Other programs can drive kindric-accounts through the commands below. Their outp
 | `remove <name> --keep-dir` | Removes the account and keeps its directory, without asking. |
 | `run <name> [args]` | Replaces itself with `claude` running on this account. |
 | `isolated --json` | `["work"]`, or `[]` |
-| `--version` | `kindric-accounts 2.0.0` |
+| `--version` | `kindric-accounts 2.1.0` |
 
 ```json
 [

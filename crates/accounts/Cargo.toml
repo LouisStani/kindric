@@ -1,6 +1,6 @@
 [package]
 name = "kindric-accounts"
-version = "2.0.0"
+version = "2.1.0"
 edition = "2024"
 description = "Several Claude Code accounts side by side, one shared setup"
 license = "GPL-3.0-only"

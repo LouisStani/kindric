@@ -164,14 +164,42 @@ pub fn run_user_statusline(paths: &Paths, input: &[u8]) -> io::Result<Option<(Ve
 }
 
 /// `"<kindric-accounts>" statusline`, the status line of the sessions kindric-accounts starts:
-/// this program when it is kindric-accounts, else the one in `PATH`. `None` when there is none.
+/// this program when it is kindric-accounts, else the one in `PATH` when it is recent enough to
+/// know `statusline` (an older one would break the status line). `None` otherwise.
 pub fn wrapper_command() -> Option<String> {
     let current = std::env::current_exe().ok().filter(|exe| {
         exe.file_stem().is_some_and(|stem| stem == "kindric-accounts")
     });
-    let path = std::env::var_os("PATH").unwrap_or_default();
-    let program = current.or_else(|| launch::find_in(&path, &PROGRAM_NAMES))?;
+    let program = match current {
+        Some(program) => program,
+        None => {
+            let path = std::env::var_os("PATH").unwrap_or_default();
+            launch::find_in(&path, &PROGRAM_NAMES).filter(|program| knows_statusline(program))?
+        },
+    };
     Some(format!("\"{}\" {SUBCOMMAND}", program.display()))
+}
+
+/// The first version of kindric-accounts with `statusline`.
+const STATUSLINE_SINCE: (u32, u32, u32) = (2, 1, 0);
+
+/// Whether `program --version` says `kindric-accounts X.Y.Z` with a version that has `statusline`.
+fn knows_statusline(program: &Path) -> bool {
+    let mut command = Command::new(program);
+    command.arg("--version").stdin(Stdio::null()).stderr(Stdio::null());
+    let Ok(output) = command.output() else {
+        return false;
+    };
+    version_of(&String::from_utf8_lossy(&output.stdout)).is_some_and(|version| version >= STATUSLINE_SINCE)
+}
+
+/// `kindric-accounts 2.1.0` → (2, 1, 0).
+fn version_of(output: &str) -> Option<(u32, u32, u32)> {
+    let mut parts = output.trim().strip_prefix("kindric-accounts ")?.split('.').map(str::parse::<u32>);
+    match (parts.next(), parts.next(), parts.next(), parts.next()) {
+        (Some(Ok(major)), Some(Ok(minor)), Some(Ok(patch)), None) => Some((major, minor, patch)),
+        _ => None,
+    }
 }
 
 /// `settings` (a `settings.json`) with its status line replaced by `command`; what else it holds
@@ -253,6 +281,15 @@ mod tests {
         assert_eq!((reset.five_hour, reset.seven_day.map(|window| window.used_percentage)), (None, Some(3.0)));
         assert_eq!(usage_of(br#"{"model":{}}"#, 0), None, "no limits: billed by API key");
         assert_eq!(usage_of(b"{broken", 0), None);
+    }
+
+    #[test]
+    fn only_a_recent_kindric_accounts_gets_the_status_line() {
+        assert_eq!(version_of("kindric-accounts 2.1.0\n"), Some((2, 1, 0)));
+        assert!(version_of("kindric-accounts 2.0.0").is_some_and(|version| version < STATUSLINE_SINCE));
+        assert!(version_of("kindric-accounts 2.10.3").is_some_and(|version| version >= STATUSLINE_SINCE));
+        assert_eq!(version_of("claude 2.1.0"), None);
+        assert_eq!(version_of("kindric-accounts 2.1"), None);
     }
 
     #[test]
