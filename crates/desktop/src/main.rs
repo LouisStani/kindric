@@ -24,7 +24,7 @@ use kindric_core::launcher::{self, Request, resolve_directory};
 use kindric_core::mailbox::Mailbox;
 use kindric_core::accounts::SessionInfo;
 use kindric_core::artifacts::{self, Kind};
-use kindric_core::{accounts, checks, images, mailbox, refresher};
+use kindric_core::{accounts, changes, checks, images, mailbox, refresher};
 use serde::Serialize;
 use serde::de::DeserializeOwned;
 use tauri::ipc::{Channel, InvokeResponseBody, Response};
@@ -125,8 +125,23 @@ fn start_session(account: String, directory: &str, name: &str) -> Result<Created
     let home = std::env::home_dir().ok_or("HOME is not set")?;
     let directory = resolve_directory(directory, &home)?;
     let request = Request { account, directory, name: name.trim().to_string() };
+    // The state of the folder before the session, to tell later what the session changed.
+    let recorded = changes::record(&request.directory);
     let launched = launcher::launch(&request)?;
-    Ok(Created { account: request.account, short_id: launched.short_id, warnings: launched.warnings, directory: request.directory })
+    let mut warnings = launched.warnings;
+    if let Err(error) = keep_recorded(recorded, &request.account, &launched.short_id) {
+        warnings.push(error);
+    }
+    Ok(Created { account: request.account, short_id: launched.short_id, warnings, directory: request.directory })
+}
+
+/// Writes down the state taken before a session's launch; a folder outside git has none.
+fn keep_recorded(recorded: Result<Option<changes::Recorded>, String>, account: &str, short_id: &str) -> Result<(), String> {
+    let Some(recorded) = recorded? else {
+        return Ok(());
+    };
+    let data_dir = mailbox::data_dir().map_err(|error| error.to_string())?;
+    changes::save_recorded(&data_dir, account, short_id, &recorded)
 }
 
 /// Why a session did not start, and whether Claude Code can be asked to trust its folder.
