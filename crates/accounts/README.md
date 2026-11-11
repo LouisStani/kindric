@@ -118,8 +118,8 @@ Other programs can drive kindric-accounts through the commands below. Their outp
 
 ```json
 [
-  {"name": "personal", "state": "logged-in", "sessions": 1, "plan": "pro", "dir": "/home/me/.local/share/claude-accounts/personal", "isolated": false},
-  {"name": "work", "state": "logged-out", "sessions": 0, "plan": null, "dir": "/home/me/.local/share/claude-accounts/work", "isolated": true}
+  {"name": "personal", "state": "logged-in", "sessions": 1, "plan": "pro", "dir": "/home/me/.local/share/claude-accounts/personal", "isolated": false, "login_expires": "2026-11-13T15:45:31.701Z"},
+  {"name": "work", "state": "logged-out", "sessions": 0, "plan": null, "dir": "/home/me/.local/share/claude-accounts/work", "isolated": true, "login_expires": null}
 ]
 ```
 
@@ -128,6 +128,7 @@ Other programs can drive kindric-accounts through the commands below. Their outp
 - `plan` is the subscription type reported by Claude Code, or `null`.
 - `dir` is the account's `CLAUDE_CONFIG_DIR`.
 - `isolated` is `true` for an isolated account (since 1.2.0).
+- `login_expires` is when the login must be renewed, in ISO UTC as Claude Code gives it, or `null` (since 2.1.0).
 
 On error, the exit code is not 0 and stderr explains why: one line starting with `kindric-accounts:`, or the usage text for an unknown command or option. `jq` is not needed.
 
@@ -207,7 +208,7 @@ CLAUDE_CODE_OAUTH_TOKEN
 
 A key or token exported in your shell therefore cannot override the account you picked, and you are billed on the account you chose.
 
-Login status comes from `claude auth status`, run with the same variables removed. Claude Code reads its own credentials locally; kindric-accounts only reads the exit code and the plan name.
+Login status comes from `claude auth status`, run with the same variables removed. Claude Code reads its own credentials locally; kindric-accounts only reads the exit code, the plan name and when the login expires.
 
 Active sessions are counted from the `sessions/` directory of each account, keeping only the processes that are still running `claude`. This directory is internal to Claude Code: if its layout changes, the count disappears and nothing else breaks.
 

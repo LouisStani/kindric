@@ -6,6 +6,7 @@ import { askTrust } from "./helper.js";
 import { checkItems, hasToDo } from "./welcome.js";
 import { ArtifactsWindow } from "./artifacts.js";
 import { SettingsWindow } from "./settings.js";
+import { expiresWithin, inHowLong, shortly, timeLeft } from "./expiry.js";
 
 const { invoke } = window.__TAURI__.core;
 const { listen } = window.__TAURI__.event;
@@ -445,25 +446,49 @@ function accountOption(account) {
 
 // Each account with how much of its limits it used, from the last figures its status line
 // wrote down: "lystriq · 5h 34% · week 16%", and how old they are past 10 minutes.
+// And "· login 3d" when its login must be renewed within a week.
 async function showAccountUsage(select) {
-  let usages;
+  let usages = [];
   try {
     usages = await invoke("account_usage", { accounts: lastView.accounts });
   } catch (error) {
     setStatus(`usage of the accounts: ${error}`);
-    return;
   }
-  const now = Date.now() / 1000;
-  for (const usage of usages) {
-    const option = [...select.options].find((candidate) => candidate.value === usage.name);
-    if (option) option.textContent = usageLabel(usage, now);
+  const now = Date.now();
+  for (const option of select.options) {
+    const usage = usages.find((candidate) => candidate.name === option.value);
+    const status = accountStatuses.find((candidate) => candidate.name === option.value);
+    option.textContent = accountLabel(option.value, usage, status, now);
   }
 }
 
-function usageLabel(usage, now) {
-  const label = `${usage.name} · 5h ${Math.round(usage.five_hour)}% · week ${Math.round(usage.seven_day)}%`;
-  const age = now - usage.updated_at;
-  return age > 600 ? `${label} · ${ago(age)}` : label;
+function accountLabel(name, usage, status, now) {
+  const parts = [name];
+  if (usage) {
+    parts.push(`5h ${Math.round(usage.five_hour)}%`, `week ${Math.round(usage.seven_day)}%`);
+    const age = now / 1000 - usage.updated_at;
+    if (age > 600) parts.push(ago(age));
+  }
+  if (status && expiresWithin(status, 7, now)) parts.push(`login ${shortly(timeLeft(status, now))}`);
+  return parts.join(" · ");
+}
+
+// The accounts as kindric-accounts last told them: login state, plan, when the login expires.
+// Read once at startup, then each time the settings read them.
+let accountStatuses = [];
+
+// At startup: says which accounts must renew their login within 3 days, and where.
+async function readAccountStatuses() {
+  try {
+    accountStatuses = await invoke("account_statuses");
+  } catch (error) {
+    note(`account statuses: ${error}`);
+    return;
+  }
+  const soon = accountStatuses.filter((account) => expiresWithin(account, 3));
+  if (soon.length === 0) return;
+  const said = soon.map((account) => `${account.name}: login expires ${inHowLong(timeLeft(account))}`);
+  setStatus(`${said.join(" · ")} · ${keyText("settings")} to renew`);
 }
 
 function ago(seconds) {
@@ -880,7 +905,10 @@ const panes = new Panes(document.getElementById("panes"), document.getElementByI
 });
 
 const artifactsWindow = new ArtifactsWindow(document.getElementById("artifacts"), { onError: setStatus });
-const settingsWindow = new SettingsWindow(document.getElementById("settings"), { shortcuts: shortcutSettings });
+const settingsWindow = new SettingsWindow(document.getElementById("settings"), {
+  shortcuts: shortcutSettings,
+  onAccounts: (accounts) => (accountStatuses = accounts),
+});
 
 const sessionDirectory = directoryField("new-form");
 const projectDirectory = directoryField("project-form");
@@ -944,5 +972,6 @@ await listen("tauri://drag-drop", ({ payload }) => {
 });
 await panes.load();
 render(await invoke("current_list"));
+readAccountStatuses();
 // Since the page started loading.
 mark("page ready", 0);

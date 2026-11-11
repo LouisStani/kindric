@@ -4,7 +4,11 @@
 // One category shows at a time; typing in the search shows what matches in all of them. Rust does each change and reads
 // the accounts back (accounts.rs); the session list sees the change by itself (refresher.rs).
 
+import { expiresWithin, inHowLong, timeLeft } from "./expiry.js";
 import { logIn } from "./helper.js";
+
+// A login that expires within this many days can be renewed from its row.
+const RENEW_DAYS = 7;
 
 const { invoke } = window.__TAURI__.core;
 
@@ -33,8 +37,10 @@ function plural(count, word) {
 }
 
 export class SettingsWindow {
-  constructor(dialog, { shortcuts }) {
+  // `onAccounts(accounts)`: the accounts each time they are read, for the rest of the app.
+  constructor(dialog, { shortcuts, onAccounts }) {
     this.dialog = dialog;
+    this.onAccounts = onAccounts;
     this.search = dialog.querySelector(".settings-search");
     this.content = dialog.querySelector(".settings-content");
     this.sections = [...dialog.querySelectorAll(".settings-section")];
@@ -131,6 +137,7 @@ export class SettingsWindow {
       const accounts = await invoke("account_statuses");
       if (request !== this.request) return;
       this.accounts = accounts;
+      this.onAccounts?.(accounts);
     } catch (error) {
       if (request !== this.request) return;
       this.message.textContent = `${error}`;
@@ -207,10 +214,18 @@ export class SettingsWindow {
   row(account) {
     const item = element("li", "account");
     const state = account.state.replace("-", " ");
-    item.dataset.search = `${account.name} ${state} ${account.plan ?? ""} account`.toLowerCase();
+    // Its login runs out soon: kindric renews it with the same window as "log in".
+    const expiring = expiresWithin(account, RENEW_DAYS);
+    const searched = `${account.name} ${state} ${account.plan ?? ""} account${expiring ? " login expires renew" : ""}`;
+    item.dataset.search = searched.toLowerCase();
     item.append(element("span", "account-name", account.name), element("span", `account-state ${account.state}`, state));
     const details = [account.plan, account.sessions > 0 && plural(account.sessions, "session"), account.isolated && "isolated"].filter(Boolean);
-    item.append(element("span", "account-details muted", details.join(" · ")));
+    const detailsNode = element("span", "account-details muted", details.join(" · "));
+    if (expiring) {
+      const expiry = `${details.length > 0 ? " · " : ""}login expires ${inHowLong(timeLeft(account))}`;
+      detailsNode.append(element("span", "account-expiry", expiry));
+    }
+    item.append(detailsNode);
     const actions = element("span", "account-actions");
     if (this.confirming === account.name) {
       const running = account.sessions > 0 ? ` ${plural(account.sessions, "session")} keep running, hidden from kindric.` : "";
@@ -218,6 +233,7 @@ export class SettingsWindow {
       actions.append(button("remove", () => this.forget(account.name), "danger"), button("cancel", () => this.confirm(null)));
     } else {
       if (account.state !== "logged-in") actions.append(button("log in", () => this.logIn(account.name)));
+      else if (expiring) actions.append(button("renew", () => this.logIn(account.name)));
       actions.append(button("remove", () => this.confirm(account.name)));
     }
     item.append(actions);

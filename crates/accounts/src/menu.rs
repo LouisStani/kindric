@@ -146,7 +146,7 @@ mod tests {
     use std::path::PathBuf;
 
     fn status(state: LoginState, plan: Option<&str>, sessions: usize, isolated: bool) -> AccountStatus {
-        AccountStatus { name: "x".into(), state, sessions, plan: plan.map(Into::into), dir: PathBuf::new(), isolated }
+        AccountStatus { name: "x".into(), state, sessions, plan: plan.map(Into::into), dir: PathBuf::new(), isolated, login_expires: None }
     }
 
     #[test]
