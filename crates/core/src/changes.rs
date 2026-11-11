@@ -924,8 +924,15 @@ mod tests {
     fn real_session() {
         let account = std::env::var("KINDRIC_CHANGES_ACCOUNT").expect("KINDRIC_CHANGES_ACCOUNT");
         let session = std::env::var("KINDRIC_CHANGES_SESSION").expect("KINDRIC_CHANGES_SESSION");
+        // With KINDRIC_CHANGES_SHORT=<short id>, the state written down at the launch, if any.
+        let recorded = std::env::var("KINDRIC_CHANGES_SHORT").ok().and_then(|short_id| {
+            let name = Path::new(&account).file_name()?.to_string_lossy().into_owned();
+            let data_dir = crate::mailbox::data_dir().ok()?;
+            load_recorded(&data_dir, Path::new(&account), &name, &short_id, &session)
+        });
+        println!("recorded state: {recorded:?}");
         let begun = std::time::Instant::now();
-        let blocks = session_changes(Path::new(&account), &session, None).unwrap();
+        let blocks = session_changes(Path::new(&account), &session, recorded.as_ref()).unwrap();
         println!("{} blocks in {:?}", blocks.len(), begun.elapsed());
         for block in blocks {
             match block {
