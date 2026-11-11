@@ -9,6 +9,8 @@ use kindric_accounts::files::create_private_dir;
 use serde::{Deserialize, Serialize};
 
 const READ_DIR: &str = "read";
+/// In an inbox: the unread messages the session was already told of (see `notice`).
+const NOTIFIED_FILE: &str = "notified";
 
 static SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
@@ -171,6 +173,36 @@ impl Mailbox {
         Ok(self.unread_files(session)?.len())
     }
 
+    /// What a session is told about its unread messages, once per new message: "2 unread
+    /// messages from …". The unread messages already told of are written down in `notified`, so
+    /// a hook run after every tool says it once. `None` when there is nothing new.
+    pub fn notice(&self, session: &str) -> io::Result<Option<String>> {
+        let files = self.unread_files(session)?;
+        let names: Vec<String> = files.iter().filter_map(|file| Some(file.file_name()?.to_string_lossy().into_owned())).collect();
+        let marker = self.inbox(session)?.join(NOTIFIED_FILE);
+        let told = fs::read_to_string(&marker).unwrap_or_default();
+        if names.iter().all(|name| told.lines().any(|line| line == name)) {
+            return Ok(None);
+        }
+        let mut senders: Vec<String> = Vec::new();
+        for file in &files {
+            let Ok(message) = fs::read(file).map_err(io::Error::other).and_then(|bytes| serde_json::from_slice::<Message>(&bytes).map_err(io::Error::other)) else {
+                continue;
+            };
+            let sender = format!("{} ({})", message.from_title, message.from_account);
+            if !senders.contains(&sender) {
+                senders.push(sender);
+            }
+        }
+        fs::write(&marker, names.join("\n"))?;
+        let count = names.len();
+        let (plural, them) = if count == 1 { ("", "it") } else { ("s", "them") };
+        Ok(Some(format!(
+            "{count} unread message{plural} from another Claude session: {}. Call the read_messages tool of the kindric server to read {them}.",
+            senders.join(", ")
+        )))
+    }
+
     /// Returns unread messages, oldest first, and moves them to `read/`.
     pub fn take_unread(&self, session: &str) -> io::Result<Vec<Message>> {
         let files = self.unread_files(session)?;
@@ -190,9 +222,71 @@ impl Mailbox {
     }
 }
 
+/// `kindric unread`, the hook kindric-accounts sets on the sessions it starts: reads Claude Code's
+/// input and prints the answer. Nothing that goes wrong may disturb the session: it prints nothing.
+pub fn run_unread_hook() {
+    let mut input = String::new();
+    if io::Read::read_to_string(&mut io::stdin(), &mut input).is_err() {
+        return;
+    }
+    let Ok(root) = default_root() else {
+        return;
+    };
+    if let Some(answer) = unread_hook_answer(&Mailbox::new(root), &input) {
+        println!("{answer}");
+    }
+}
+
+/// What `kindric unread` prints for `input`, the JSON Claude Code gives a hook: the notice of
+/// new unread messages as context for the session, else nothing. Only for the events it is
+/// set on, `UserPromptSubmit` and `PostToolUse`.
+pub fn unread_hook_answer(mailbox: &Mailbox, input: &str) -> Option<String> {
+    let input: serde_json::Value = serde_json::from_str(input).ok()?;
+    let session = input.get("session_id")?.as_str()?;
+    let event = input.get("hook_event_name")?.as_str()?;
+    if !matches!(event, "UserPromptSubmit" | "PostToolUse") {
+        return None;
+    }
+    let notice = mailbox.notice(session).ok()??;
+    Some(serde_json::json!({ "hookSpecificOutput": { "hookEventName": event, "additionalContext": notice } }).to_string())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_session_is_told_once_of_each_new_message() {
+        let mailbox = Mailbox::new(temp_root("notice"));
+        assert_eq!(mailbox.notice("bbbb-2222").unwrap(), None, "no inbox yet");
+        mailbox.send("bbbb-2222", &message("hello", 100)).unwrap();
+        let first = mailbox.notice("bbbb-2222").unwrap().unwrap();
+        assert!(first.starts_with("1 unread message from another Claude session: roblox (louis)."), "{first}");
+        assert_eq!(mailbox.notice("bbbb-2222").unwrap(), None, "already told");
+        mailbox.send("bbbb-2222", &message("again", 101)).unwrap();
+        let second = mailbox.notice("bbbb-2222").unwrap().unwrap();
+        assert!(second.starts_with("2 unread messages"), "{second}");
+        assert!(second.ends_with("to read them."), "{second}");
+        mailbox.take_unread("bbbb-2222").unwrap();
+        assert_eq!(mailbox.notice("bbbb-2222").unwrap(), None, "all read");
+        assert_eq!(mailbox.unread_count("bbbb-2222").unwrap(), 0, "the marker is not a message");
+        fs::remove_dir_all(mailbox.root()).unwrap();
+    }
+
+    #[test]
+    fn the_hook_answers_with_context_for_its_events_only() {
+        let mailbox = Mailbox::new(temp_root("hook"));
+        mailbox.send("bbbb-2222", &message("hello", 100)).unwrap();
+        assert_eq!(unread_hook_answer(&mailbox, r#"{"session_id":"bbbb-2222","hook_event_name":"Stop"}"#), None);
+        let answer = unread_hook_answer(&mailbox, r#"{"session_id":"bbbb-2222","hook_event_name":"PostToolUse","tool_name":"Bash"}"#).unwrap();
+        let value: serde_json::Value = serde_json::from_str(&answer).unwrap();
+        assert_eq!(value["hookSpecificOutput"]["hookEventName"], "PostToolUse");
+        assert!(value["hookSpecificOutput"]["additionalContext"].as_str().unwrap().contains("read_messages"));
+        assert_eq!(unread_hook_answer(&mailbox, r#"{"session_id":"bbbb-2222","hook_event_name":"UserPromptSubmit"}"#), None, "told once");
+        assert_eq!(unread_hook_answer(&mailbox, r#"{"session_id":"../x","hook_event_name":"PostToolUse"}"#), None);
+        assert_eq!(unread_hook_answer(&mailbox, "{broken"), None);
+        fs::remove_dir_all(mailbox.root()).unwrap();
+    }
 
     fn temp_root(label: &str) -> PathBuf {
         let root = std::env::temp_dir().join(format!("kindric-test-{label}-{}", std::process::id()));
