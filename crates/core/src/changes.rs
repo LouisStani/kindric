@@ -10,6 +10,8 @@ use std::io::{self, BufRead, BufReader, Read};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
+use serde::{Deserialize, Serialize};
+
 /// Untracked files bigger than this are listed without counting their lines.
 const LARGEST_COUNTED: u64 = 1024 * 1024;
 /// Git calls a file binary when its first 8000 bytes hold a NUL; kindric does the same.
@@ -54,7 +56,7 @@ pub enum Block {
 }
 
 /// The state of the copy a session starts in, written down by kindric before it launches it.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Recorded {
     /// The top of the copy, as `git rev-parse --show-toplevel` prints it.
     pub copy: PathBuf,
@@ -62,6 +64,77 @@ pub struct Recorded {
     pub commit: String,
     /// The untracked files then, which the session did not add.
     pub untracked: Vec<String>,
+}
+
+/// The state of the copy `directory` is in, taken just before a session is launched there.
+/// `None` outside a repository, in one without any commit, or without git: the session's block
+/// is then estimated, and the launch goes on.
+pub fn record(directory: &Path) -> Result<Option<Recorded>, String> {
+    let run = |dir: &Path, args: &[&str]| match git(dir, args) {
+        Ok(output) => Ok(Some(text(&output).trim_end().to_string())),
+        Err(GitError::Missing(_)) => Ok(None),
+        Err(GitError::Failed(error)) => Err(error),
+    };
+    let Ok(Some(top)) = run(directory, &["rev-parse", "--show-toplevel"]) else {
+        return Ok(None);
+    };
+    let copy = PathBuf::from(top);
+    // A commit of the tracked files as they are, made without touching the branch, the stash
+    // list or the files; nothing when nothing is uncommitted. It is never shared: an identity of
+    // its own spares git asking for the user's, which may not be set.
+    let identity = ["-c", "user.name=kindric", "-c", "user.email=kindric@localhost", "-c", "commit.gpgSign=false"];
+    let Ok(Some(stash)) = run(&copy, &[&identity[..], &["stash", "create"][..]].concat()) else {
+        return Ok(None);
+    };
+    let commit = match stash.trim() {
+        "" => match run(&copy, &["rev-parse", "--verify", "-q", "HEAD"]) {
+            Ok(Some(head)) => head,
+            _ => return Ok(None),
+        },
+        sha => sha.to_string(),
+    };
+    let listed = git(&copy, &["--no-optional-locks", "ls-files", "-z", "--others", "--exclude-standard"])?;
+    let untracked = nul_fields(&listed).filter(|path| !path.ends_with('/')).collect();
+    Ok(Some(Recorded { copy, commit, untracked }))
+}
+
+/// `<data dir>/starts/<account>-<short id>.json`, the state written down at a session's launch.
+fn recorded_file(data_dir: &Path, account: &str, short_id: &str) -> Option<PathBuf> {
+    let plain = |name: &str| !name.is_empty() && name.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_');
+    (plain(account) && plain(short_id)).then(|| data_dir.join("starts").join(format!("{account}-{short_id}.json")))
+}
+
+pub fn save_recorded(data_dir: &Path, account: &str, short_id: &str, recorded: &Recorded) -> Result<(), String> {
+    let file = recorded_file(data_dir, account, short_id)
+        .ok_or_else(|| format!("cannot write the starting state of session {account}/{short_id}: unexpected name"))?;
+    let json = serde_json::to_string(recorded).map_err(|error| error.to_string())?;
+    let write = |file: &Path| -> io::Result<()> {
+        if let Some(dir) = file.parent() {
+            std::fs::create_dir_all(dir)?;
+        }
+        std::fs::write(file, json)
+    };
+    write(&file).map_err(|error| format!("cannot write {}: {error}", file.display()))
+}
+
+/// The state written down at the launch of session `short_id`, if `session_id` is still its
+/// first conversation: after a `/clear`, the session works in a new conversation, which that
+/// state does not describe, and its block is estimated (decision 238). The first conversation
+/// is the `sessionId` of `<account>/jobs/<short id>/state.json`, a file Claude Code does not
+/// document: without it, no state.
+pub fn load_recorded(data_dir: &Path, account_dir: &Path, account: &str, short_id: &str, session_id: &str) -> Option<Recorded> {
+    #[derive(Deserialize)]
+    struct State {
+        #[serde(rename = "sessionId")]
+        session_id: Option<String>,
+    }
+    let state = std::fs::read_to_string(account_dir.join("jobs").join(short_id).join("state.json")).ok()?;
+    let first = serde_json::from_str::<State>(&state).ok()?.session_id?;
+    if first != session_id {
+        return None;
+    }
+    let file = recorded_file(data_dir, account, short_id)?;
+    serde_json::from_str(&std::fs::read_to_string(file).ok()?).ok()
 }
 
 /// A trace of git in the conversation, by which a commit on the copy the session started in
@@ -691,8 +764,14 @@ mod tests {
         setup_git(&repo, &["init", "-q"]);
         fs::write(repo.join("kept.txt"), "a\nb\n").unwrap();
         fs::write(repo.join("gone.txt"), "x\n").unwrap();
+        fs::write(repo.join("notes.txt"), "n\n").unwrap();
         setup_git(&repo, &["add", "-A"]);
         setup_git(&repo, &["commit", "-q", "-m", "first"]);
+        // Before the session: an uncommitted change and an untracked file, then the state kindric
+        // writes down at launch.
+        fs::write(repo.join("notes.txt"), "n2\n").unwrap();
+        fs::write(repo.join("before.txt"), "b\n").unwrap();
+        let snapshot = record(&repo).unwrap().unwrap();
 
         // The session starts after this commit: git's reflog times are in seconds.
         std::thread::sleep(std::time::Duration::from_millis(1100));
@@ -745,7 +824,13 @@ mod tests {
                     copy: top_of(&repo),
                     branch: Some("main".into()),
                     start: Start::Estimated,
-                    files: vec![file("kept.txt", ChangeKind::Modified, 1, 0), file("mine.txt", ChangeKind::Added, 1, 0)],
+                    // Estimated: what was not committed before the session counts as its own.
+                    files: vec![
+                        file("before.txt", ChangeKind::Added, 1, 0),
+                        file("kept.txt", ChangeKind::Modified, 1, 0),
+                        file("mine.txt", ChangeKind::Added, 1, 0),
+                        file("notes.txt", ChangeKind::Modified, 1, 1),
+                    ],
                 },
                 Block::Changes {
                     copy: top_of(&worktree),
@@ -761,19 +846,67 @@ mod tests {
             ]
         );
 
-        // With the state kindric wrote down at launch, the uncommitted change made before the
-        // session is no longer counted as the session's.
-        fs::write(repo.join("before.txt"), "b\n").unwrap();
-        let snapshot = Recorded {
-            copy: top_of(&repo),
-            commit: setup_git(&repo, &["rev-parse", "HEAD"]),
-            untracked: vec!["before.txt".into()],
-        };
+        // With the state kindric wrote down at launch, what was not committed before the session
+        // is no longer counted as the session's.
         let blocks = session_changes(&account, "abc-123", Some(&snapshot)).unwrap();
         let Block::Changes { start, files, .. } = &blocks[0] else { panic!("{blocks:?}") };
         assert_eq!(start, &Start::Recorded);
-        assert_eq!(files, &vec![file("kept.txt", ChangeKind::Modified, 1, 0)]);
+        assert_eq!(files, &vec![file("kept.txt", ChangeKind::Modified, 1, 0), file("mine.txt", ChangeKind::Added, 1, 0)]);
 
+        fs::remove_dir_all(&root).unwrap();
+    }
+
+    /// The state is a commit of the uncommitted change plus the untracked files, taken without
+    /// moving HEAD or adding to the stash list.
+    #[test]
+    fn recording_a_copy_leaves_it_as_it_was() {
+        let root = std::env::temp_dir().join(format!("kindric-changes-record-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        let repo = root.join("repo");
+        fs::create_dir_all(repo.join("sub")).unwrap();
+        setup_git(&repo, &["init", "-q"]);
+        assert_eq!(record(&repo), Ok(None), "no commit yet");
+        fs::write(repo.join("a.txt"), "1\n").unwrap();
+        setup_git(&repo, &["add", "-A"]);
+        setup_git(&repo, &["commit", "-q", "-m", "first"]);
+        let head = setup_git(&repo, &["rev-parse", "HEAD"]);
+
+        let clean = record(&repo.join("sub")).unwrap().unwrap();
+        assert_eq!((clean.copy, clean.commit.as_str(), clean.untracked.len()), (top_of(&repo), head.as_str(), 0));
+
+        fs::write(repo.join("a.txt"), "2\n").unwrap();
+        fs::write(repo.join("sub").join("u.txt"), "u\n").unwrap();
+        let dirty = record(&repo).unwrap().unwrap();
+        assert_ne!(dirty.commit, head);
+        assert_eq!(setup_git(&repo, &["show", &format!("{}:a.txt", dirty.commit)]), "2");
+        assert_eq!(dirty.untracked, vec!["sub/u.txt".to_string()]);
+        assert_eq!(setup_git(&repo, &["rev-parse", "HEAD"]), head);
+        assert_eq!(setup_git(&repo, &["stash", "list"]), "");
+        assert_eq!(fs::read_to_string(repo.join("a.txt")).unwrap(), "2\n");
+
+        let outside = root.join("outside");
+        fs::create_dir_all(&outside).unwrap();
+        assert_eq!(record(&outside), Ok(None));
+        fs::remove_dir_all(&root).unwrap();
+    }
+
+    /// The state comes back for the session's first conversation only.
+    #[test]
+    fn a_recorded_state_is_for_the_first_conversation() {
+        let root = std::env::temp_dir().join(format!("kindric-changes-saved-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        let (data, account) = (root.join("data"), root.join("account"));
+        let recorded = Recorded { copy: PathBuf::from("/r"), commit: "abc1234".into(), untracked: vec!["x".into()] };
+        save_recorded(&data, "lystriq", "06af535d", &recorded).unwrap();
+        assert_eq!(load_recorded(&data, &account, "lystriq", "06af535d", "first"), None, "no state.json");
+
+        let job = account.join("jobs").join("06af535d");
+        fs::create_dir_all(&job).unwrap();
+        fs::write(job.join("state.json"), r#"{"state":"idle","sessionId":"first","resumeSessionId":"second"}"#).unwrap();
+        assert_eq!(load_recorded(&data, &account, "lystriq", "06af535d", "first"), Some(recorded.clone()));
+        assert_eq!(load_recorded(&data, &account, "lystriq", "06af535d", "second"), None, "after a /clear");
+        assert_eq!(load_recorded(&data, &account, "other", "06af535d", "first"), None, "another account");
+        assert!(save_recorded(&data, "../x", "06af535d", &recorded).is_err());
         fs::remove_dir_all(&root).unwrap();
     }
 
