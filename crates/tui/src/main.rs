@@ -25,7 +25,7 @@ use ratatui::layout::Rect;
 use crate::app::{App, Flow};
 use crate::pane::PaneKey;
 
-const USAGE: &str = "usage: kindric [mcp | --version]";
+const USAGE: &str = "usage: kindric [mcp | unread | --version]";
 
 pub enum AppEvent {
     Input(Event),
@@ -40,6 +40,11 @@ fn main() -> ExitCode {
     let result = match args.iter().map(String::as_str).collect::<Vec<_>>().as_slice() {
         [] => run_ui(),
         ["mcp"] => mcp::run(),
+        // The hook of the sessions kindric-accounts starts: tells a session of its unread messages.
+        ["unread"] => {
+            kindric_core::mailbox::run_unread_hook();
+            Ok(())
+        },
         ["--version" | "-V"] => {
             println!("kindric {}", env!("CARGO_PKG_VERSION"));
             Ok(())

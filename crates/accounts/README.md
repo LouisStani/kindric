@@ -144,6 +144,7 @@ Each account gets its own `CLAUDE_CONFIG_DIR`.
 | MCP servers of the other accounts | Merged at launch and passed with `--mcp-config` |
 | Read rules of an isolated account | Added to the same `.shared-settings/<name>.json` |
 | Usage of the limits | `~/.local/share/claude-accounts/.usage/<name>.json`, written by `kindric-accounts statusline` |
+| Unread messages of kindric | A hook added to the same `.shared-settings/<name>.json`, see below |
 
 Links are checked on every launch. On Linux and macOS, account directories use `700` permissions and the account list uses `600`.
 
@@ -175,6 +176,15 @@ Claude Code tells how much of its limits an account used, over five hours and ov
 - Only sessions started by kindric-accounts, or by kindric, note figures. A `claude` started some other way does not.
 - An account billed by API key has no limits and notes nothing.
 - If kindric-accounts cannot be found in `PATH` at launch, sessions start with your settings as before, without figures.
+
+## Messages of kindric
+
+When `kindric` is installed, sessions can send each other messages through its MCP server. A session only reads them when it calls `read_messages`, so kindric-accounts adds a hook to the sessions it starts: before each prompt and after each tool, `kindric unread` tells the session, once per new message, that a message is waiting and who sent it. The message itself stays to be read with the tool.
+
+- The hook comes after your own hooks for these events; your `settings.json` is never written.
+- An isolated account gets no hook: it is kept out of the messages.
+- It is added only when the `kindric` in `PATH` knows `unread`. An older one is left out.
+- A session waiting for you sees the notice with your next prompt.
 
 ## Isolated accounts
 
