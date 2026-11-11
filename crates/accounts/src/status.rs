@@ -40,6 +40,8 @@ pub struct AccountStatus {
     pub plan: Option<String>,
     pub dir: PathBuf,
     pub isolated: bool,
+    /// When the login must be renewed, ISO UTC as Claude Code gives it (since 2.1.0).
+    pub login_expires: Option<String>,
 }
 
 /// `subscriptionType` of `claude auth status --json`, if it is a plain lowercase word.
@@ -50,9 +52,33 @@ pub fn subscription_type(output: &str) -> Option<String> {
     plain.then(|| plan.to_string())
 }
 
+/// `loginExpiresAt` of `claude auth status --json`, when it is a date as Claude Code writes it,
+/// `2026-11-13T15:45:31.701Z`.
+pub fn login_expires(output: &str) -> Option<String> {
+    let value: serde_json::Value = serde_json::from_str(output).ok()?;
+    let date = value.get("loginExpiresAt")?.as_str()?;
+    let bytes = date.as_bytes();
+    let shape = |at: usize, expected: u8| bytes.get(at) == Some(&expected);
+    let digits = |from: usize, to: usize| bytes.get(from..to).is_some_and(|part| part.iter().all(u8::is_ascii_digit));
+    let fraction = bytes.get(19..bytes.len().saturating_sub(1)).is_some_and(|part| {
+        part.is_empty() || (part.len() > 1 && part[0] == b'.' && part[1..].iter().all(u8::is_ascii_digit))
+    });
+    let valid = digits(0, 4) && shape(4, b'-') && digits(5, 7) && shape(7, b'-') && digits(8, 10) && shape(10, b'T')
+        && digits(11, 13) && shape(13, b':') && digits(14, 16) && shape(16, b':') && digits(17, 19)
+        && fraction && date.ends_with('Z');
+    valid.then(|| date.to_string())
+}
+
+/// What `claude auth status --json` tells of an account.
+struct Login {
+    state: LoginState,
+    plan: Option<String>,
+    expires: Option<String>,
+}
+
 /// Exit code 0: logged in; 1: logged out; anything else: unknown. Claude Code reads
-/// its own credentials: only the exit code and the plan name are used here.
-fn login(claude: &Path, dir: &Path) -> (LoginState, Option<String>) {
+/// its own credentials: only the exit code, the plan name and the login's expiry are used here.
+fn login(claude: &Path, dir: &Path) -> Login {
     let mut command = Command::new(claude);
     for variable in launch::STRIPPED_ENV {
         command.env_remove(variable);
@@ -64,9 +90,12 @@ fn login(claude: &Path, dir: &Path) -> (LoginState, Option<String>) {
         .stderr(Stdio::null())
         .output();
     match output.map(|output| (output.status.code(), output.stdout)) {
-        Ok((Some(0), stdout)) => (LoginState::LoggedIn, subscription_type(&String::from_utf8_lossy(&stdout))),
-        Ok((Some(1), _)) => (LoginState::LoggedOut, None),
-        _ => (LoginState::Unknown, None),
+        Ok((Some(0), stdout)) => {
+            let text = String::from_utf8_lossy(&stdout);
+            Login { state: LoginState::LoggedIn, plan: subscription_type(&text), expires: login_expires(&text) }
+        },
+        Ok((Some(1), _)) => Login { state: LoginState::LoggedOut, plan: None, expires: None },
+        _ => Login { state: LoginState::Unknown, plan: None, expires: None },
     }
 }
 
@@ -111,8 +140,8 @@ pub fn collect(paths: &Paths, names: &[String]) -> Result<Vec<AccountStatus>> {
                 let dir = paths.account_dir(name);
                 let claude = &claude;
                 scope.spawn(move || {
-                    let (state, plan) = login(claude, &dir);
-                    (state, plan, active_sessions(&dir), dir)
+                    let login = login(claude, &dir);
+                    (login, active_sessions(&dir), dir)
                 })
             })
             .collect();
@@ -122,9 +151,17 @@ pub fn collect(paths: &Paths, names: &[String]) -> Result<Vec<AccountStatus>> {
         .iter()
         .zip(statuses)
         .map(|(name, result)| {
-            let (state, plan, sessions, dir) =
-                result.unwrap_or((LoginState::Unknown, None, 0, paths.account_dir(name)));
-            AccountStatus { name: name.clone(), state, sessions, plan, dir, isolated: isolated.contains(name) }
+            let unknown = Login { state: LoginState::Unknown, plan: None, expires: None };
+            let (login, sessions, dir) = result.unwrap_or((unknown, 0, paths.account_dir(name)));
+            AccountStatus {
+                name: name.clone(),
+                state: login.state,
+                sessions,
+                plan: login.plan,
+                dir,
+                isolated: isolated.contains(name),
+                login_expires: login.expires,
+            }
         })
         .collect())
 }
@@ -164,7 +201,19 @@ mod tests {
             plan: plan.map(Into::into),
             dir: PathBuf::from(format!("/d/{name}")),
             isolated,
+            login_expires: None,
         }
+    }
+
+    #[test]
+    fn login_expiry_is_read_when_it_is_a_date() {
+        let expires = |date: &str| login_expires(&format!(r#"{{"loggedIn": true, "loginExpiresAt": "{date}"}}"#));
+        assert_eq!(expires("2026-11-13T15:45:31.701Z").as_deref(), Some("2026-11-13T15:45:31.701Z"));
+        assert_eq!(expires("2026-11-13T15:45:31Z").as_deref(), Some("2026-11-13T15:45:31Z"));
+        for bad in ["tomorrow", "2026-11-13", "2026-11-13T15:45:31.701", "2026-11-13T15:45:31.Z", "<b>2026-11-13T15:45:31Z"] {
+            assert_eq!(expires(bad), None, "{bad}");
+        }
+        assert_eq!(login_expires(r#"{"loggedIn": true}"#), None);
     }
 
     #[test]
@@ -188,6 +237,6 @@ mod tests {
     #[test]
     fn json_keeps_the_1x_field_names_and_order() {
         let json = serde_json::to_string(&status("pro2", LoginState::LoggedOut, 0, None, false)).unwrap();
-        assert_eq!(json, r#"{"name":"pro2","state":"logged-out","sessions":0,"plan":null,"dir":"/d/pro2","isolated":false}"#);
+        assert_eq!(json, r#"{"name":"pro2","state":"logged-out","sessions":0,"plan":null,"dir":"/d/pro2","isolated":false,"login_expires":null}"#);
     }
 }

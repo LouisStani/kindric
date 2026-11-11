@@ -1114,6 +1114,10 @@ input:focus, select:focus {
   color: var(--error);
 }
 
+.account-expiry {
+  color: var(--waiting);
+}
+
 .account-actions {
   display: flex;
   gap: 6px;

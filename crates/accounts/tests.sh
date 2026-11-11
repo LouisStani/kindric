@@ -38,7 +38,7 @@ if [[ "${1:-} ${2:-}" == 'auth status' ]]; then
 		exit 0
 	fi
 	if [[ -f "$CLAUDE_CONFIG_DIR/.fake-plan" ]]; then
-		printf '{\n  "loggedIn": true,\n  "subscriptionType": "%s"\n}\n' \
+		printf '{\n  "loggedIn": true,\n  "loginExpiresAt": "2030-01-02T03:04:05.678Z",\n  "subscriptionType": "%s"\n}\n' \
 			"$(<"$CLAUDE_CONFIG_DIR/.fake-plan")"
 		exit 0
 	fi
@@ -150,9 +150,9 @@ test_status() {
 		'! PATH=$1 "$0" status --json >/dev/null 2>&1' "$SCRIPT" "$SANDBOX/nobin:$BASE_PATH"
 	out=$(ca status --json)
 	check "status --json : compte connecté complet" jq -e --arg d "$(data_dir pro1)" \
-		'.[0] == {name: "pro1", state: "logged-in", sessions: 0, plan: "pro", dir: $d, isolated: false}' <<<"$out"
+		'.[0] == {name: "pro1", state: "logged-in", sessions: 0, plan: "pro", dir: $d, isolated: false, login_expires: "2030-01-02T03:04:05.678Z"}' <<<"$out"
 	check "status --json : compte déconnecté, offre null" jq -e --arg d "$(data_dir pro2)" \
-		'.[1] == {name: "pro2", state: "logged-out", sessions: 0, plan: null, dir: $d, isolated: false}' <<<"$out"
+		'.[1] == {name: "pro2", state: "logged-out", sessions: 0, plan: null, dir: $d, isolated: false, login_expires: null}' <<<"$out"
 	check "status refuse une option inconnue" bash -c '! "$0" status --tsv 2>/dev/null' "$SCRIPT"
 }
 
