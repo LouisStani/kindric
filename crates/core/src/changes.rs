@@ -66,6 +66,17 @@ pub struct Recorded {
     pub untracked: Vec<String>,
 }
 
+/// How many files the blocks hold; a removed or failed copy counts none.
+pub fn count(blocks: &[Block]) -> usize {
+    blocks
+        .iter()
+        .map(|block| match block {
+            Block::Changes { files, .. } => files.len(),
+            Block::Removed { .. } | Block::Failed { .. } => 0,
+        })
+        .sum()
+}
+
 /// The state of the copy `directory` is in, taken just before a session is launched there.
 /// `None` outside a repository, in one without any commit, or without git: the session's block
 /// is then estimated, and the launch goes on.
@@ -908,6 +919,20 @@ mod tests {
         assert_eq!(load_recorded(&data, &account, "other", "06af535d", "first"), None, "another account");
         assert!(save_recorded(&data, "../x", "06af535d", &recorded).is_err());
         fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn the_count_adds_the_files_of_every_copy() {
+        let file = |path: &str| FileChange { path: path.into(), kind: ChangeKind::Added, added: Some(1), removed: Some(0) };
+        let changes = |files| Block::Changes { copy: PathBuf::from("/r"), branch: None, start: Start::Estimated, files };
+        let blocks = vec![
+            changes(vec![file("a"), file("b")]),
+            Block::Removed { copy: PathBuf::from("/gone") },
+            Block::Failed { copy: PathBuf::from("/x"), error: "no".into() },
+            changes(vec![file("c")]),
+        ];
+        assert_eq!(count(&blocks), 3);
+        assert_eq!(count(&[]), 0);
     }
 
     #[test]

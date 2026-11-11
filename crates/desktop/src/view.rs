@@ -1,5 +1,6 @@
 //! What the page shows: the session list, built from each refresh.
 
+use std::collections::HashMap;
 use std::path::Path;
 
 use kindric_core::accounts::{SessionInfo, SessionState};
@@ -43,6 +44,9 @@ pub struct SessionRow {
     pub finished: bool,
     /// The image files Claude's last turn proposed, shown in the pane until the next prompt.
     pub images: Vec<String>,
+    /// How many files the session changed in its repositories (see `changes`), counted when its
+    /// state last changed; `None` when it could not be counted.
+    pub changed: Option<usize>,
     /// Kept for Ctrl+P, which searches the same fields as the terminal picker.
     #[serde(skip)]
     pub info: SessionInfo,
@@ -95,6 +99,7 @@ fn row(position: usize, session: &SessionInfo, unread: usize, finished: bool) ->
         unread,
         finished,
         images: Vec::new(),
+        changed: None,
         info: session.clone(),
         position,
     }
@@ -179,6 +184,44 @@ pub fn propose_images(next: &mut ListView, previous: &ListView, lookup: impl Fn(
             _ => Vec::new(),
         };
     }
+}
+
+/// The sessions of `next` whose changed files must be counted again: those that just appeared
+/// and those whose state changed since `previous` (decision 234).
+pub fn to_count(next: &ListView, previous: &ListView) -> Vec<SessionInfo> {
+    next.sessions
+        .iter()
+        .filter(|row| {
+            let before = previous.sessions.iter().find(|before| before.info.session_id == row.info.session_id);
+            before.is_none_or(|before| before.info.state != row.info.state)
+        })
+        .map(|row| row.info.clone())
+        .collect()
+}
+
+/// The counts of `counted` (session id → count) where there is one, else the count the session
+/// had before.
+pub fn carry_changed(next: &mut ListView, previous: &ListView, counted: &HashMap<String, Option<usize>>) {
+    for row in &mut next.sessions {
+        row.changed = match counted.get(&row.info.session_id) {
+            Some(count) => *count,
+            None => previous.sessions.iter().find(|before| before.info.session_id == row.info.session_id).and_then(|before| before.changed),
+        };
+    }
+}
+
+/// Puts the counts of `counted` on their rows, once they are known. Says whether anything changed.
+pub fn set_changed(view: &mut ListView, counted: &HashMap<String, Option<usize>>) -> bool {
+    let mut changed = false;
+    for row in &mut view.sessions {
+        if let Some(count) = counted.get(&row.info.session_id)
+            && row.changed != *count
+        {
+            row.changed = *count;
+            changed = true;
+        }
+    }
+    changed
 }
 
 /// `key` is being looked at: its mark goes. Says whether anything changed.
@@ -554,6 +597,29 @@ mod tests {
         let mut failed = apply(&done, Err("HOME is not set".into()), None);
         propose_images(&mut failed, &done, |_| Vec::new());
         assert_eq!(images(&failed), [vec!["a.png".to_string()]]);
+    }
+
+    /// Counts every session `to_count` asks for: its name's length, so each gets its own number.
+    fn with_counts(previous: &ListView, sessions: Vec<SessionInfo>) -> (ListView, Vec<String>) {
+        let mut next = refresh(previous, sessions, None);
+        let asked = to_count(&next, previous);
+        let counted: HashMap<String, Option<usize>> = asked.iter().map(|session| (session.session_id.clone(), Some(session.name.len()))).collect();
+        carry_changed(&mut next, previous, &counted);
+        (next, asked.into_iter().map(|session| session.name).collect())
+    }
+
+    #[test]
+    fn changed_files_are_counted_when_a_session_appears_or_changes_state() {
+        let (first, asked) = with_counts(&ListView::default(), vec![in_state("louis", "a", SessionState::Working)]);
+        assert_eq!((asked, first.sessions[0].changed), (vec!["a".to_string()], Some(1)), "a session just seen");
+        let (same, asked) = with_counts(&first, vec![in_state("louis", "a", SessionState::Working)]);
+        assert_eq!((asked.len(), same.sessions[0].changed), (0, Some(1)), "same state: the count stays");
+        let (done, asked) = with_counts(&same, vec![in_state("louis", "a", SessionState::Waiting), in_state("louis", "bb", SessionState::Waiting)]);
+        assert_eq!(asked, ["a", "bb"]);
+        assert_eq!(done.sessions.iter().map(|row| row.changed).collect::<Vec<_>>(), [Some(1), Some(2)]);
+        let mut failed = refresh(&done, vec![in_state("louis", "a", SessionState::Working)], None);
+        carry_changed(&mut failed, &done, &HashMap::from([(done.sessions[0].info.session_id.clone(), None)]));
+        assert_eq!(failed.sessions[0].changed, None, "a count that failed shows nothing");
     }
 
     #[test]

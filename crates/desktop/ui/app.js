@@ -839,6 +839,7 @@ const panes = new Panes(document.getElementById("panes"), document.getElementByI
   isFinished,
   markOf,
   progressOf: (key) => rowOf(key)?.progress ?? null,
+  changedOf: (key) => rowOf(key)?.changed ?? null,
   imagesOf: (key) => rowOf(key)?.images ?? [],
 });
 

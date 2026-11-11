@@ -877,27 +877,68 @@ fn publish(app: &AppHandle, update: refresher::Update) -> bool {
     }
     let tabs = shared.workspace().tabs.clone();
     let prefs = shared.prefs();
-    let view = {
+    let (view, to_count) = {
         let mut current = shared.view.lock().unwrap_or_else(PoisonError::into_inner);
         let mut next = view::apply(&current, update, tabs.watched());
         view::propose_images(&mut next, &current, |session| proposed_images(session, implicit_default));
+        let to_count = view::to_count(&next, &current);
+        view::carry_changed(&mut next, &current, &HashMap::new());
         view::assign(&mut next, &tabs, &prefs);
         next.errors.splice(0..0, shared.startup_errors.iter().cloned());
         // The same list again (the 30-second refresh, mostly): the page has nothing to draw.
         if next == *current {
-            None
+            (None, to_count)
         } else {
             *current = next.clone();
-            Some(next)
+            (Some(next), to_count)
         }
     };
-    let Some(view) = view else {
-        shared.trace.record("list unchanged", start.elapsed());
-        return true;
+    let emitted = match view {
+        Some(view) => {
+            let emitted = app.emit("sessions", &view).is_ok();
+            shared.trace.record(&format!("list published ({} sessions)", view.sessions.len()), start.elapsed());
+            emitted
+        },
+        None => {
+            shared.trace.record("list unchanged", start.elapsed());
+            true
+        },
     };
-    let emitted = app.emit("sessions", &view).is_ok();
-    shared.trace.record(&format!("list published ({} sessions)", view.sessions.len()), start.elapsed());
+    count_changes(app, &to_count, implicit_default);
     emitted
+}
+
+/// Counts the files the sessions of `to_count` changed, outside the lock of the list (git takes
+/// tens to hundreds of milliseconds a session), then shows the counts.
+fn count_changes(app: &AppHandle, to_count: &[SessionInfo], implicit_default: bool) {
+    if to_count.is_empty() {
+        return;
+    }
+    let shared = app.state::<Shared>();
+    let start = Instant::now();
+    let counted: HashMap<String, Option<usize>> =
+        to_count.iter().map(|session| (session.session_id.clone(), changed_count(session, implicit_default))).collect();
+    shared.trace.record(&format!("changes counted ({} sessions)", to_count.len()), start.elapsed());
+    let view = {
+        let mut current = shared.view.lock().unwrap_or_else(PoisonError::into_inner);
+        view::set_changed(&mut current, &counted).then(|| current.clone())
+    };
+    if let Some(view) = view {
+        let _ = app.emit("sessions", &view);
+    }
+}
+
+/// How many files `session` changed in its repositories; `None` when it cannot be told (no
+/// conversation, git missing).
+fn changed_count(session: &SessionInfo, implicit_default: bool) -> Option<usize> {
+    let paths = accounts::paths().ok()?;
+    let account_dir = accounts::dir_of(&paths, &session.account, implicit_default);
+    let recorded = session.short_id.as_deref().and_then(|short_id| {
+        let data_dir = mailbox::data_dir().ok()?;
+        changes::load_recorded(&data_dir, &account_dir, &session.account, short_id, &session.session_id)
+    });
+    let blocks = changes::session_changes(&account_dir, &session.session_id, recorded.as_ref()).ok()?;
+    Some(changes::count(&blocks))
 }
 
 /// Runs `command` in the helper window, closing the one running before. Returns the generation
