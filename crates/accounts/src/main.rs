@@ -1,11 +1,11 @@
 mod menu;
 
 use std::ffi::OsString;
-use std::io::{self, BufRead, IsTerminal, Write};
+use std::io::{self, BufRead, IsTerminal, Read, Write};
 use std::path::PathBuf;
 use std::process::ExitCode;
 
-use kindric_accounts::{Paths, Result, account, injection, isolation, launch, mcp, registry, status};
+use kindric_accounts::{Error, Paths, Result, account, injection, isolation, launch, mcp, registry, status, usage};
 
 const VERSION: &str = env!("CARGO_PKG_VERSION");
 
@@ -21,6 +21,7 @@ Usage:
   kindric-accounts isolate <name>    stop sharing MCP servers with and from this account
   kindric-accounts unisolate <name>  share MCP servers again
   kindric-accounts isolated [--json] list isolated accounts
+  kindric-accounts statusline        status line of the sessions it starts (reads Claude Code's input)
   kindric-accounts --version         print the version
 ";
 
@@ -222,6 +223,35 @@ fn cmd_run(paths: &Paths, name: &str, claude_args: &[OsString]) -> Result<Exit> 
     return launch::run_and_wait(prepared.command).map(Exit::Code);
 }
 
+/// Run by Claude Code for the status line of a session kindric-accounts started: writes down how
+/// much of its limits the account used, then shows the user's own status line. Writing down
+/// fails without hiding the status line.
+fn cmd_statusline(paths: &Paths) -> Result<Exit> {
+    let mut input = Vec::new();
+    if let Err(error) = std::io::stdin().read_to_end(&mut input) {
+        eprintln!("kindric-accounts statusline: {error}");
+    }
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|elapsed| i64::try_from(elapsed.as_secs()).unwrap_or(i64::MAX))
+        .unwrap_or(0);
+    let config_dir = std::env::var_os("CLAUDE_CONFIG_DIR");
+    if let Err(error) = usage::record(paths, config_dir.as_deref(), &input, now) {
+        eprintln!("kindric-accounts statusline: usage not written: {error}");
+    }
+    match usage::run_user_statusline(paths, &input) {
+        Ok(Some((output, code))) => {
+            let mut stdout = std::io::stdout();
+            if stdout.write_all(&output).and_then(|()| stdout.flush()).is_err() {
+                return Ok(Exit::Code(1));
+            }
+            Ok(if code == 0 { Exit::Success } else { Exit::Code(code) })
+        },
+        Ok(None) => Ok(Exit::Success),
+        Err(error) => Err(Error(format!("your status line could not run: {error}"))),
+    }
+}
+
 fn dispatch(args: &[String], raw_args: &[OsString]) -> Result<Exit> {
     let command = args.first().map(String::as_str).unwrap_or("");
     match command {
@@ -247,6 +277,7 @@ fn dispatch(args: &[String], raw_args: &[OsString]) -> Result<Exit> {
         ("isolate", Some(name)) => cmd_isolate(&paths, name),
         ("unisolate", Some(name)) => cmd_unisolate(&paths, name),
         ("isolated", _) => cmd_isolated(&paths, &args[1..]),
+        (usage::SUBCOMMAND, _) => cmd_statusline(&paths),
         _ => Ok(Exit::Usage),
     }
 }

@@ -437,10 +437,46 @@ async function cycleTheme() {
   setStatus(`theme: ${name}`);
 }
 
+function accountOption(account) {
+  const option = element("option", "", account);
+  option.value = account;
+  return option;
+}
+
+// Each account with how much of its limits it used, from the last figures its status line
+// wrote down: "lystriq · 5h 34% · week 16%", and how old they are past 10 minutes.
+async function showAccountUsage(select) {
+  let usages;
+  try {
+    usages = await invoke("account_usage", { accounts: lastView.accounts });
+  } catch (error) {
+    setStatus(`usage of the accounts: ${error}`);
+    return;
+  }
+  const now = Date.now() / 1000;
+  for (const usage of usages) {
+    const option = [...select.options].find((candidate) => candidate.value === usage.name);
+    if (option) option.textContent = usageLabel(usage, now);
+  }
+}
+
+function usageLabel(usage, now) {
+  const label = `${usage.name} · 5h ${Math.round(usage.five_hour)}% · week ${Math.round(usage.seven_day)}%`;
+  const age = now - usage.updated_at;
+  return age > 600 ? `${label} · ${ago(age)}` : label;
+}
+
+function ago(seconds) {
+  if (seconds < 3600) return `${Math.floor(seconds / 60)}m ago`;
+  if (seconds < 172800) return `${Math.floor(seconds / 3600)}h ago`;
+  return `${Math.floor(seconds / 86400)}d ago`;
+}
+
 function openNewSessionForm() {
   const form = document.getElementById("new-form");
   const fields = form.elements;
-  fields.account.replaceChildren(...lastView.accounts.map((account) => element("option", "", account)));
+  fields.account.replaceChildren(...lastView.accounts.map(accountOption));
+  showAccountUsage(fields.account);
   const project = panes.activeTab().project;
   // The account of the last session started in this project, while it still exists.
   if (project && project.account && lastView.accounts.includes(project.account)) fields.account.value = project.account;
