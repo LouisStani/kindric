@@ -16,6 +16,7 @@ pub mod paths;
 pub mod registry;
 pub mod shared;
 pub mod status;
+pub mod usage;
 
 pub use error::{Error, Result};
 pub use paths::Paths;

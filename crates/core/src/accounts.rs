@@ -7,8 +7,8 @@ use std::time::{Duration, Instant};
 
 pub use kindric_accounts::registry::DEFAULT_ACCOUNT;
 pub use kindric_accounts::status::AccountStatus;
-use kindric_accounts::{Paths, account, launch, memory, registry, status};
-use serde::Deserialize;
+use kindric_accounts::{Paths, account, launch, memory, registry, status, usage};
+use serde::{Deserialize, Serialize};
 
 use crate::progress;
 
@@ -172,6 +172,33 @@ fn library_error(error: kindric_accounts::Error) -> io::Error {
 
 pub fn paths() -> io::Result<Paths> {
     Paths::from_env().map_err(library_error)
+}
+
+/// How much of its limits an account used at `now`, from the last figures its status line wrote
+/// down (see `kindric_accounts::usage`).
+#[derive(Clone, Debug, PartialEq, Serialize)]
+pub struct AccountUsage {
+    pub name: String,
+    pub five_hour: f64,
+    pub seven_day: f64,
+    /// When the figures were written down, Unix seconds.
+    pub updated_at: i64,
+}
+
+/// The figures of each of `names` that has some.
+pub fn usages(paths: &Paths, names: &[String], now: i64) -> Vec<AccountUsage> {
+    names
+        .iter()
+        .filter_map(|name| {
+            let figures = usage::read(paths, name)?;
+            Some(AccountUsage {
+                name: name.clone(),
+                five_hour: usage::percent(figures.five_hour.as_ref(), now),
+                seven_day: usage::percent(figures.seven_day.as_ref(), now),
+                updated_at: figures.updated_at,
+            })
+        })
+        .collect()
 }
 
 pub fn isolated_accounts() -> io::Result<Vec<String>> {

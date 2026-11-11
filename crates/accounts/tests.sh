@@ -118,8 +118,11 @@ test_run() {
 	out=$(ANTHROPIC_API_KEY=secret ca run pro2 --resume)
 	check "run passe le bon CLAUDE_CONFIG_DIR" grep -qxF "CONFIG=$(data_dir pro2)" <<<"$out"
 	check "run retire ANTHROPIC_API_KEY" grep -qx 'APIKEY=unset' <<<"$out"
-	check "run charge settings.json commun et passe les arguments" \
-		grep -qxF "ARGS=--settings $HOME/.claude/settings.json --resume" <<<"$out"
+	local own="$HOME/.local/share/claude-accounts/.shared-settings/pro2.json"
+	check "run charge les réglages du compte et passe les arguments" \
+		grep -qxF "ARGS=--settings $own --resume" <<<"$out"
+	check "réglages du compte : la ligne d'état passe par kindric-accounts" \
+		json_true '.statusLine.command | endswith("kindric-accounts\" statusline")' "$own"
 	check "deux comptes, deux dossiers distincts" \
 		test "$(ca run pro1 | sed -n '1p')" != "$(ca run pro2 | sed -n '1p')"
 	mkdir -p "$HOME/.claude/agents"
@@ -208,7 +211,7 @@ test_shared_mcp() {
 		>"$(data_dir pro4)/.claude.json"
 	out=$(ca run pro1 hello)
 	check "run passe les MCP des autres comptes avec --mcp-config=" grep -qxF \
-		"ARGS=--settings $HOME/.claude/settings.json --mcp-config=$shared/pro1.json hello" <<<"$out"
+		"ARGS=--settings $HOME/.local/share/claude-accounts/.shared-settings/pro1.json --mcp-config=$shared/pro1.json hello" <<<"$out"
 	check "MCP d'un autre compte partagé, le premier compte gagne" \
 		json_true '.mcpServers.alpha.command == "a"' "$shared/pro1.json"
 	check "MCP déjà présent dans le compte lancé non transmis" \
@@ -276,11 +279,15 @@ test_isolation() {
 	check "compte isolé, sous-commande : réglages sans global/" bash -c \
 		'grep -qF -- "--settings $1" <<<"$0" && ! grep -qF -- --append-system-prompt-file <<<"$0"' "$out" "$isolated_settings"
 	check "setup/ non transmis" bash -c '! grep -qF NOTE-MACHINE "$0"' "$global_rules"
-	check "compte non isolé hors zone : fichier hors zone, pas celui des isolés" bash -c \
-		'out=$("$0" run pro1); grep -qF -- startup-outside.md <<<"$out" && ! grep -qF -- .shared-settings <<<"$out"' "$SCRIPT"
+	local pro1_settings="$HOME/.local/share/claude-accounts/.shared-settings/pro1.json"
+	check "compte non isolé hors zone : fichier hors zone, sans règles de lecture" bash -c \
+		'out=$("$0" run pro1); grep -qF -- startup-outside.md <<<"$out" && jq -e ".permissions.deny == null" "$1" >/dev/null' \
+		"$SCRIPT" "$pro1_settings"
 	rm -rf -- "$HOME/.kindric"
 	check "compte non isolé : réglages partagés, sans règles" grep -qF -- \
-		"--settings $HOME/.claude/settings.json" <<<"$(ca run pro1)"
+		"--settings $pro1_settings" <<<"$(ca run pro1)"
+	check "compte isolé : ses règles et la ligne d'état dans le même fichier" \
+		json_true '(.permissions.deny | length > 0) and (.statusLine.command | endswith("statusline"))' "$isolated_settings"
 	rm -f -- "$(data_dir pro2)/.claude.json"
 	out=$(ca run pro1)
 	check "plus rien à partager : ancien fichier vidé, pas réutilisé" bash -c \
@@ -296,6 +303,19 @@ test_isolation() {
 	ca remove work --delete-dir >/dev/null
 	check "remove retire aussi de la liste des isolés" test -z "$(ca isolated)"
 	rm -f -- "$(data_dir pro1)/.claude.json"
+}
+
+test_statusline() {
+	local input='{"rate_limits":{"five_hour":{"used_percentage":34,"resets_at":4102444800},"seven_day":{"used_percentage":16,"resets_at":4102444800}}}'
+	local usage_file="$HOME/.local/share/claude-accounts/.usage/pro1.json"
+	printf '{"statusLine":{"type":"command","command":"cat >/dev/null; printf mine"}}\n' >"$HOME/.claude/settings.json"
+	local out
+	out=$(printf '%s' "$input" | CLAUDE_CONFIG_DIR="$(data_dir pro1)" ca statusline)
+	check "statusline affiche la ligne d'état de l'utilisateur" test "$out" = mine
+	check "statusline note l'usage du compte" json_true '.five_hour.used_percentage == 34 and .seven_day.used_percentage == 16' "$usage_file"
+	out=$(printf '%s' "$input" | CLAUDE_CONFIG_DIR="$SANDBOX/ailleurs/pro2" ca statusline)
+	check "statusline : dossier hors comptes, rien noté" test ! -e "$HOME/.local/share/claude-accounts/.usage/pro2.json"
+	printf '{}\n' >"$HOME/.claude/settings.json"
 }
 
 test_memory() {
@@ -409,6 +429,7 @@ test_status_json_escaping
 test_sessions
 test_shared_mcp
 test_isolation
+test_statusline
 test_memory
 test_errors
 test_version

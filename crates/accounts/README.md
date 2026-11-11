@@ -88,6 +88,7 @@ Or just run `kindric-accounts` to open the menu. It shows whether each account i
 | `kindric-accounts isolate <name>` | Stops sharing MCP servers with and from this account. See [Isolated accounts](#isolated-accounts). |
 | `kindric-accounts unisolate <name>` | Shares MCP servers again from the next launch. |
 | `kindric-accounts isolated [--json]` | Lists isolated accounts. |
+| `kindric-accounts statusline` | The status line of the sessions it starts. Claude Code runs it; it notes how much of its limits the account used, then shows your own status line. See [Usage of the limits](#usage-of-the-limits). |
 | `kindric-accounts --version` | Prints the installed version. |
 
 Names use 1 to 32 characters among `a-z`, `0-9`, `_` and `-`. `default` is reserved: kindric uses it for Claude Code's own configuration, `~/.claude`.
@@ -138,9 +139,10 @@ Each account gets its own `CLAUDE_CONFIG_DIR`.
 | --- | --- |
 | Credentials, sessions, history, project memory | Private to each account |
 | `CLAUDE.md`, `skills/`, `agents/`, `commands/`, `plugins/`, `themes/` | Symbolic links to `~/.claude` (see Windows below) |
-| `settings.json` | Read from `~/.claude/settings.json` and passed with `--settings` |
+| `settings.json` | Read from `~/.claude/settings.json`, copied at launch to `~/.local/share/claude-accounts/.shared-settings/<name>.json` with the status line of kindric-accounts, and passed with `--settings`. Your file is never written. |
 | MCP servers of the other accounts | Merged at launch and passed with `--mcp-config` |
-| Read rules of an isolated account | Written at launch to `~/.local/share/claude-accounts/.shared-settings/<name>.json`, with `settings.json`, and passed with `--settings` |
+| Read rules of an isolated account | Added to the same `.shared-settings/<name>.json` |
+| Usage of the limits | `~/.local/share/claude-accounts/.usage/<name>.json`, written by `kindric-accounts statusline` |
 
 Links are checked on every launch. On Linux and macOS, account directories use `700` permissions and the account list uses `600`.
 
@@ -164,6 +166,14 @@ At each launch, kindric-accounts reads the `mcpServers` of the other accounts, m
 - If two other accounts define the same name, the first account in `kindric-accounts list` wins.
 - If an account's `.claude.json` cannot be read, that account is skipped with a warning. If the launched account's own file cannot be read, Claude starts without shared servers.
 - Headers and environment variables of a server, API keys included, become available to every account. Isolate an account to keep it out of this.
+
+## Usage of the limits
+
+Claude Code tells how much of its limits an account used, over five hours and over the week, only to the command of its status line. So the sessions kindric-accounts starts get `kindric-accounts statusline` as their status line. It notes the two figures in `~/.local/share/claude-accounts/.usage/<name>.json`, then runs the status line of your `~/.claude/settings.json` with the same input and shows what it prints. You see the same status line as before.
+
+- Only sessions started by kindric-accounts, or by kindric, note figures. A `claude` started some other way does not.
+- An account billed by API key has no limits and notes nothing.
+- If kindric-accounts cannot be found in `PATH` at launch, sessions start with your settings as before, without figures.
 
 ## Isolated accounts
 

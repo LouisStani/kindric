@@ -194,6 +194,18 @@ async fn add_messages_server(shared: State<'_, Shared>) -> Result<Vec<checks::Li
     .map_err(|error| error.to_string())?
 }
 
+/// How much of its limits each of `accounts` used, for the account choice of a new session. Reads
+/// a small file per account.
+#[tauri::command]
+fn account_usage(accounts: Vec<String>) -> Result<Vec<accounts::AccountUsage>, String> {
+    let paths = accounts::paths().map_err(|error| error.to_string())?;
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|elapsed| i64::try_from(elapsed.as_secs()).unwrap_or(i64::MAX))
+        .map_err(|error| error.to_string())?;
+    Ok(accounts::usages(&paths, &accounts, now))
+}
+
 /// The accounts of the settings: login state, plan, sessions, isolation. Asks Claude Code about
 /// each, so off the window's thread.
 #[tauri::command]
@@ -1162,6 +1174,7 @@ fn main() -> ExitCode {
             open_trust,
             open_login,
             account_statuses,
+            account_usage,
             add_account,
             forget_account,
             memory_warning,
