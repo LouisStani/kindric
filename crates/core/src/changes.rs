@@ -64,6 +64,24 @@ pub struct Recorded {
     pub untracked: Vec<String>,
 }
 
+/// A trace of git in the conversation, by which a commit on the copy the session started in
+/// counts as the session's: `[main 138f002] …` printed by a commit, `Updating 527b7e3..932aa2c`
+/// by a fast-forward merge.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum GitMark {
+    Commit(String),
+    Range(String, String),
+}
+
+/// What kindric reads in a conversation.
+#[derive(Debug, PartialEq, Eq)]
+struct Conversation {
+    /// The time of the first message, Unix seconds.
+    started: i64,
+    visits: Vec<Visit>,
+    marks: Vec<GitMark>,
+}
+
 /// A directory the session worked in, with the time of its first message there (Unix seconds).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Visit {
@@ -77,14 +95,17 @@ pub fn session_changes(account_dir: &Path, session_id: &str, recorded: Option<&R
     let Some(conversation) = conversation_of(account_dir, session_id) else {
         return Ok(Vec::new());
     };
-    let Some((started, visits)) = read_visits(&conversation) else {
+    let Some(conversation) = read_conversation(&conversation) else {
         return Ok(Vec::new());
     };
     let mut blocks = Vec::new();
-    for copy in copies(&visits)? {
+    for (index, copy) in copies(&conversation.visits)?.into_iter().enumerate() {
+        // Other sessions commit on the copy this one started in too (a shared checkout): there,
+        // only the session's own commits count (decision 236).
+        let marks = (index == 0).then_some(conversation.marks.as_slice());
         blocks.push(match copy {
             Copy::Gone(copy) => Block::Removed { copy },
-            Copy::Here { top, since } => block_of(top, since, started, recorded),
+            Copy::Here { top, since } => block_of(top, since, conversation.started, recorded, marks),
         });
     }
     Ok(blocks)
@@ -104,17 +125,22 @@ fn conversation_of(account_dir: &Path, session_id: &str) -> Option<PathBuf> {
         .find(|path| path.is_file())
 }
 
-/// The time of the first message and every directory in the order the session first worked in
-/// it. `None` for a conversation without any dated message.
-fn read_visits(conversation: &Path) -> Option<(i64, Vec<Visit>)> {
+/// `None` for a conversation without any dated message.
+fn read_conversation(conversation: &Path) -> Option<Conversation> {
     let reader = BufReader::new(File::open(conversation).ok()?);
-    visits_of(reader.split(b'\n').map_while(Result::ok))
+    conversation_from(reader.split(b'\n').map_while(Result::ok))
 }
 
-fn visits_of(lines: impl Iterator<Item = Vec<u8>>) -> Option<(i64, Vec<Visit>)> {
+fn conversation_from(lines: impl Iterator<Item = Vec<u8>>) -> Option<Conversation> {
     let mut started = None;
     let mut visits: Vec<Visit> = Vec::new();
+    let mut marks = Vec::new();
     for line in lines {
+        for mark in git_marks(&line) {
+            if !marks.contains(&mark) {
+                marks.push(mark);
+            }
+        }
         let Some(since) = string_field(&line, "timestamp").and_then(|time| unix_seconds(&time)) else {
             continue;
         };
@@ -126,7 +152,51 @@ fn visits_of(lines: impl Iterator<Item = Vec<u8>>) -> Option<(i64, Vec<Visit>)> 
             visits.push(Visit { cwd: PathBuf::from(cwd), since });
         }
     }
-    Some((started?, visits))
+    Some(Conversation { started: started?, visits, marks })
+}
+
+/// The git marks of a line: `[<branch> <sha>]` (also `[<branch> (root-commit) <sha>]`) and
+/// `Updating <sha>..<sha>`. A mark that is not a commit of the copy is dropped later by git.
+fn git_marks(line: &[u8]) -> Vec<GitMark> {
+    let mut marks = Vec::new();
+    let mut rest = line;
+    while let Some(open) = rest.iter().position(|&byte| byte == b'[') {
+        rest = &rest[open + 1..];
+        let Some(close) = rest.iter().take(200).position(|&byte| byte == b']') else {
+            continue;
+        };
+        let inside = text(&rest[..close]);
+        let words: Vec<&str> = inside.split(' ').collect();
+        if let [branch, .., sha] = words.as_slice()
+            && !branch.is_empty()
+            && is_sha(sha)
+        {
+            marks.push(GitMark::Commit((*sha).to_string()));
+        }
+    }
+    let updating = b"Updating ";
+    let mut rest = line;
+    while let Some(at) = find(rest, updating) {
+        rest = &rest[at + updating.len()..];
+        let from = hex_prefix(rest);
+        let Some(after) = rest[from.len()..].strip_prefix(b"..") else {
+            continue;
+        };
+        let to = hex_prefix(after);
+        if is_sha(&from) && is_sha(&to) {
+            marks.push(GitMark::Range(from, to));
+        }
+    }
+    marks
+}
+
+fn hex_prefix(bytes: &[u8]) -> String {
+    bytes.iter().take_while(|byte| byte.is_ascii_hexdigit()).map(|&byte| char::from(byte)).collect()
+}
+
+/// An abbreviated or full commit id as git prints it.
+fn is_sha(word: &str) -> bool {
+    (7..=40).contains(&word.len()) && word.bytes().all(|byte| byte.is_ascii_hexdigit())
 }
 
 /// The string value of the first `"name":"…"` of a JSON line, found without decoding the whole
@@ -215,8 +285,8 @@ fn highest_missing(path: &Path) -> PathBuf {
         .to_path_buf()
 }
 
-fn block_of(top: PathBuf, since: i64, started: i64, recorded: Option<&Recorded>) -> Block {
-    match changes_of(&top, since, started, recorded) {
+fn block_of(top: PathBuf, since: i64, started: i64, recorded: Option<&Recorded>, marks: Option<&[GitMark]>) -> Block {
+    match changes_of(&top, since, started, recorded, marks) {
         Ok((branch, start, files)) => Block::Changes { copy: top, branch, start, files },
         Err(error) => Block::Failed { copy: top, error },
     }
@@ -224,7 +294,9 @@ fn block_of(top: PathBuf, since: i64, started: i64, recorded: Option<&Recorded>)
 
 type CopyChanges = (Option<String>, Start, Vec<FileChange>);
 
-fn changes_of(top: &Path, since: i64, started: i64, recorded: Option<&Recorded>) -> Result<CopyChanges, String> {
+/// `marks`: for the copy the session started in, the git marks of its conversation; a tracked
+/// file then counts only when it is not committed or one of these commits touched it.
+fn changes_of(top: &Path, since: i64, started: i64, recorded: Option<&Recorded>, marks: Option<&[GitMark]>) -> Result<CopyChanges, String> {
     let branch = git(top, &["symbolic-ref", "--short", "-q", "HEAD"]).ok().map(|name| text(&name).trim().to_string());
     let (start, base, known_untracked) = match recorded.filter(|recorded| recorded.copy == top) {
         Some(recorded) => (Start::Recorded, recorded.commit.clone(), recorded.untracked.clone()),
@@ -243,6 +315,10 @@ fn changes_of(top: &Path, since: i64, started: i64, recorded: Option<&Recorded>)
     let statuses = git(top, &[&diff[..], &["--name-status", base.as_str(), "--"][..]].concat())?;
     let counts = git(top, &[&diff[..], &["--numstat", base.as_str(), "--"][..]].concat())?;
     let mut files = tracked_changes(&statuses, &counts);
+    if let Some(marks) = marks {
+        let own = own_paths(top, marks)?;
+        files.retain(|file| own.contains(&file.path) || matches!(&file.kind, ChangeKind::Renamed { from } if own.contains(from)));
+    }
     let untracked = git(top, &["--no-optional-locks", "ls-files", "-z", "--others", "--exclude-standard"])?;
     // A path ending in `/` is a repository or worktree nested in the copy: not a file change, and
     // a worktree gets its own block.
@@ -255,6 +331,27 @@ fn changes_of(top: &Path, since: i64, started: i64, recorded: Option<&Recorded>)
     }
     files.sort_by(|a, b| a.path.cmp(&b.path));
     Ok((branch, start, files))
+}
+
+/// The tracked paths of the copy that are not committed, or that a commit or merge of `marks`
+/// touched. Marks git does not know in this copy are skipped.
+fn own_paths(top: &Path, marks: &[GitMark]) -> Result<Vec<String>, String> {
+    let names = ["--no-optional-locks", "diff", "--no-color", "--no-ext-diff", "-z", "--name-only"];
+    let mut paths: Vec<String> = nul_fields(&git(top, &[&names[..], &["HEAD", "--"][..]].concat())?).collect();
+    for mark in marks {
+        let touched = match mark {
+            GitMark::Commit(sha) => git(top, &["diff-tree", "-r", "--root", "--no-commit-id", "--name-only", "-z", sha]),
+            GitMark::Range(from, to) => git(top, &[&names[..], &[from.as_str(), to.as_str(), "--"][..]].concat()),
+        };
+        match touched {
+            Ok(output) => paths.extend(nul_fields(&output)),
+            Err(GitError::Missing(error)) => return Err(error),
+            Err(GitError::Failed(_)) => {}
+        }
+    }
+    paths.sort();
+    paths.dedup();
+    Ok(paths)
 }
 
 /// The commit and time of the creation of a branch, the oldest line of its reflog
@@ -446,18 +543,29 @@ mod tests {
 {"type":"user","cwd":"/r","timestamp":"2026-11-10T10:09:00.000Z"}
 {"type":"user","cwd":"/r/.claude/worktrees/w/src","timest
 {"type":"user","cwd":"/r/.claude/worktrees/w/src","timestamp":"2026-11-10T10:10:00.000Z"}"#;
-        let (started, visits) = visits_of(lines(conversation)).unwrap();
+        let read = conversation_from(lines(conversation)).unwrap();
         let base = unix_seconds("2026-11-10T10:00:00Z").unwrap();
-        assert_eq!(started, base);
+        assert_eq!(read.started, base);
         assert_eq!(
-            visits,
+            read.visits,
             vec![
                 Visit { cwd: PathBuf::from("/r"), since: base },
                 Visit { cwd: PathBuf::from("/r/.claude/worktrees/w"), since: base + 300 },
                 Visit { cwd: PathBuf::from("/r/.claude/worktrees/w/src"), since: base + 600 },
             ]
         );
-        assert_eq!(visits_of(lines(r#"{"type":"mode"}"#)), None);
+        assert_eq!(conversation_from(lines(r#"{"type":"mode"}"#)), None);
+    }
+
+    #[test]
+    fn git_marks_are_commit_and_merge_outputs() {
+        let line = br#"{"content":"[worktree-changes 138f002] feat: x\n 2 files changed","more":"[main (root-commit) abc1234] first"}"#;
+        assert_eq!(git_marks(line), vec![GitMark::Commit("138f002".into()), GitMark::Commit("abc1234".into())]);
+        let merge = br#"{"stdout":"Already up to date.\nUpdating 527b7e3..932aa2c\nFast-forward"}"#;
+        assert_eq!(git_marks(merge), vec![GitMark::Range("527b7e3".into(), "932aa2c".into())]);
+        for line in [&br#"[link](http://x)"#[..], br#"[a word]"#, br#"[deadbeef]"#, br#"Updating index"#] {
+            assert_eq!(git_marks(line), vec![], "{}", String::from_utf8_lossy(line));
+        }
     }
 
     #[test]
@@ -591,6 +699,15 @@ mod tests {
         let started = now();
         std::thread::sleep(std::time::Duration::from_millis(1100));
         fs::write(repo.join("kept.txt"), "a\nb\nc\n").unwrap();
+        // On the shared checkout: a commit of another session, then one of this session, whose
+        // output is in its conversation.
+        fs::write(repo.join("other.txt"), "o\n").unwrap();
+        setup_git(&repo, &["add", "other.txt"]);
+        setup_git(&repo, &["commit", "-q", "-m", "another session"]);
+        fs::write(repo.join("mine.txt"), "m\n").unwrap();
+        setup_git(&repo, &["add", "mine.txt"]);
+        setup_git(&repo, &["commit", "-q", "-m", "this session"]);
+        let mine = setup_git(&repo, &["rev-parse", "--short", "HEAD"]);
 
         let worktree = repo.join(".claude").join("worktrees").join("w");
         setup_git(&repo, &["worktree", "add", "-q", "-b", "worktree-w", worktree.to_str().unwrap()]);
@@ -605,8 +722,13 @@ mod tests {
         let account = root.join("account");
         let project = account.join("projects").join("-repo");
         fs::create_dir_all(&project).unwrap();
+        let output = serde_json::json!({
+            "type": "user",
+            "message": { "content": format!("[main {mine}] this session\n 1 file changed") },
+        });
         let conversation = [
             conversation_line(&repo, started),
+            output.to_string(),
             conversation_line(&worktree.join("src"), started + 1),
             conversation_line(&worktree, started + 2),
             conversation_line(&removed.join("crates"), started + 3),
@@ -623,7 +745,7 @@ mod tests {
                     copy: top_of(&repo),
                     branch: Some("main".into()),
                     start: Start::Estimated,
-                    files: vec![file("kept.txt", ChangeKind::Modified, 1, 0)],
+                    files: vec![file("kept.txt", ChangeKind::Modified, 1, 0), file("mine.txt", ChangeKind::Added, 1, 0)],
                 },
                 Block::Changes {
                     copy: top_of(&worktree),
