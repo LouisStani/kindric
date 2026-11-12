@@ -436,6 +436,13 @@ async function themeColors(name) {
 async function showTheme(name) {
   applyTheme(name, await themeColors(name));
   panes.retheme();
+  followClaudeTheme();
+}
+
+// Claude Code draws for the background of the terminals shown (Rust, claude_theme.rs).
+function followClaudeTheme() {
+  const background = getComputedStyle(document.documentElement).getPropertyValue("--terminal").trim();
+  invoke("follow_claude_theme", { background }).catch((error) => setStatus(`${error}`));
 }
 
 // Ctrl+Shift+E: the next theme, kept for the next launch. A theme.json that does not load
