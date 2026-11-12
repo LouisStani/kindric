@@ -109,6 +109,7 @@ Clicking a chip opens the session in the active pane of its project's tab, movin
 | **App** | |
 | `Ctrl+,` | Settings: accounts, memory, shortcuts |
 | `Ctrl+Shift+E` | Next theme |
+| `Ctrl+Alt+E` | Next theme of this project, then kindric's again |
 | `F1` | Setup checklist and these shortcuts |
 
 Unlike the terminal interface, the number of a session changes with its state: `Alt+1` is always the session that needs you most.
@@ -129,6 +130,8 @@ The shortcuts section changes the key of an action: press **change**, then the n
 
 `Ctrl+Shift+E` cycles through **ember** (the default), **paper** (light) and **graphite**. The choice is kept in `settings.json`.
 
+A project can have a theme of its own: `Ctrl+Alt+E`, in its tab, goes through the themes, then back to kindric's. The panes of its sessions show in it, wherever they are open; the rest of the window keeps kindric's theme. The choice is kept in `projects.json`.
+
 A `theme.json` next to the mailbox adds a **custom** theme: ember with the colors it names.
 
 ```json
@@ -137,7 +140,7 @@ A `theme.json` next to the mailbox adds a **custom** theme: ember with the color
 
 Names are the color variables at the top of `crates/desktop/ui/style.css`, without `--`. Only `#rgb`, `#rrggbb` and `#rrggbbaa` values are taken. The file is read again each time the theme is chosen.
 
-Claude Code draws for the background of the theme. kindric writes a Claude Code theme, `~/.claude/themes/kindric.json`, light or dark after the terminal color of its theme, in the variant you chose for Claude Code (daltonized, ANSI colors only). The sessions kindric starts use it (`custom:kindric`), and Claude Code reloads it when the theme changes, without a restart. Sessions started before this version, or outside kindric, keep your own Claude Code theme.
+Claude Code draws for the background of the theme. kindric writes Claude Code themes in `~/.claude/themes`: `kindric.json`, and one per project (`kindric-` and 8 characters), light or dark after the terminal color of the theme they show in, in the variant you chose for Claude Code (daltonized, ANSI colors only). The sessions kindric starts use the theme of their project, else `kindric`, and Claude Code reloads it when the theme changes, without a restart. Sessions started before this version, or outside kindric, keep your own Claude Code theme.
 
 ## Files kept by the app
 
@@ -145,7 +148,7 @@ All in kindric's data folder, next to the mailbox: `~/.local/share/kindric/` on 
 
 | File | Holds |
 | --- | --- |
-| `projects.json` | Projects, and the account last used in each |
+| `projects.json` | Projects, the account last used in each, and their theme |
 | `workspace.json` | The tab you left and the session of each tab's active pane |
 | `sessions.json` | Short names and hidden sessions |
 | `settings.json` | The theme |

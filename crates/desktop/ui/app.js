@@ -1,6 +1,6 @@
 import { DirectoryField } from "./directories.js";
 import { Panes, sameSession } from "./panes.js";
-import { applyTheme, nextTheme, THEMES } from "./themes.js";
+import { applyTheme, nextProjectTheme, nextTheme, THEMES } from "./themes.js";
 import { mark, note, startTrace, traced } from "./trace.js";
 import { askTrust } from "./helper.js";
 import { checkItems, hasToDo } from "./welcome.js";
@@ -15,6 +15,8 @@ const { listen } = window.__TAURI__.event;
 
 let lastView = { loaded: false, accounts: [], sessions: [], errors: [] };
 let currentTheme = "ember";
+// The colors of theme.json as last read, null without one: a project may use them.
+let customColors = null;
 const picker = { rows: [], selected: 0, query: 0 };
 // `lasting`: a notice that stays until the settings are opened (a login to renew).
 const status = { notice: "", timer: null, lasting: "" };
@@ -429,8 +431,28 @@ function openChanges(key) {
 async function themeColors(name) {
   if (name !== "custom") return THEMES[name] ?? THEMES.ember;
   const colors = await invoke("custom_theme");
+  customColors = colors;
   if (!colors) throw new Error("no theme.json");
   return { ...THEMES.ember, ...colors };
+}
+
+// The colors of theme `name` as last read, for a project; null for none, or for "custom" when
+// theme.json did not load.
+function colorsNow(name) {
+  if (name === null) return null;
+  if (name === "custom") return customColors ? { ...THEMES.ember, ...customColors } : null;
+  return THEMES[name] ?? null;
+}
+
+// The colors of the theme of the project the session `key` belongs to; null when it has none.
+function projectColorsOf(key) {
+  const row = rowOf(key);
+  const tab = row && panes.state?.tabs.find((tab) => tab.id === row.tab);
+  return colorsNow(tab?.project?.theme ?? null);
+}
+
+function projectsNow() {
+  return (panes.state?.tabs ?? []).flatMap((tab) => (tab.project ? [tab.project] : []));
 }
 
 async function showTheme(name) {
@@ -439,10 +461,43 @@ async function showTheme(name) {
   followClaudeTheme();
 }
 
-// Claude Code draws for the background of the terminals shown (Rust, claude_theme.rs).
+// Claude Code draws for the background of the terminals shown: kindric's, and that of each
+// project with a theme of its own (Rust, claude_theme.rs).
 function followClaudeTheme() {
   const background = getComputedStyle(document.documentElement).getPropertyValue("--terminal").trim();
-  invoke("follow_claude_theme", { background }).catch((error) => setStatus(`${error}`));
+  const projects = projectsNow().map((project) => ({
+    directory: project.directory,
+    background: colorsNow(project.theme ?? null)?.terminal ?? background,
+  }));
+  invoke("follow_claude_theme", { background, projects }).catch((error) => setStatus(`${error}`));
+}
+
+// A project added, removed or given a theme: the Claude Code themes follow, once per change.
+let followedProjects = null;
+function followProjects() {
+  const projects = JSON.stringify(projectsNow().map((project) => [project.directory, project.theme ?? null]));
+  if (projects === followedProjects) return;
+  followedProjects = projects;
+  followClaudeTheme();
+}
+
+// Ctrl+Alt+E: the next theme of the project of the active tab, then kindric's again. Its
+// sessions show in it, Claude Code too.
+async function cycleProjectTheme() {
+  const project = panes.activeTab().project;
+  if (!project) {
+    setStatus('"other" is not a project: open a project tab first');
+    return;
+  }
+  customColors = await invoke("custom_theme").catch(() => null);
+  const theme = nextProjectTheme(project.theme ?? null, customColors !== null);
+  try {
+    panes.render(await invoke("set_project_theme", { theme }));
+  } catch (error) {
+    setStatus(`${error}`);
+    return;
+  }
+  setStatus(`${project.name}: ${theme ?? `kindric's theme (${currentTheme})`}`);
 }
 
 // Ctrl+Shift+E: the next theme, kept for the next launch. A theme.json that does not load
@@ -807,6 +862,7 @@ const SHORTCUTS = [
   { group: "app", id: "worktrees", keys: "ctrl+shift+b", help: "worktrees of this project: merged or not, remove", run: openWorktrees },
   { group: "app", id: "settings", keys: "ctrl+comma", help: "settings: accounts, memory, shortcuts", run: openSettings },
   { group: "app", id: "next-theme", keys: "ctrl+shift+e", help: "next theme", run: cycleTheme },
+  { group: "app", id: "project-theme", keys: "ctrl+alt+e", help: "theme of this project: the next, then kindric's", run: cycleProjectTheme },
   { group: "app", id: "help", keys: "f1", help: "what is left to set up, and these shortcuts", run: openHelp },
 ];
 // Shortcut id → keys, for those changed in the settings.
@@ -930,7 +986,10 @@ function onKey(event) {
 
 const panes = new Panes(document.getElementById("panes"), document.getElementById("tabs"), {
   keyFilter: (event) => shortcutFor(event) === null,
-  onChange: () => render(lastView),
+  onChange: () => {
+    render(lastView);
+    followProjects();
+  },
   onError: setStatus,
   titleOf,
   isFinished,
@@ -939,6 +998,7 @@ const panes = new Panes(document.getElementById("panes"), document.getElementByI
   changedOf: (key) => rowOf(key)?.changed ?? null,
   onChangedClick: openChanges,
   imagesOf: (key) => rowOf(key)?.images ?? [],
+  colorsOf: projectColorsOf,
 });
 
 const artifactsWindow = new ArtifactsWindow(document.getElementById("artifacts"), { onError: setStatus });
@@ -1001,6 +1061,8 @@ const savedSettings = await invoke("settings");
 currentTheme = savedSettings.theme ?? "ember";
 changedKeys = savedSettings.keys ?? {};
 indexShortcuts();
+// A project may show in the custom theme even when the window does not.
+customColors = await invoke("custom_theme").catch(() => null);
 try {
   await showTheme(currentTheme);
 } catch (error) {

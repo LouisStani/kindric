@@ -33,21 +33,23 @@ export function sameSession(key, session) {
   return key !== null && key.account === session.account && key.short_id === session.short_id;
 }
 
-// The terminal colors come from the art direction in style.css, so a theme changes them too.
-export function terminalOptions() {
+// The terminal colors come from the art direction in style.css, so a theme changes them too;
+// `colors`, a theme of its own, comes first.
+export function terminalTheme(colors = null) {
   const style = getComputedStyle(document.documentElement);
-  const variable = (name) => style.getPropertyValue(name).trim();
+  const variable = (name) => colors?.[name] ?? style.getPropertyValue(`--${name}`).trim();
   return {
-    fontFamily: variable("--font"),
-    fontSize: 13,
-    theme: {
-      background: variable("--terminal"),
-      foreground: variable("--terminal-text"),
-      cursor: variable("--waiting"),
-      cursorAccent: variable("--terminal"),
-      selectionBackground: variable("--selection"),
-    },
+    background: variable("terminal"),
+    foreground: variable("terminal-text"),
+    cursor: variable("waiting"),
+    cursorAccent: variable("terminal"),
+    selectionBackground: variable("selection"),
   };
+}
+
+export function terminalOptions() {
+  const font = getComputedStyle(document.documentElement).getPropertyValue("--font").trim();
+  return { fontFamily: font, fontSize: 13, theme: terminalTheme() };
 }
 
 const IMAGE_TYPES = { png: "image/png", jpg: "image/jpeg", jpeg: "image/jpeg", gif: "image/gif", webp: "image/webp" };
@@ -87,6 +89,9 @@ class PaneView {
     this.used = false;
     // Between opening a session and its first output: the pane says so instead of staying blank.
     this.waiting = false;
+    // The colors of the theme of its session's project, null for the window's (`paint`).
+    this.colors = null;
+    this.painted = "";
     this.element = element("div", "pane");
     this.title = element("span", "head-title");
     this.account = element("span", "head-account");
@@ -152,6 +157,18 @@ class PaneView {
     setText(this.changed, key === null || !changed ? "" : `· ${changed} ${changed === 1 ? "file" : "files"}`);
     this.done.hidden = !finished;
     this.element.classList.toggle("finished", finished);
+  }
+
+  // A session of a project with a theme of its own shows in its colors: the theme's variables on
+  // the pane, its terminal too. Null gives the pane those of the window.
+  paint(colors) {
+    const painted = colors === null ? "" : JSON.stringify(colors);
+    if (painted === this.painted) return;
+    this.painted = painted;
+    for (const name of Object.keys(this.colors ?? {})) this.element.style.removeProperty(`--${name}`);
+    this.colors = colors;
+    for (const [name, value] of Object.entries(colors ?? {})) this.element.style.setProperty(`--${name}`, value);
+    this.terminal.options.theme = terminalTheme(colors);
   }
 
   // The images the session's last turn proposed; none hides the band.
@@ -229,7 +246,7 @@ function leaves(node, found = []) {
 }
 
 export class Panes {
-  constructor(container, bar, { keyFilter, onChange, onError, titleOf, isFinished, markOf, progressOf, changedOf, onChangedClick, imagesOf }) {
+  constructor(container, bar, { keyFilter, onChange, onError, titleOf, isFinished, markOf, progressOf, changedOf, onChangedClick, imagesOf, colorsOf }) {
     this.container = container;
     this.bar = bar;
     this.keyFilter = keyFilter;
@@ -242,6 +259,7 @@ export class Panes {
     this.changedOf = changedOf;
     this.onChangedClick = onChangedClick;
     this.imagesOf = imagesOf;
+    this.colorsOf = colorsOf;
     this.state = null;
     this.views = new Map();
     // Tab id → its page and the shape it was built for.
@@ -257,10 +275,9 @@ export class Panes {
     document.documentElement.addEventListener("mouseleave", () => (this.pointer = null));
   }
 
-  // The terminals take the colors of the theme just applied.
+  // The terminals take the colors of the theme just applied, those of a project's theme first.
   retheme() {
-    const { theme } = terminalOptions();
-    for (const view of this.views.values()) view.terminal.options.theme = theme;
+    for (const view of this.views.values()) view.terminal.options.theme = terminalTheme(view.colors);
   }
 
   async load() {
@@ -411,6 +428,7 @@ export class Panes {
       const view = this.view(leaf.id);
       const known = key !== null;
       view.label(key, title, known && this.isFinished(key), known ? this.progressOf(key) : null, known ? this.changedOf(key) : null);
+      view.paint(known ? this.colorsOf(key) : null);
       view.showImages(key === null ? [] : this.imagesOf(key));
     }
   }
