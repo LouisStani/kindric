@@ -1218,7 +1218,8 @@ fn main() -> ExitCode {
         ])
         .setup(|app| {
             let handle = app.handle().clone();
-            refresher::spawn(move |update| publish(&handle, update));
+            // Stopped sessions too: Ctrl+P finds them and opening one starts it again.
+            refresher::spawn(true, move |update| publish(&handle, update));
             Ok(())
         })
         .build(tauri::generate_context!());

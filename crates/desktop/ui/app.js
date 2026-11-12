@@ -64,17 +64,23 @@ function directoryField(formId) {
   return new DirectoryField(form.elements.directory, form.querySelector(".suggestions"));
 }
 
+// A session the bar shows: not hidden, and with a process. Stopped ones (dozens, from
+// `agents --json --all`) are found with Ctrl+P only.
+function inBar(session) {
+  return !session.hidden && session.state !== "paused";
+}
+
 // The sessions of the bar: those of the visible tab, its project's or, in "other", those of
 // no project. Rust sorts them, most urgent first.
 function barSessions() {
   if (panes.state === null) return [];
   const tab = panes.activeTab();
-  return lastView.sessions.filter((session) => !session.hidden && session.tab === tab.id);
+  return lastView.sessions.filter((session) => inBar(session) && session.tab === tab.id);
 }
 
 // The dot of a tab: its most urgent session, if that one needs you.
 function markOf(tabId) {
-  const session = lastView.sessions.find((row) => row.tab === tabId && !row.hidden);
+  const session = lastView.sessions.find((row) => row.tab === tabId && inBar(row));
   if (!session) return null;
   if (session.unread > 0) return "waiting";
   const state = chipState(session);
@@ -273,7 +279,8 @@ async function restoreTab() {
   restoring.add(tab.id);
   try {
     const session = rowOf(tab.restore);
-    if (session && session.short_id && !session.hidden && session.tab === tab.id) await openSession(session);
+    // A stopped one is not started again by a launch: only by choosing it in Ctrl+P.
+    if (session && session.short_id && inBar(session) && session.tab === tab.id) await openSession(session);
     else panes.render(await invoke("drop_restore"));
   } catch (error) {
     setStatus(`${error}`);

@@ -68,10 +68,12 @@ struct Refresher {
     account_dirs: Vec<(String, PathBuf)>,
     /// Checked again at each full refresh only: `claude auth status` takes about 0.2 s.
     default_logged_in: bool,
+    /// Whether the sessions without a process are listed too.
+    include_stopped: bool,
 }
 
 impl Refresher {
-    fn new() -> Self {
+    fn new(include_stopped: bool) -> Self {
         let mailbox = mailbox::default_root().map(Mailbox::new).and_then(|mailbox| {
             mailbox.create_root()?;
             Ok(mailbox)
@@ -82,6 +84,7 @@ impl Refresher {
             known: BTreeMap::new(),
             account_dirs: Vec::new(),
             default_logged_in: false,
+            include_stopped,
         }
     }
 
@@ -128,7 +131,7 @@ impl Refresher {
             .collect();
         let watch_errors = self.watch(&paths.config_dir);
         let asked = to_query(change, &registered, &self.known);
-        let queried = accounts::query_accounts(&paths, &asked, implicit_default);
+        let queried = accounts::query_accounts(&paths, &asked, implicit_default, self.include_stopped);
         self.known.retain(|account, _| registered.contains(account));
         let mut timings = Vec::new();
         for query in queried {
@@ -164,10 +167,11 @@ impl Refresher {
     }
 }
 
-/// Hands every new list to `publish`; stops once `publish` returns false.
-pub fn spawn(mut publish: impl FnMut(Update) -> bool + Send + 'static) {
+/// Hands every new list to `publish`; stops once `publish` returns false. `include_stopped`
+/// lists the sessions without a process too, so that they can be found and opened again.
+pub fn spawn(include_stopped: bool, mut publish: impl FnMut(Update) -> bool + Send + 'static) {
     thread::spawn(move || {
-        let mut refresher = Refresher::new();
+        let mut refresher = Refresher::new(include_stopped);
         let mut change = Change::Full;
         loop {
             if !publish(refresher.refresh(&change)) {
