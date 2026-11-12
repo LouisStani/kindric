@@ -8,9 +8,10 @@ use std::collections::HashMap;
 use std::fs::File;
 use std::io::{self, BufRead, BufReader, Read};
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
 
 use serde::{Deserialize, Serialize};
+
+use crate::git::{git, text, GitError};
 
 /// Untracked files bigger than this are listed without counting their lines.
 const LARGEST_COUNTED: u64 = 1024 * 1024;
@@ -533,10 +534,6 @@ fn nul_fields(output: &[u8]) -> impl Iterator<Item = String> + '_ {
     output.split(|&byte| byte == 0).filter(|field| !field.is_empty()).map(|field| text(field).into_owned())
 }
 
-fn text(bytes: &[u8]) -> std::borrow::Cow<'_, str> {
-    String::from_utf8_lossy(bytes)
-}
-
 /// The lines of a text file; `None` for a binary one or one too big to read each time.
 fn count_lines(path: &Path) -> Option<u32> {
     let file = File::open(path).ok()?;
@@ -627,53 +624,12 @@ fn shortened(whole: String) -> String {
     format!("{}… {left} more lines not shown\n", &whole[..end])
 }
 
-enum GitError {
-    /// Git cannot be run: nothing can be shown for any copy.
-    Missing(String),
-    Failed(String),
-}
-
-impl From<GitError> for String {
-    fn from(error: GitError) -> Self {
-        match error {
-            GitError::Missing(message) | GitError::Failed(message) => message,
-        }
-    }
-}
-
-/// The output of `git args` run in `dir`.
-fn git(dir: &Path, args: &[&str]) -> Result<Vec<u8>, GitError> {
-    let mut command = Command::new("git");
-    command.arg("-C").arg(dir).args(args).stdin(Stdio::null());
-    hide_console(&mut command);
-    let output = command.output().map_err(|error| match error.kind() {
-        io::ErrorKind::NotFound => GitError::Missing("git not found: install git to see what a session changed".to_string()),
-        _ => GitError::Missing(format!("git could not be run: {error}")),
-    })?;
-    if !output.status.success() {
-        let stderr = text(&output.stderr);
-        return Err(GitError::Failed(format!("git {} in {}: {}", args.join(" "), dir.display(), stderr.trim())));
-    }
-    Ok(output.stdout)
-}
-
-/// A program started by a windowed application opens a console window of its own on Windows
-/// unless told not to; git runs at each change of state of a session.
-#[cfg(windows)]
-fn hide_console(command: &mut Command) {
-    use std::os::windows::process::CommandExt;
-    const CREATE_NO_WINDOW: u32 = 0x0800_0000;
-    command.creation_flags(CREATE_NO_WINDOW);
-}
-
-#[cfg(not(windows))]
-fn hide_console(_command: &mut Command) {}
-
 #[cfg(test)]
 mod tests {
     use std::fs;
 
     use super::*;
+    use crate::git::setup_git;
 
     fn lines(text: &str) -> impl Iterator<Item = Vec<u8>> + '_ {
         text.lines().map(|line| line.as_bytes().to_vec())
@@ -789,23 +745,6 @@ mod tests {
         assert_eq!(count_lines(&root.join("b.bin")), None);
         assert_eq!(count_lines(&root.join("c.txt")), Some(0));
         fs::remove_dir_all(&root).unwrap();
-    }
-
-    /// Git run for setting up a test repository, away from the user's configuration.
-    fn setup_git(dir: &Path, args: &[&str]) -> String {
-        let empty = std::env::temp_dir().join(format!("kindric-changes-gitconfig-{}", std::process::id()));
-        fs::write(&empty, "").unwrap();
-        let output = Command::new("git")
-            .arg("-C")
-            .arg(dir)
-            .args(["-c", "user.name=test", "-c", "user.email=test@example.com", "-c", "init.defaultBranch=main"])
-            .args(args)
-            .env("GIT_CONFIG_GLOBAL", &empty)
-            .env("GIT_CONFIG_NOSYSTEM", "1")
-            .output()
-            .unwrap();
-        assert!(output.status.success(), "git {args:?}: {}", String::from_utf8_lossy(&output.stderr));
-        String::from_utf8(output.stdout).unwrap().trim().to_string()
     }
 
     fn conversation_line(cwd: &Path, time: i64) -> String {

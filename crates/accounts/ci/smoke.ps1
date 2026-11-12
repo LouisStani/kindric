@@ -22,7 +22,7 @@ $env:PATH = "$fake;$env:PATH"
 if ($LASTEXITCODE -ne 0) { Fail 'add' }
 $list = (& $Bin list --json | Out-String).Trim()
 if ($list -ne '["ci1"]') { Fail "list --json: $list" }
-$dir = Join-Path $env:APPDATA 'claude-accounts\ci1'
+$dir = Join-Path $env:APPDATA 'kindric-accounts\ci1'
 if (-not (Test-Path (Join-Path $dir 'skills'))) { Fail 'skills is not shared' }
 if ((Get-Content (Join-Path $dir 'CLAUDE.md') -Raw).Trim() -ne '# shared') { Fail 'CLAUDE.md is not shared' }
 
