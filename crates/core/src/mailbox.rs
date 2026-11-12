@@ -21,6 +21,10 @@ pub struct Message {
     pub from_account: String,
     pub sent_at: u64,
     pub text: String,
+    /// The sender asks the session to act now: it wakes a session at rest (see `wake`). A message
+    /// written before this field does not.
+    #[serde(default)]
+    pub wake: bool,
 }
 
 pub struct Mailbox {
@@ -203,6 +207,19 @@ impl Mailbox {
         )))
     }
 
+    /// The notice of `notice`, only when an unread message not told of yet asks to wake the
+    /// session. Messages without `wake` wait for the session's next prompt or tool.
+    pub fn wake_notice(&self, session: &str) -> io::Result<Option<String>> {
+        let marker = self.inbox(session)?.join(NOTIFIED_FILE);
+        let told = fs::read_to_string(&marker).unwrap_or_default();
+        let wakes = self.unread_files(session)?.iter().any(|file| {
+            let name = file.file_name().map(|name| name.to_string_lossy().into_owned()).unwrap_or_default();
+            !told.lines().any(|line| line == name)
+                && fs::read(file).ok().and_then(|bytes| serde_json::from_slice::<Message>(&bytes).ok()).is_some_and(|message| message.wake)
+        });
+        if wakes { self.notice(session) } else { Ok(None) }
+    }
+
     /// Returns unread messages, oldest first, and moves them to `read/`.
     pub fn take_unread(&self, session: &str) -> io::Result<Vec<Message>> {
         let files = self.unread_files(session)?;
@@ -274,6 +291,36 @@ mod tests {
     }
 
     #[test]
+    fn only_a_message_that_asks_to_wake_gives_the_wake_notice() {
+        let mailbox = Mailbox::new(temp_root("wake-notice"));
+        assert_eq!(mailbox.wake_notice("bbbb-2222").unwrap(), None, "no inbox yet");
+        mailbox.send("bbbb-2222", &message("for later", 100)).unwrap();
+        assert_eq!(mailbox.wake_notice("bbbb-2222").unwrap(), None, "information waits for the next tool");
+        mailbox.send("bbbb-2222", &waking("run the tests", 101)).unwrap();
+        let notice = mailbox.wake_notice("bbbb-2222").unwrap().unwrap();
+        assert!(notice.starts_with("2 unread messages"), "both told at once: {notice}");
+        assert_eq!(mailbox.wake_notice("bbbb-2222").unwrap(), None, "told once");
+        assert_eq!(mailbox.notice("bbbb-2222").unwrap(), None, "the other hook does not tell it again");
+        fs::remove_dir_all(mailbox.root()).unwrap();
+    }
+
+    #[test]
+    fn a_wake_message_already_told_by_the_other_hook_does_not_wake() {
+        let mailbox = Mailbox::new(temp_root("wake-told"));
+        mailbox.send("bbbb-2222", &waking("run the tests", 100)).unwrap();
+        assert!(mailbox.notice("bbbb-2222").unwrap().is_some(), "told after a tool, while working");
+        assert_eq!(mailbox.wake_notice("bbbb-2222").unwrap(), None);
+        fs::remove_dir_all(mailbox.root()).unwrap();
+    }
+
+    #[test]
+    fn a_message_written_before_wake_existed_does_not_wake() {
+        let old = r#"{"from_session":"aaaa-1111","from_title":"roblox","from_account":"louis","sent_at":1,"text":"hi"}"#;
+        let message: Message = serde_json::from_str(old).unwrap();
+        assert!(!message.wake);
+    }
+
+    #[test]
     fn the_hook_answers_with_context_for_its_events_only() {
         let mailbox = Mailbox::new(temp_root("hook"));
         mailbox.send("bbbb-2222", &message("hello", 100)).unwrap();
@@ -301,7 +348,12 @@ mod tests {
             from_account: "louis".into(),
             sent_at,
             text: text.into(),
+            wake: false,
         }
+    }
+
+    fn waking(text: &str, sent_at: u64) -> Message {
+        Message { wake: true, ..message(text, sent_at) }
     }
 
     #[test]
@@ -319,7 +371,7 @@ mod tests {
     }
 
     fn from(session: &str, text: &str, sent_at: u64) -> Message {
-        Message { from_session: session.into(), from_title: session.into(), from_account: "louis".into(), sent_at, text: text.into() }
+        Message { from_session: session.into(), from_title: session.into(), from_account: "louis".into(), sent_at, text: text.into(), wake: false }
     }
 
     #[test]

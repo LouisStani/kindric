@@ -25,7 +25,7 @@ use ratatui::layout::Rect;
 use crate::app::{App, Flow};
 use crate::pane::PaneKey;
 
-const USAGE: &str = "usage: kindric [mcp | unread | away-hook | away done <session id> | --version]";
+const USAGE: &str = "usage: kindric [mcp | unread | wait-message | away-hook | away done <session id> | --version]";
 
 pub enum AppEvent {
     Input(Event),
@@ -43,6 +43,15 @@ fn main() -> ExitCode {
         // The hook of the sessions kindric-accounts starts: tells a session of its unread messages.
         ["unread"] => {
             kindric_core::mailbox::run_unread_hook();
+            Ok(())
+        },
+        // The Stop hook of the sessions kindric-accounts starts, run in the background: wakes a session
+        // at rest when a message asks it to. Claude Code gives the session the error output of exit code 2.
+        ["wait-message"] => {
+            if let Some(notice) = kindric_core::wake::run_wait_hook() {
+                eprintln!("{notice}");
+                return ExitCode::from(2);
+            }
             Ok(())
         },
         // The Stop hook of the sessions kindric-accounts starts: keeps one working while the user is away.
