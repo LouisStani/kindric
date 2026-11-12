@@ -26,7 +26,7 @@ use kindric_core::launcher::{self, Request, resolve_directory};
 use kindric_core::mailbox::Mailbox;
 use kindric_core::accounts::SessionInfo;
 use kindric_core::artifacts::{self, Kind};
-use kindric_core::{accounts, away, changes, checks, images, mailbox, refresher, worktrees};
+use kindric_core::{accounts, away, changes, checks, claude_theme, images, mailbox, refresher, worktrees};
 use serde::Serialize;
 use serde::de::DeserializeOwned;
 use tauri::ipc::{Channel, InvokeResponseBody, Response};
@@ -123,13 +123,16 @@ struct Created {
     directory: PathBuf,
 }
 
-fn start_session(account: String, directory: &str, name: &str) -> Result<Created, String> {
+fn start_session(account: String, directory: &str, name: &str, projects: &[Project]) -> Result<Created, String> {
     let home = std::env::home_dir().ok_or("HOME is not set")?;
     let directory = resolve_directory(directory, &home)?;
     let request = Request { account, directory, name: name.trim().to_string() };
     // The state of the folder before the session, to tell later what the session changed.
     let recorded = changes::record(&request.directory);
-    let launched = launcher::launch(&request)?;
+    // Claude Code draws with the theme kindric keeps in step with the colours of the session's
+    // project, else with its own (claude_theme).
+    let theme = projects::claude_theme_of(&request.directory, projects);
+    let launched = launcher::launch(&request, Some(&theme))?;
     let mut warnings = launched.warnings;
     if let Err(error) = keep_recorded(recorded, &request.account, &launched.short_id) {
         warnings.push(error);
@@ -164,7 +167,8 @@ impl From<String> for StartError {
 #[tauri::command]
 async fn new_session(app: AppHandle, shared: State<'_, Shared>, account: String, directory: String, name: String) -> Result<Created, StartError> {
     let _span = shared.trace.span("new_session");
-    let mut created = tauri::async_runtime::spawn_blocking(move || start_session(account, &directory, &name))
+    let projects = shared.workspace().tabs.projects();
+    let mut created = tauri::async_runtime::spawn_blocking(move || start_session(account, &directory, &name, &projects))
         .await
         .map_err(|error| error.to_string())??;
     if let Err(error) = remember_account(&app, &shared, &created) {
@@ -678,6 +682,28 @@ fn set_theme(shared: State<'_, Shared>, name: String) -> Result<(), String> {
     store::save(path, &next).map_err(|error| format!("cannot save {}: {error}", path.display()))?;
     *settings = next;
     Ok(())
+}
+
+/// The terminals are on `background`, those of each project on its own: Claude Code's themes
+/// follow, so the sessions that use them draw for that background (see `claude_theme`).
+#[tauri::command]
+fn follow_claude_theme(shared: State<'_, Shared>, background: String, projects: Vec<claude_theme::ProjectBackground>) -> Result<(), String> {
+    let _span = shared.trace.span("follow_claude_theme");
+    let paths = accounts::paths().map_err(|error| format!("Claude Code's theme not changed: {error}"))?;
+    claude_theme::follow(&paths.shared_root, &background, &projects)
+}
+
+/// The project of the active tab takes the theme `theme`, or kindric's with None; kept in
+/// `projects.json`.
+#[tauri::command]
+fn set_project_theme(app: AppHandle, shared: State<'_, Shared>, theme: Option<String>) -> Result<Tabs, String> {
+    let _span = shared.trace.span("set_project_theme");
+    let mut workspace = shared.workspace();
+    let mut next = workspace.tabs.clone();
+    next.set_project_theme(theme)?;
+    save_projects(&shared, &next)?;
+    workspace.tabs = next;
+    Ok(respond(&app, &shared, workspace))
 }
 
 /// A shortcut changed in the settings, saved before it counts; None gives it its own keys back.
@@ -1257,6 +1283,8 @@ fn main() -> ExitCode {
             drop_restore,
             settings,
             set_theme,
+            follow_claude_theme,
+            set_project_theme,
             custom_theme,
             trace_enabled,
             trace,
