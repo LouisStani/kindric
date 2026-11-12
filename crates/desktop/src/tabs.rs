@@ -126,6 +126,14 @@ impl Tabs {
         true
     }
 
+    /// The project of the active tab takes `theme`, or kindric's with None. "other" has none.
+    pub fn set_project_theme(&mut self, theme: Option<String>) -> Result<(), String> {
+        let index = self.index();
+        let project = self.tabs[index].project.as_mut().ok_or("\"other\" is not a project: open a project tab first")?;
+        project.theme = theme;
+        Ok(())
+    }
+
     /// The tab a session working in `directory` belongs to: its project's, else "other".
     pub fn owner_tab(&self, directory: &Path) -> PaneId {
         let projects = self.tabs.iter().filter_map(|tab| tab.project.as_ref().map(|project| (tab.id, project)));
@@ -590,5 +598,18 @@ mod tests {
         assert_eq!(accounts, [None, Some("pro".to_string())]);
         assert!(tabs.remember_account(Path::new("/home/u/Dev/api"), "louis"));
         assert_eq!(tabs.projects()[1].account.as_deref(), Some("louis"));
+    }
+
+    #[test]
+    fn the_project_of_the_active_tab_takes_a_theme_and_other_has_none() {
+        let mut tabs = Tabs::with_projects(vec![Project::new("/home/u/api".into()), Project::new("/home/u/blog".into())]);
+        let error = tabs.set_project_theme(Some("paper".into())).unwrap_err();
+        assert!(error.contains("not a project"), "{error}");
+        tabs.go(3);
+        tabs.set_project_theme(Some("paper".into())).unwrap();
+        let themes: Vec<_> = tabs.projects().into_iter().map(|project| project.theme).collect();
+        assert_eq!(themes, [None, Some("paper".to_string())]);
+        tabs.set_project_theme(None).unwrap();
+        assert_eq!(tabs.projects()[1].theme, None, "back to kindric's");
     }
 }

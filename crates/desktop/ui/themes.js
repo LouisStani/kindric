@@ -83,3 +83,9 @@ export function nextTheme(current, hasCustom) {
   const names = hasCustom ? ORDER : ORDER.slice(0, -1);
   return names[(names.indexOf(current) + 1) % names.length];
 }
+
+// The theme of a project after `current`, null standing for kindric's own, which comes last.
+export function nextProjectTheme(current, hasCustom) {
+  const names = [...(hasCustom ? ORDER : ORDER.slice(0, -1)), null];
+  return names[(names.indexOf(current) + 1) % names.length];
+}

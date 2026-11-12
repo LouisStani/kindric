@@ -3,6 +3,7 @@
 
 use std::path::{Path, PathBuf};
 
+use kindric_core::claude_theme;
 use serde::{Deserialize, Serialize};
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -12,14 +13,25 @@ pub struct Project {
     /// The account of the last session started here with Ctrl+N, which Ctrl+N offers first.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub account: Option<String>,
+    /// The theme its sessions are shown in, chosen with Ctrl+Alt+E; none: kindric's.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub theme: Option<String>,
 }
 
 impl Project {
     /// Named after its folder.
     pub fn new(directory: PathBuf) -> Self {
         let name = directory.file_name().map_or_else(|| directory.display().to_string(), |name| name.to_string_lossy().into_owned());
-        Self { name, directory, account: None }
+        Self { name, directory, account: None, theme: None }
     }
+}
+
+/// The Claude Code theme of a session working in `directory`: its project's, else kindric's. Each
+/// project has one, whether it has a theme of its own or not, so a theme chosen later reaches
+/// the sessions already running.
+pub fn claude_theme_of(directory: &Path, projects: &[Project]) -> String {
+    owner(directory, projects.iter().map(|project| (project, project)))
+        .map_or_else(|| claude_theme::NAME.to_string(), |project| claude_theme::project_theme(&project.directory))
 }
 
 /// The project holding `directory`, the deepest one when projects are nested. Paths are
@@ -86,6 +98,24 @@ mod tests {
         let loaded: Vec<Project> = serde_json::from_str(r#"[{"name":"api","directory":"/home/u/Dev/api"}]"#).unwrap();
         assert_eq!(loaded, [project("/home/u/Dev/api")]);
         assert_eq!(serde_json::to_string(&loaded[0]).unwrap(), r#"{"name":"api","directory":"/home/u/Dev/api"}"#);
+    }
+
+    #[test]
+    fn a_theme_is_kept_and_none_writes_nothing() {
+        let mut api = project("/home/u/Dev/api");
+        api.theme = Some("paper".into());
+        let text = serde_json::to_string(&api).unwrap();
+        assert_eq!(text, r#"{"name":"api","directory":"/home/u/Dev/api","theme":"paper"}"#);
+        assert_eq!(serde_json::from_str::<Project>(&text).unwrap(), api);
+    }
+
+    #[test]
+    fn a_session_draws_with_the_claude_code_theme_of_its_project() {
+        let projects = [project("/home/u/Dev/api"), project("/home/u/Dev/blog")];
+        let api = claude_theme::project_theme(Path::new("/home/u/Dev/api"));
+        assert_eq!(claude_theme_of(Path::new("/home/u/Dev/api/src"), &projects), api);
+        assert_ne!(claude_theme_of(Path::new("/home/u/Dev/blog"), &projects), api);
+        assert_eq!(claude_theme_of(Path::new("/tmp"), &projects), claude_theme::NAME, "no project: kindric's");
     }
 
     #[test]

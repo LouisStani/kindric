@@ -97,22 +97,30 @@ fn read_json(path: &Path) -> Option<serde_json::Value> {
     serde_json::from_str(&fs::read_to_string(path).ok()?).ok()
 }
 
-fn content(base: &str) -> String {
-    let theme = serde_json::json!({ "name": NAME, "base": base, "overrides": {} });
+/// The theme of the sessions of the project in `directory`: `kindric-` and 8 hex digits of its
+/// folder, the same as long as the project stays in that folder. Each project has its own, so
+/// its sessions follow its colours.
+pub fn project_theme(directory: &Path) -> String {
+    let fingerprint = kindric_accounts::shared::fingerprint(directory.to_string_lossy().as_bytes());
+    format!("{NAME}-{}", &fingerprint[..8])
+}
+
+fn content(name: &str, base: &str) -> String {
+    let theme = serde_json::json!({ "name": name, "base": base, "overrides": {} });
     format!("{}\n", serde_json::to_string_pretty(&theme).unwrap_or_default())
 }
 
-/// Writes `themes/kindric.json` on `base`, unless it already says so: rewriting it would make
-/// every session redraw. Returns whether it was written. A `kindric.json` kindric did not write
+/// Writes `themes/<name>.json` on `base`, unless it already says so: rewriting it would make
+/// every session using it redraw. Returns whether it was written. A file kindric did not write
 /// (another name inside) is left as it is.
-pub fn write(themes: &Path, base: &str) -> io::Result<bool> {
-    let file = themes.join(format!("{NAME}.json"));
-    let wanted = content(base);
+pub fn write(themes: &Path, name: &str, base: &str) -> io::Result<bool> {
+    let file = themes.join(format!("{name}.json"));
+    let wanted = content(name, base);
     match fs::read_to_string(&file) {
         Ok(existing) if existing == wanted => return Ok(false),
         Ok(existing) => {
             let ours = serde_json::from_str::<serde_json::Value>(&existing)
-                .is_ok_and(|theme| theme.get("name").and_then(serde_json::Value::as_str) == Some(NAME));
+                .is_ok_and(|theme| theme.get("name").and_then(serde_json::Value::as_str) == Some(name));
             if !ours {
                 return Err(io::Error::other(format!("{} was not written by kindric: left as it is", file.display())));
             }
@@ -124,16 +132,31 @@ pub fn write(themes: &Path, base: &str) -> io::Result<bool> {
     Ok(true)
 }
 
-/// kindric shows a terminal on `background`: Claude Code's theme `kindric` follows, in the
-/// user's variant. Returns the base written, or None when it was already so.
-pub fn follow(shared_root: &Path, background: &str) -> Result<Option<&'static str>, String> {
-    let light = is_light(background).ok_or_else(|| format!("cannot tell whether the terminal colour {background:?} is light: use #rrggbb"))?;
-    let base = base(user_variant(shared_root), light);
-    match write(&themes_dir(shared_root), base) {
-        Ok(true) => Ok(Some(base)),
-        Ok(false) => Ok(None),
-        Err(error) => Err(format!("Claude Code's theme not changed: {error}")),
+/// A project and the terminal colour its sessions are shown on: its own theme's, or kindric's.
+#[derive(Clone, Debug, PartialEq, Eq, serde::Deserialize)]
+pub struct ProjectBackground {
+    pub directory: PathBuf,
+    pub background: String,
+}
+
+fn follow_one(themes: &Path, variant: Variant, name: &str, background: &str) -> Result<bool, String> {
+    let light = is_light(background).ok_or_else(|| format!("{name}: cannot tell whether the terminal colour {background:?} is light: use #rrggbb"))?;
+    write(themes, name, base(variant, light)).map_err(|error| error.to_string())
+}
+
+/// kindric shows its terminals on `background`, those of each project on its own: Claude Code's
+/// theme `kindric`, and that of each project, follow, in the user's variant. A theme that cannot
+/// be written does not stop the others; all that went wrong is said together.
+pub fn follow(shared_root: &Path, background: &str, projects: &[ProjectBackground]) -> Result<(), String> {
+    let variant = user_variant(shared_root);
+    let themes = themes_dir(shared_root);
+    let wanted = std::iter::once((NAME.to_string(), background))
+        .chain(projects.iter().map(|project| (project_theme(&project.directory), project.background.as_str())));
+    let errors: Vec<String> = wanted.filter_map(|(name, background)| follow_one(&themes, variant, &name, background).err()).collect();
+    if errors.is_empty() {
+        return Ok(());
     }
+    Err(format!("Claude Code's theme not changed: {}", errors.join("; ")))
 }
 
 #[cfg(test)]
@@ -147,10 +170,18 @@ mod tests {
         root
     }
 
-    fn written_base(root: &Path) -> String {
-        let theme = read_json(&themes_dir(root).join("kindric.json")).unwrap();
-        assert_eq!(theme["name"], NAME);
+    fn base_of(root: &Path, name: &str) -> String {
+        let theme = read_json(&themes_dir(root).join(format!("{name}.json"))).unwrap();
+        assert_eq!(theme["name"], name);
         theme["base"].as_str().unwrap().to_string()
+    }
+
+    fn written_base(root: &Path) -> String {
+        base_of(root, NAME)
+    }
+
+    fn project(directory: &str, background: &str) -> ProjectBackground {
+        ProjectBackground { directory: PathBuf::from(directory), background: background.into() }
     }
 
     #[test]
@@ -227,15 +258,45 @@ mod tests {
     }
 
     #[test]
-    fn following_writes_the_base_once_then_changes_it() {
+    fn following_changes_the_base_with_the_background() {
         let root = temp_root("follow");
         fs::write(root.join("settings.json"), r#"{"theme": "dark-daltonized"}"#).unwrap();
-        assert_eq!(follow(&root, "#fbf6ee"), Ok(Some("light-daltonized")));
+        assert_eq!(follow(&root, "#fbf6ee", &[]), Ok(()));
         assert_eq!(written_base(&root), "light-daltonized");
-        assert_eq!(follow(&root, "#fbf6ee"), Ok(None), "already so: not rewritten");
-        assert_eq!(follow(&root, "#1f120a"), Ok(Some("dark-daltonized")));
+        assert_eq!(follow(&root, "#1f120a", &[]), Ok(()));
         assert_eq!(written_base(&root), "dark-daltonized");
         fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn a_theme_already_so_is_not_rewritten() {
+        let root = temp_root("same");
+        let themes = themes_dir(&root);
+        assert!(write(&themes, NAME, "dark").unwrap());
+        assert!(!write(&themes, NAME, "dark").unwrap(), "already so");
+        assert!(write(&themes, NAME, "light").unwrap());
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn each_project_gets_a_theme_of_its_own() {
+        let root = temp_root("projects");
+        let projects = [project("/home/u/api", "#fbf6ee"), project("/home/u/blog", "#161719")];
+        assert_eq!(follow(&root, "#1f120a", &projects), Ok(()));
+        assert_eq!(written_base(&root), "dark");
+        assert_eq!(base_of(&root, &project_theme(Path::new("/home/u/api"))), "light");
+        assert_eq!(base_of(&root, &project_theme(Path::new("/home/u/blog"))), "dark");
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn a_project_theme_is_named_after_its_folder_only() {
+        let api = project_theme(Path::new("/home/u/api"));
+        assert_eq!(api, project_theme(Path::new("/home/u/api")), "the same each time");
+        assert_ne!(api, project_theme(Path::new("/home/u/blog")));
+        assert!(api.starts_with("kindric-") && api.len() == "kindric-".len() + 8, "{api}");
+        // Claude Code's settings take it, and kindric-accounts too (`theme`).
+        assert!(kindric_accounts::registry::is_valid_name(&api), "{api}");
     }
 
     #[test]
@@ -244,18 +305,19 @@ mod tests {
         fs::create_dir_all(themes_dir(&root)).unwrap();
         let file = themes_dir(&root).join("kindric.json");
         fs::write(&file, r#"{"name": "My kindric", "base": "dark"}"#).unwrap();
-        let error = follow(&root, "#ffffff").unwrap_err();
+        let error = follow(&root, "#ffffff", &[project("/home/u/api", "#ffffff")]).unwrap_err();
         assert!(error.contains("was not written by kindric"), "{error}");
         assert_eq!(fs::read_to_string(&file).unwrap(), r#"{"name": "My kindric", "base": "dark"}"#);
+        assert_eq!(base_of(&root, &project_theme(Path::new("/home/u/api"))), "light", "the others are still written");
         fs::write(&file, "not json").unwrap();
-        assert!(follow(&root, "#ffffff").is_err(), "unreadable: not ours either");
+        assert!(follow(&root, "#ffffff", &[]).is_err(), "unreadable: not ours either");
         fs::remove_dir_all(root).unwrap();
     }
 
     #[test]
     fn a_colour_kindric_cannot_read_changes_nothing() {
         let root = temp_root("unreadable");
-        let error = follow(&root, "var(--terminal)").unwrap_err();
+        let error = follow(&root, "var(--terminal)", &[]).unwrap_err();
         assert!(error.contains("var(--terminal)"), "{error}");
         assert!(!themes_dir(&root).exists());
         fs::remove_dir_all(root).unwrap();
