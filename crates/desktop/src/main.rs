@@ -26,7 +26,7 @@ use kindric_core::launcher::{self, Request, resolve_directory};
 use kindric_core::mailbox::Mailbox;
 use kindric_core::accounts::SessionInfo;
 use kindric_core::artifacts::{self, Kind};
-use kindric_core::{accounts, away, changes, checks, claude_theme, images, mailbox, refresher, worktrees};
+use kindric_core::{accounts, atlas, away, changes, checks, claude_theme, images, mailbox, refresher, worktrees};
 use serde::Serialize;
 use serde::de::DeserializeOwned;
 use tauri::ipc::{Channel, InvokeResponseBody, Response};
@@ -277,6 +277,26 @@ fn remember_account(app: &AppHandle, shared: &Shared, created: &Created) -> Resu
 fn memory_zone(shared: State<'_, Shared>, directory: String) -> String {
     let _span = shared.trace.span("memory_zone");
     projects::memory_label(launcher::memory_zone(std::path::Path::new(&directory)))
+}
+
+/// The memory grouped for the atlas (Settings › memory), read again at each opening.
+#[tauri::command(async)]
+fn memory_atlas(shared: State<'_, Shared>) -> Result<atlas::Atlas, String> {
+    let _span = shared.trace.span("memory_atlas");
+    Ok(atlas::read(&atlas::default_root()?))
+}
+
+/// The text of one note of the memory, for the atlas; nothing outside the memory.
+#[tauri::command(async)]
+fn memory_note(path: String) -> Result<String, String> {
+    atlas::read_note(&atlas::default_root()?, &path)
+}
+
+/// The notes of the memory that hold every word of `query`.
+#[tauri::command(async)]
+fn memory_search(shared: State<'_, Shared>, query: String) -> Result<Vec<String>, String> {
+    let _span = shared.trace.span("memory_search");
+    Ok(atlas::search(&atlas::default_root()?, &query))
 }
 
 /// The folders a directory field offers before anything is typed.
@@ -1291,6 +1311,9 @@ fn main() -> ExitCode {
             write_input,
             resize_pane,
             image_bytes,
+            memory_atlas,
+            memory_note,
+            memory_search,
             artifacts_view,
             move_artifact,
             create_artifact_group,

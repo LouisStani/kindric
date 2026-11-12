@@ -8,6 +8,7 @@ import { ArtifactsWindow } from "./artifacts.js";
 import { ChangesWindow } from "./changes.js";
 import { WorktreesWindow } from "./worktrees.js";
 import { SettingsWindow } from "./settings.js";
+import { AtlasWindow } from "./atlas.js";
 import { expiresWithin, inHowLong, shortly, timeLeft } from "./expiry.js";
 
 const { invoke } = window.__TAURI__.core;
@@ -1066,9 +1067,11 @@ const panes = new Panes(document.getElementById("panes"), document.getElementByI
 const artifactsWindow = new ArtifactsWindow(document.getElementById("artifacts"), { onError: setStatus });
 const changesWindow = new ChangesWindow(document.getElementById("changes"));
 const worktreesWindow = new WorktreesWindow(document.getElementById("worktrees"));
+const atlasWindow = new AtlasWindow(document.getElementById("atlas"), { onError: setStatus });
 const settingsWindow = new SettingsWindow(document.getElementById("settings"), {
   shortcuts: shortcutSettings,
   onAccounts: (accounts) => (accountStatuses = accounts),
+  onAtlas: () => atlasWindow.open(),
 });
 
 // The settings show which logins to renew: the lasting notice has said what it had to.
