@@ -5,9 +5,11 @@ import { mark, note, startTrace, traced } from "./trace.js";
 import { askTrust } from "./helper.js";
 import { checkItems, hasToDo } from "./welcome.js";
 import { ArtifactsWindow } from "./artifacts.js";
+import { AccountList } from "./launcher.js";
 import { ChangesWindow } from "./changes.js";
 import { WorktreesWindow } from "./worktrees.js";
 import { SettingsWindow } from "./settings.js";
+import { AtlasWindow } from "./atlas.js";
 import { expiresWithin, inHowLong, shortly, timeLeft } from "./expiry.js";
 
 const { invoke } = window.__TAURI__.core;
@@ -263,8 +265,28 @@ async function addMessagesServer() {
 // The welcome screen covers the panes while something is left to do and no pane of the
 // visible tab shows a session.
 function placeWelcome() {
-  const empty = panes.state !== null && panes.tabEmpty(panes.activeTab());
-  document.getElementById("welcome").hidden = !(hasToDo(welcome.lines) && empty);
+  const tab = panes.state === null ? null : panes.activeTab();
+  const empty = tab !== null && panes.tabEmpty(tab);
+  const welcoming = hasToDo(welcome.lines) && empty;
+  document.getElementById("welcome").hidden = !welcoming;
+  placeTabLaunch(tab, empty && !welcoming);
+}
+
+// A project's tab with no session shows the list of accounts over its panes, once the sessions
+// are known and the tab is not about to open the one it showed last.
+function placeTabLaunch(tab, empty) {
+  const section = document.getElementById("quick");
+  const shown = empty && tab.project && !tab.restore && lastView.loaded && lastView.accounts.length > 0;
+  section.hidden = !shown;
+  if (!shown) {
+    tabLaunch.forget();
+    return;
+  }
+  document.getElementById("quick-title").textContent = `start a session · ${tab.project.name}`;
+  tabLaunch.show(tab.project, lastView.accounts);
+  // The keys go to the list rather than to the empty pane under it.
+  const active = document.activeElement;
+  if (!document.querySelector("dialog[open]") && (!active || active === document.body || active.closest("#panes"))) section.focus();
 }
 
 function startFromChecks() {
@@ -543,18 +565,26 @@ function accountOption(account) {
 // wrote down: "lystriq · 5h 34% · week 16%", and how old they are past 10 minutes.
 // And "· login 3d" when its login must be renewed within a week.
 async function showAccountUsage(select) {
+  const labels = await accountLabels([...select.options].map((option) => option.value));
+  for (const option of select.options) option.textContent = labels.get(option.value) ?? option.value;
+}
+
+// Each of `accounts` with its line, as above.
+async function accountLabels(accounts) {
   let usages = [];
   try {
-    usages = await invoke("account_usage", { accounts: lastView.accounts });
+    usages = await invoke("account_usage", { accounts });
   } catch (error) {
     setStatus(`usage of the accounts: ${error}`);
   }
   const now = Date.now();
-  for (const option of select.options) {
-    const usage = usages.find((candidate) => candidate.name === option.value);
-    const status = accountStatuses.find((candidate) => candidate.name === option.value);
-    option.textContent = accountLabel(option.value, usage, status, now);
+  const labels = new Map();
+  for (const name of accounts) {
+    const usage = usages.find((candidate) => candidate.name === name);
+    const status = accountStatuses.find((candidate) => candidate.name === name);
+    labels.set(name, accountLabel(name, usage, status, now));
   }
+  return labels;
 }
 
 function accountLabel(name, usage, status, now) {
@@ -608,6 +638,35 @@ function openNewSessionForm() {
   form.querySelector("button").disabled = false;
   document.getElementById("new-session").showModal();
   fields.account.focus();
+}
+
+// In a project: the list of its accounts (launcher.js). Elsewhere, or with no account: the form.
+function openNewSession() {
+  const project = panes.activeTab().project;
+  if (!project || lastView.accounts.length === 0) {
+    openNewSessionForm();
+    return;
+  }
+  const dialog = document.getElementById("quick-launch");
+  document.getElementById("quick-launch-title").textContent = `new session · ${project.name}`;
+  dialogLaunch.forget();
+  dialog.showModal();
+  dialog.focus();
+  dialogLaunch.show(project, lastView.accounts);
+}
+
+function openFormFromList() {
+  document.getElementById("quick-launch").close();
+  openNewSessionForm();
+}
+
+// A session of `account` in the project's folder, with no name; throws what new_session refused.
+async function startInProject(account, project) {
+  const created = await invoke("new_session", { account, directory: project.directory, name: "" });
+  document.getElementById("quick-launch").close();
+  tabLaunch.forget();
+  await openSession(created);
+  if (created.warnings.length > 0) setStatus(created.warnings.join(" · "));
 }
 
 // Claude Code refused a folder the account has not trusted yet: it asks, in its own window, and
@@ -895,7 +954,7 @@ const MAC =/Mac/.test(navigator.platform || navigator.userAgent);
 // `pane` keys act only from a pane: elsewhere, in a form, the field gets them. `id` names a
 // shortcut in `settings.json`, where the keys changed in the settings are kept.
 const SHORTCUTS = [
-  { group: "sessions", id: "new-session", keys: "ctrl+n", help: "start a new session", run: openNewSessionForm },
+  { group: "sessions", id: "new-session", keys: "ctrl+n", help: "start a new session", run: openNewSession },
   { group: "sessions", id: "find-session", keys: "ctrl+p", help: "find a session of this tab", run: openPicker },
   { group: "sessions", id: "open-chip", keys: "alt+#", help: "open chip n of the bar", run: (digit) => showNumber(digit) },
   { group: "sessions", id: "previous-chip", keys: "alt+h", help: "open the previous chip", run: () => stepSession(-1) },
@@ -1042,6 +1101,20 @@ function onKey(event) {
   traced(`key ${keyName(event)}`, shortcut.run);
 }
 
+// Before the panes: their first change already places the list of a project with no session.
+const dialogLaunch = new AccountList(document.getElementById("quick-launch"), {
+  labelsOf: accountLabels,
+  onStart: startInProject,
+  onForm: openFormFromList,
+  onTrust: askTrust,
+});
+const tabLaunch = new AccountList(document.getElementById("quick"), {
+  labelsOf: accountLabels,
+  onStart: startInProject,
+  onForm: openNewSessionForm,
+  onTrust: askTrust,
+});
+
 const panes = new Panes(document.getElementById("panes"), document.getElementById("tabs"), {
   keyFilter: (event) => shortcutFor(event) === null,
   onChange: () => {
@@ -1066,9 +1139,11 @@ const panes = new Panes(document.getElementById("panes"), document.getElementByI
 const artifactsWindow = new ArtifactsWindow(document.getElementById("artifacts"), { onError: setStatus });
 const changesWindow = new ChangesWindow(document.getElementById("changes"));
 const worktreesWindow = new WorktreesWindow(document.getElementById("worktrees"));
+const atlasWindow = new AtlasWindow(document.getElementById("atlas"), { onError: setStatus });
 const settingsWindow = new SettingsWindow(document.getElementById("settings"), {
   shortcuts: shortcutSettings,
   onAccounts: (accounts) => (accountStatuses = accounts),
+  onAtlas: () => atlasWindow.open(),
 });
 
 // The settings show which logins to renew: the lasting notice has said what it had to.
@@ -1094,7 +1169,10 @@ document.getElementById("helper-done").addEventListener("click", () => document.
 document.getElementById("picker-query").addEventListener("input", filterPicker);
 document.getElementById("picker-query").addEventListener("keydown", onPickerKey);
 for (const dialog of document.querySelectorAll("dialog")) {
-  dialog.addEventListener("close", () => panes.focus());
+  dialog.addEventListener("close", () => {
+    panes.focus();
+    placeWelcome();
+  });
 }
 
 // A key pressed in a dialog that closes it (Escape, Enter in its form) gives the keyboard back to

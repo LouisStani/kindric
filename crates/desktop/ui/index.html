@@ -24,8 +24,20 @@
       <ol id="welcome-list" class="checks"></ol>
       <p class="muted">F1 shows this list again</p>
     </section>
+    <section id="quick" tabindex="-1" hidden>
+      <h1 id="quick-title">start a session</h1>
+      <ol class="launch-list"></ol>
+      <p class="launch-message"></p>
+      <p class="muted">↑ ↓ choose · enter start</p>
+    </section>
   </div>
   <div id="tip" hidden></div>
+  <dialog id="quick-launch" tabindex="-1">
+    <h1 id="quick-launch-title">new session</h1>
+    <ol class="launch-list"></ol>
+    <p class="launch-message"></p>
+    <p class="muted">↑ ↓ choose · enter start · esc close</p>
+  </dialog>
   <dialog id="new-session">
     <form id="new-form">
       <h1>new session</h1>
@@ -105,6 +117,10 @@
         <button type="submit">save</button>
       </form>
       <p class="memory-message muted"></p>
+      <p class="memory-atlas" data-search="memory atlas map galaxy notes stale lessons">
+        <button type="button" class="memory-atlas-open">open the memory atlas</button>
+        <span class="muted">every project as a system: its status, decisions, knowledge and lessons</span>
+      </p>
     </section>
     <section class="settings-section" data-category="shortcuts">
       <h2>shortcuts</h2>
@@ -137,6 +153,12 @@
   <dialog id="messages">
     <h1 id="messages-title">messages</h1>
     <ol id="messages-list"></ol>
+  </dialog>
+  <dialog id="atlas" tabindex="-1">
+    <svg class="atlas-map" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1600 900" preserveAspectRatio="xMidYMid meet"></svg>
+    <input class="atlas-search" placeholder="search the memory" spellcheck="false" autocomplete="off" hidden>
+    <p class="atlas-caption"></p>
+    <article class="atlas-note" hidden></article>
   </dialog>
   <dialog id="help">
     <h1>get started</h1>
