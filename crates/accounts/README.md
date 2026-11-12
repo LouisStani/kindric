@@ -213,6 +213,7 @@ When `kindric` is installed, sessions can send each other messages through its M
 A message sent with `wake` asks the other session to act now. kindric-accounts adds a second Stop hook for it, run in the background (`asyncRewake`, timeout 24 h): after each turn, `kindric wait-message` waits for such a message and exits with code 2, which wakes the session with the notice. Only the latest wait of a session stays; an older one ends without a word. A session at rest for more than a day wakes no more until its next turn.
 
 - It is added only when the `kindric` in `PATH` knows `wait-message`, and never for an isolated account.
+- With it, `mcp__kindric__read_messages` is allowed in the same file, after your own rules: a session woken while you are not there can read the message. Sending one still asks.
 
 ## Away, in kindric
 
