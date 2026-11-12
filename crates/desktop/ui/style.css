@@ -1479,3 +1479,67 @@ input:focus, select:focus {
 .memory-atlas button {
   cursor: pointer;
 }
+
+/* Zoomed in, lines keep their width and what grows too big is left out. */
+.atlas-map line, .atlas-map rect, .atlas-map ellipse, .atlas-orbit, .atlas-halo, .atlas-stale-ring, .atlas-planet {
+  vector-effect: non-scaling-stroke;
+}
+.atlas-target { cursor: pointer; }
+.level-system .atlas-target, .level-planet .atlas-target { cursor: default; }
+.level-system .atlas-planet, .level-system .atlas-sun { cursor: pointer; }
+.level-planet .atlas-stars, .level-note .atlas-stars { display: none; }
+.level-planet .atlas-system text, .level-planet .atlas-core text, .level-note .atlas-system text, .level-note .atlas-core text { display: none; }
+.level-planet .atlas-detail, .level-note .atlas-detail { display: none; }
+.level-planet .atlas-asteroids, .level-note .atlas-asteroids { display: none; }
+.atlas-label { font-weight: 700; fill: var(--text); }
+.atlas-label-small { fill: var(--muted); }
+.atlas-warning-label { fill: var(--error); }
+.atlas-note-dot { cursor: pointer; }
+.atlas-note-dot.decisions { fill: var(--active); }
+.atlas-note-dot.knowledge { fill: var(--text); }
+.atlas-note-dot.lessons, .atlas-note-dot.status { fill: var(--waiting); }
+.atlas-note-dot.global, .atlas-note-dot.setup, .atlas-note-dot.perso, .atlas-note-dot.skills { fill: var(--muted); }
+.atlas-note-dot.lost { fill: var(--error); }
+.atlas-note-dot:hover { fill: var(--text-strong); }
+
+.atlas-caption {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 18px;
+  margin: 0;
+  text-align: center;
+  font-size: 12px;
+  color: var(--muted);
+  pointer-events: none;
+}
+
+.atlas-note {
+  position: absolute;
+  top: 6vh;
+  right: 4vw;
+  width: min(620px, 46vw);
+  max-height: 80vh;
+  overflow: auto;
+  padding: 16px 18px;
+  background: var(--raised);
+  border: var(--stroke) solid var(--line-strong);
+  border-radius: var(--radius-pane);
+}
+
+.atlas-note[hidden] { display: none; }
+.atlas-note h2 { margin: 0 0 4px; font-size: 14px; color: var(--waiting); }
+.atlas-note header p { margin: 0 0 12px; font-size: 11px; }
+.atlas-note pre {
+  margin: 0;
+  white-space: pre-wrap;
+  word-break: break-word;
+  font: inherit;
+  font-size: 12px;
+  line-height: 1.55;
+  color: var(--text);
+}
+.atlas-cursor { fill: none; stroke: var(--waiting); stroke-width: 1.5; vector-effect: non-scaling-stroke; }
+.level-system .atlas-again { display: none; }
+.level-system .atlas-warning { display: none; }
+.level-system .atlas-system:not(.focused) text, .level-system .atlas-core:not(.focused) text { display: none; }
