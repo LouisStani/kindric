@@ -6,7 +6,7 @@ import { imageType } from "./panes.js";
 
 const { invoke } = window.__TAURI__.core;
 
-const HINT = "enter open · m move · n new group · r rename the group · del delete · esc close";
+const HINT = "a add · enter open · m move · n new group · r rename the group · del delete · esc close";
 // A press that moves less than this is a click, not a drag.
 const DRAG_PIXELS = 5;
 
@@ -46,6 +46,9 @@ export class ArtifactsWindow {
     this.naming = null;
     this.thumbnails = new Map();
     this.request = 0;
+    // True while the system's file picker is open: a second press does not open another one.
+    this.adding = false;
+    dialog.querySelector(".artifacts-add").onclick = () => this.add();
     dialog.addEventListener("keydown", (event) => this.onKey(event));
     // Escape closes the window only from the list: a step over it goes back to the list first.
     dialog.addEventListener("cancel", (event) => {
@@ -118,7 +121,7 @@ export class ArtifactsWindow {
 
   renderList() {
     if (this.rows.length <= 1) {
-      this.body.replaceChildren(element("p", "muted", "nothing kept yet: sessions keep the files you ask for with keep_artifact"));
+      this.body.replaceChildren(element("p", "muted", "nothing kept yet: sessions keep the files you ask for with keep_artifact, or press a to add one"));
       return;
     }
     const list = element("ol", "artifacts-list");
@@ -237,6 +240,25 @@ export class ArtifactsWindow {
       this.onError(`${error}`);
     }
     await this.reload(keep);
+  }
+
+  // Files chosen in the system's picker are copied into the group of the selected row, or into
+  // unsorted; the first one is selected afterwards.
+  async add() {
+    if (this.adding || this.mode !== "list") return;
+    this.adding = true;
+    const group = this.current()?.group ?? null;
+    let added = { names: [], errors: [] };
+    try {
+      added = await invoke("add_artifacts", this.args({ group }));
+    } catch (error) {
+      added.errors = [`${error}`];
+    } finally {
+      this.adding = false;
+    }
+    if (added.errors.length > 0) this.onError(added.errors.join(" · "));
+    const first = added.names.length > 0 ? { type: "file", group, name: added.names[0] } : this.current();
+    await this.reload(first);
   }
 
   async openFile(file) {
@@ -371,6 +393,7 @@ export class ArtifactsWindow {
       this.selected = Math.min(Math.max(this.selected + step, 0), Math.max(this.rows.length - 1, 0));
       this.render();
     } else if (key === "Enter" && file) this.openFile(file);
+    else if (key === "a") this.add();
     else if (key === "m" && file) this.startMove();
     else if (key === "n") this.startNaming("new group", "", {});
     else if (key === "r") this.startRename();

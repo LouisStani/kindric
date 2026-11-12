@@ -12,6 +12,8 @@ portable-pty = "0.9"
 serde.workspace = true
 serde_json.workspace = true
 tauri = "2.12"
+# The system's file picker, to add artifacts by hand (decision 267).
+tauri-plugin-dialog = "2.8"
 
 # The signal's haze over every window: Wayland's layer shell, in pure Rust (no system library).
 [target.'cfg(target_os = "linux")'.dependencies]
