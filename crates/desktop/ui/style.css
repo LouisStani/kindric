@@ -918,6 +918,23 @@ input:focus, select:focus {
   width: min(760px, 90vw);
 }
 
+.artifacts-head {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.artifacts-head .artifacts-title {
+  flex: 1;
+  min-width: 0;
+}
+
+.artifacts-add {
+  font-weight: 700;
+  padding: 2px 10px;
+  cursor: pointer;
+}
+
 .artifacts-title {
   overflow: hidden;
   text-overflow: ellipsis;

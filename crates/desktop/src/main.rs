@@ -31,6 +31,7 @@ use serde::Serialize;
 use serde::de::DeserializeOwned;
 use tauri::ipc::{Channel, InvokeResponseBody, Response};
 use tauri::{AppHandle, Emitter, Manager, RunEvent, State};
+use tauri_plugin_dialog::DialogExt;
 
 use crate::claim::Claim;
 use crate::layout::{PaneId, SessionKey, Shown};
@@ -852,6 +853,34 @@ fn delete_artifact(project: Option<String>, group: Option<String>, name: String)
     artifacts::delete(&artifacts_root(project.as_deref())?, Kind::User, group.as_deref(), &name)
 }
 
+/// What the user added: the names the copies got, then one message per file left out.
+#[derive(Serialize, Default)]
+struct AddedArtifacts {
+    names: Vec<String>,
+    errors: Vec<String>,
+}
+
+/// Asks the system's file picker for files, then keeps a copy of each in `group` (None:
+/// unsorted). Nothing is written over. Closing the picker adds nothing.
+#[tauri::command(async)]
+fn add_artifacts(window: tauri::WebviewWindow, project: Option<String>, group: Option<String>) -> Result<AddedArtifacts, String> {
+    let root = artifacts_root(project.as_deref())?;
+    let Some(picked) = window.dialog().file().set_title("add artifacts").set_parent(&window).blocking_pick_files() else {
+        return Ok(AddedArtifacts::default());
+    };
+    let mut errors = Vec::new();
+    let sources: Vec<PathBuf> = picked
+        .into_iter()
+        .filter_map(|file| {
+            let shown = file.to_string();
+            file.into_path().map_err(|error| errors.push(format!("{shown}: not a file on this computer ({error})"))).ok()
+        })
+        .collect();
+    let kept = artifacts::keep_each(&root, Kind::User, group.as_deref(), &sources);
+    errors.extend(kept.errors);
+    Ok(AddedArtifacts { names: kept.names, errors })
+}
+
 /// The bytes of a kept image, for its thumbnail and its full view.
 #[tauri::command(async)]
 fn artifact_bytes(project: Option<String>, group: Option<String>, name: String) -> Result<Response, String> {
@@ -1254,6 +1283,7 @@ fn main() -> ExitCode {
             .map_err(|error| format!("cannot tell whether another kindric window shows a session: {error}")),
     };
     let built = tauri::Builder::default()
+        .plugin(tauri_plugin_dialog::init())
         .manage(shared)
         .invoke_handler(tauri::generate_handler![
             current_list,
@@ -1292,6 +1322,7 @@ fn main() -> ExitCode {
             resize_pane,
             image_bytes,
             artifacts_view,
+            add_artifacts,
             move_artifact,
             create_artifact_group,
             rename_artifact_group,

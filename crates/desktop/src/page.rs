@@ -25,6 +25,30 @@ fn every_vendored_script_is_loaded_and_has_its_license() {
     assert_eq!(scripts, ["addon-fit.js", "addon-unicode11.js", "addon-webgl.js", "xterm.js"]);
 }
 
+/// A command the page calls by name but Rust does not register fails only when it is used.
+/// Checks the names written as `invoke("name"`; a name passed through a variable is not seen.
+#[test]
+fn every_command_the_page_invokes_is_registered() {
+    let main = include_str!("main.rs");
+    let start = main.find("generate_handler![").unwrap();
+    let end = start + main[start..].find(']').unwrap();
+    let registered: Vec<&str> = main[start + "generate_handler![".len()..end].split(',').map(str::trim).filter(|name| !name.is_empty()).collect();
+    let mut invoked = 0;
+    for entry in fs::read_dir(ui()).unwrap() {
+        let path = entry.unwrap().path();
+        if path.extension().is_none_or(|extension| extension != "js") {
+            continue;
+        }
+        let text = fs::read_to_string(&path).unwrap();
+        for piece in text.split("invoke(\"").skip(1) {
+            let name = &piece[..piece.find('"').unwrap()];
+            invoked += 1;
+            assert!(registered.contains(&name), "{}: invokes {name}, which main.rs does not register", path.display());
+        }
+    }
+    assert!(invoked > 50, "only {invoked} calls found: the search no longer matches the page");
+}
+
 /// Claude Code counts an emoji two cells when it lines up a table; a terminal without the
 /// Unicode 11 table counts one, and the borders come out of line.
 #[test]

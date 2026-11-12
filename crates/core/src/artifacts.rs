@@ -146,6 +146,25 @@ pub fn keep(root: &Path, kind: Kind, group: Option<&str>, source: &Path) -> Resu
     Err(format!("{} already holds {MOST_COPIES} files named after {}", folder.display(), name.display()))
 }
 
+/// What `keep_each` did: the names the copies got, then one message per file left out.
+#[derive(Debug, Default, PartialEq, Eq)]
+pub struct KeptEach {
+    pub names: Vec<String>,
+    pub errors: Vec<String>,
+}
+
+/// Keeps every file of `sources` like `keep`; a file that fails leaves the others to be kept.
+pub fn keep_each(root: &Path, kind: Kind, group: Option<&str>, sources: &[PathBuf]) -> KeptEach {
+    let mut kept = KeptEach::default();
+    for source in sources {
+        match keep(root, kind, group, source) {
+            Ok(target) => kept.names.push(target.file_name().map_or_else(String::new, |name| name.to_string_lossy().into_owned())),
+            Err(error) => kept.errors.push(error),
+        }
+    }
+    kept
+}
+
 /// The artifacts of one kind, ungrouped first then by group, each by name: paths relative to
 /// `root/<kind>/`.
 pub fn list(root: &Path, kind: Kind) -> Result<Vec<PathBuf>, String> {
@@ -302,6 +321,27 @@ mod tests {
         let _ = fs::remove_dir_all(&root);
         fs::create_dir_all(&root).unwrap();
         root
+    }
+
+    #[test]
+    fn keep_each_keeps_the_others_when_one_file_fails() {
+        let root = scratch("each");
+        let sources = root.join("sources");
+        fs::create_dir_all(sources.join("folder")).unwrap();
+        fs::write(sources.join("a.txt"), "a").unwrap();
+        fs::write(sources.join("b.png"), "b").unwrap();
+        let picked = [sources.join("a.txt"), sources.join("folder"), sources.join("missing"), sources.join("b.png")];
+        let kept = keep_each(&root, Kind::User, Some("notes"), &picked);
+        assert_eq!(kept.names, ["a.txt", "b.png"]);
+        assert_eq!(kept.errors.len(), 2);
+        assert!(kept.errors[0].contains("is a folder"), "{:?}", kept.errors);
+        assert!(kept.errors[1].contains("missing"), "{:?}", kept.errors);
+        assert_eq!(fs::read_to_string(root.join("user").join("notes").join("a.txt")).unwrap(), "a");
+        fs::write(sources.join("a.txt"), "other").unwrap();
+        let again = keep_each(&root, Kind::User, Some("notes"), &[sources.join("a.txt")]);
+        assert_eq!(again.names, ["a-2.txt"], "a name taken by another file is never written over");
+        assert_eq!(fs::read_to_string(root.join("user").join("notes").join("a.txt")).unwrap(), "a");
+        fs::remove_dir_all(root).unwrap();
     }
 
     #[cfg(unix)]
