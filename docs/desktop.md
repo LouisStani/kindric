@@ -73,7 +73,7 @@ Clicking a chip opens the session in the active pane of its project's tab, movin
 
 ## Starting, naming and hiding sessions
 
-**Start.** `Ctrl+N` asks for an account, a directory and an optional short name. In a project tab, it offers the project's folder and the account of the last session started there. The short name field names the session in Claude Code itself.
+**Start.** In a project tab, `Ctrl+N` lists the accounts, the one of the last session started there first. `Enter` or a click starts a session at once in the project's folder. A project tab with no session shows the same list. Its last line, "other folder or name…", opens the full form. Elsewhere, `Ctrl+N` opens the form directly. It asks for an account, a directory and an optional short name. The short name names the session in Claude Code itself.
 
 **Directory fields** (`Ctrl+N`, `Ctrl+Shift+T`) first list the folders already in use, projects then sessions. Once you type, they list the folders that can follow (case ignored, hidden folders after a `.`). `Tab` completes, `Up` / `Down` choose, `Enter` takes the chosen one.
 
