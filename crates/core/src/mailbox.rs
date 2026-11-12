@@ -55,14 +55,14 @@ fn message_files(dir: &Path) -> io::Result<Vec<PathBuf>> {
     Ok(files)
 }
 
-/// Where kindric keeps its files, next to the claude-accounts data: `$XDG_DATA_HOME`
+/// Where kindric keeps its files, next to the kindric-accounts data: `$XDG_DATA_HOME`
 /// (else `~/.local/share`) on Unix, the user's AppData on Windows, then `kindric`.
 pub fn data_dir() -> io::Result<PathBuf> {
     data_dir_for(&Paths::from_env().map_err(io::Error::other)?)
 }
 
 fn data_dir_for(paths: &Paths) -> io::Result<PathBuf> {
-    paths.kindric_data_dir().ok_or_else(|| io::Error::other("claude-accounts data has no parent"))
+    paths.kindric_data_dir().ok_or_else(|| io::Error::other("kindric-accounts data has no parent"))
 }
 
 /// `mailbox` in the data directory.

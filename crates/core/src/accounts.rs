@@ -633,8 +633,8 @@ mod tests {
     fn the_implicit_default_lives_in_the_shared_configuration() {
         let paths = Paths::from_roots("/c".into(), "/d".into(), "/h".into());
         assert_eq!(dir_of(&paths, "default", true), PathBuf::from("/h/.claude"));
-        assert_eq!(dir_of(&paths, "default", false), PathBuf::from("/d/claude-accounts/default"));
-        assert_eq!(dir_of(&paths, "louis", true), PathBuf::from("/d/claude-accounts/louis"));
+        assert_eq!(dir_of(&paths, "default", false), PathBuf::from("/d/kindric-accounts/default"));
+        assert_eq!(dir_of(&paths, "louis", true), PathBuf::from("/d/kindric-accounts/louis"));
     }
 
     #[test]

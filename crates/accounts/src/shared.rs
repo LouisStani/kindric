@@ -80,7 +80,7 @@ mod platform {
     use std::collections::BTreeMap;
     use std::os::windows::fs::{FileTypeExt, symlink_dir, symlink_file};
 
-    const COPIES: &str = ".claude-accounts-copies.json";
+    const COPIES: &str = ".kindric-accounts-copies.json";
 
     fn copies(account_dir: &Path) -> BTreeMap<String, String> {
         fs::read_to_string(account_dir.join(COPIES))

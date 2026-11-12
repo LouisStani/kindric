@@ -121,7 +121,7 @@ Unlike the terminal interface, the number of a session changes with its state: `
 
 The accounts section lists the accounts of kindric-accounts: logged in or not, plan, running sessions, isolated. **add** creates an account and opens Claude Code's login in a window of the app. **log in** does the same for an account that is logged out. **remove** takes an account off the list after you confirm; its folder stays on disk.
 
-The memory section sets the size above which a session is warned about the memory it opens at startup: 30 KB by default. It is a warning, nothing is cut. The value is kept in `~/.config/claude-accounts/memory-warning`.
+The memory section sets the size above which a session is warned about the memory it opens at startup: 30 KB by default. It is a warning, nothing is cut. The value is kept in `~/.config/kindric-accounts/memory-warning`.
 
 The shortcuts section changes the key of an action: press **change**, then the new keys. A key needs Ctrl or Alt (F1 to F12 alone are fine), and one already taken is refused with the name of its action. **reset** gives the action its own key back. Changed keys are kept in `settings.json`.
 
