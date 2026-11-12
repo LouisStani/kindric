@@ -10,6 +10,7 @@ use crate::isolation::{self, IsolatedSettings};
 use crate::paths::Paths;
 use crate::registry;
 use crate::shared;
+use crate::theme;
 use crate::usage;
 
 /// Removed before starting Claude Code: a key or token exported in the shell must
@@ -98,21 +99,48 @@ pub struct Launch {
     pub warnings: Vec<String>,
 }
 
+/// Gives the session the Claude Code theme `theme`: a copy, with the theme, of the settings file it
+/// would get (see `theme`), in place of that file. What goes wrong leaves the session its usual
+/// settings and says why.
+fn apply_theme(
+    paths: &Paths,
+    name: &str,
+    theme: &str,
+    isolated: Option<&mut IsolatedSettings>,
+    settings: &mut Option<PathBuf>,
+    warnings: &mut Vec<String>,
+) {
+    let source = match (&isolated, &settings) {
+        (Some(isolated), _) => isolated.file.clone(),
+        (None, Some(file)) => file.clone(),
+        (None, None) => paths.shared_root.join("settings.json"),
+    };
+    match theme::write_themed_settings(paths, name, Some(&source), theme) {
+        Ok(file) => match isolated {
+            Some(isolated) => isolated.file = file,
+            None => *settings = Some(file),
+        },
+        Err(error) => warnings.push(format!("theme {theme} not given to the session: {error}")),
+    }
+}
+
 /// Prepares `claude` for `name`: links the shared configuration again (a shared
 /// directory may have appeared since `add`), cleans the environment, adds the args. With
 /// `conversation_dir`, the directory a conversation starts in, the memory of its zone is added;
-/// leave it out for a subcommand of Claude Code.
+/// leave it out for a subcommand of Claude Code. With `theme`, the session draws with Claude
+/// Code's theme `custom:<theme>`.
 pub fn prepare(
     paths: &Paths,
     name: &str,
     mcp_config: Option<&Path>,
     user_args: &[OsString],
     conversation_dir: Option<&Path>,
+    theme: Option<&str>,
 ) -> Result<Launch> {
     let dir = require_account(paths, name)?;
     let claude = require_claude()?;
     let mut warnings = shared::link_shared(&paths.shared_root, &dir)?;
-    let isolated = isolation::prepare_settings(paths, name)?;
+    let mut isolated = isolation::prepare_settings(paths, name)?;
     if let Some(settings) = &isolated {
         warnings.extend(settings.warnings.iter().cloned());
     }
@@ -120,7 +148,10 @@ pub fn prepare(
     let isolated_file = isolated.as_ref().map(|settings| settings.file.as_path());
     // The hook that tells a session of its unread messages; never for an isolated account (039).
     let unread = if isolated.is_none() { usage::unread_hook_command() } else { None };
-    let settings = usage::settings_file(paths, name, isolated_file, usage::wrapper_command().as_deref(), unread.as_deref(), &mut warnings);
+    let mut settings = usage::settings_file(paths, name, isolated_file, usage::wrapper_command().as_deref(), unread.as_deref(), &mut warnings);
+    if let Some(theme) = theme {
+        apply_theme(paths, name, theme, isolated.as_mut(), &mut settings, &mut warnings);
+    }
     let args = claude_args(paths, isolated.as_ref(), settings.as_deref(), mcp_config, conversation_dir.is_some());
     let memory = conversation_dir.map(|directory| injection::for_session(paths, name, directory)).unwrap_or_default();
     warnings.extend(memory.warnings);
@@ -215,6 +246,73 @@ mod tests {
         assert_eq!(find_claude_in(&path), None);
         fs::set_permissions(bin.join("claude"), fs::Permissions::from_mode(0o755)).unwrap();
         assert_eq!(find_claude_in(&path), Some(bin.join("claude")));
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    fn theme_of(file: &Path) -> serde_json::Value {
+        serde_json::from_str::<serde_json::Value>(&fs::read_to_string(file).unwrap()).unwrap()
+    }
+
+    #[test]
+    fn a_themed_session_gets_a_copy_of_the_file_it_would_get() {
+        let root = test_dir::fresh("theme-plain");
+        let paths = Paths::from_roots(root.join("c"), root.join("d"), root.join("home"));
+        fs::create_dir_all(&paths.shared_root).unwrap();
+        fs::write(paths.shared_root.join("settings.json"), r#"{"model": "opus"}"#).unwrap();
+        let mut warnings = Vec::new();
+        // No file of its own: the shared settings are copied.
+        let mut settings = None;
+        apply_theme(&paths, "work", "kindric", None, &mut settings, &mut warnings);
+        let file = settings.clone().unwrap();
+        assert_eq!(file, theme::themed_settings_file(&paths, "work", "kindric"));
+        assert_eq!(theme_of(&file), serde_json::json!({ "model": "opus", "theme": "custom:kindric" }));
+        // Its own file (status line, hooks): that one is copied, and stays as it was.
+        let own = paths.shared_settings_file("work");
+        fs::create_dir_all(own.parent().unwrap()).unwrap();
+        fs::write(&own, r#"{"statusLine": {"type": "command", "command": "k"}}"#).unwrap();
+        let mut settings = Some(own.clone());
+        apply_theme(&paths, "work", "kindric", None, &mut settings, &mut warnings);
+        assert_eq!(settings.as_deref(), Some(file.as_path()));
+        assert_eq!(theme_of(&file)["statusLine"]["command"], "k");
+        assert_eq!(theme_of(&own), serde_json::json!({ "statusLine": { "type": "command", "command": "k" } }));
+        assert!(warnings.is_empty(), "{warnings:?}");
+        let args = claude_args(&paths, None, settings.as_deref(), None, true);
+        assert_eq!(args, [OsString::from("--settings"), file.into_os_string()]);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn an_isolated_session_keeps_its_rules_with_the_theme() {
+        let root = test_dir::fresh("theme-isolated");
+        let paths = Paths::from_roots(root.join("c"), root.join("d"), root.join("home"));
+        let rules = paths.shared_settings_file("work");
+        fs::create_dir_all(rules.parent().unwrap()).unwrap();
+        fs::write(&rules, r#"{"permissions": {"deny": ["Read(/secret/**)"]}}"#).unwrap();
+        let mut isolated = IsolatedSettings { file: rules.clone(), global_rules: None, warnings: Vec::new() };
+        let mut settings = None;
+        let mut warnings = Vec::new();
+        apply_theme(&paths, "work", "kindric", Some(&mut isolated), &mut settings, &mut warnings);
+        assert_eq!(isolated.file, theme::themed_settings_file(&paths, "work", "kindric"));
+        let themed = theme_of(&isolated.file);
+        assert_eq!(themed["permissions"]["deny"][0], "Read(/secret/**)");
+        assert_eq!(themed["theme"], "custom:kindric");
+        assert_eq!(settings, None);
+        assert_eq!(claude_args(&paths, Some(&isolated), None, None, true)[1], isolated.file.clone().into_os_string());
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn a_theme_that_cannot_be_given_leaves_the_usual_settings() {
+        let root = test_dir::fresh("theme-failed");
+        let paths = Paths::from_roots(root.join("c"), root.join("d"), root.join("home"));
+        fs::create_dir_all(&paths.shared_root).unwrap();
+        fs::write(paths.shared_root.join("settings.json"), "not json").unwrap();
+        let mut settings = None;
+        let mut warnings = Vec::new();
+        apply_theme(&paths, "work", "kindric", None, &mut settings, &mut warnings);
+        assert_eq!(settings, None);
+        assert_eq!(warnings.len(), 1);
+        assert!(warnings[0].starts_with("theme kindric not given to the session: "), "{warnings:?}");
         fs::remove_dir_all(root).unwrap();
     }
 }

@@ -137,7 +137,7 @@ A `theme.json` next to the mailbox adds a **custom** theme: ember with the color
 
 Names are the color variables at the top of `crates/desktop/ui/style.css`, without `--`. Only `#rgb`, `#rrggbb` and `#rrggbbaa` values are taken. The file is read again each time the theme is chosen.
 
-Claude Code picks its own text colors for a dark background unless you set its light theme (`/theme`), so some output may look pale in paper.
+Claude Code draws for the background of the theme. kindric writes a Claude Code theme, `~/.claude/themes/kindric.json`, light or dark after the terminal color of its theme, in the variant you chose for Claude Code (daltonized, ANSI colors only). The sessions kindric starts use it (`custom:kindric`), and Claude Code reloads it when the theme changes, without a restart. Sessions started before this version, or outside kindric, keep your own Claude Code theme.
 
 ## Files kept by the app
 
