@@ -33,7 +33,7 @@ The tests never start Claude Code and never touch your accounts.
 
 The page in `crates/desktop/ui/` has no build step.
 
-- [xterm.js](https://xtermjs.org) 6.0.0 and its fit (0.11.0) and WebGL (0.19.0) addons are copied from npm into `ui/vendor/`, each with its MIT license.
+- [xterm.js](https://xtermjs.org) 6.0.0 and its fit (0.11.0), WebGL (0.19.0) and Unicode 11 (0.9.0) addons are copied from npm into `ui/vendor/`, each with its MIT license. Unicode 11 gives emojis two cells, as Claude Code counts them in its tables.
 - The font, [JetBrains Mono](https://www.jetbrains.com/lp/mono/) 2.304 (regular and bold, from the official release), sits next to them with its OFL license, so the app looks the same on every system.
 - Colors and font are CSS variables at the top of `style.css`. Themes only replace those variables.
 
