@@ -127,7 +127,8 @@ fn start_session(account: String, directory: &str, name: &str) -> Result<Created
     let request = Request { account, directory, name: name.trim().to_string() };
     // The state of the folder before the session, to tell later what the session changed.
     let recorded = changes::record(&request.directory);
-    let launched = launcher::launch(&request)?;
+    // Claude Code draws with the theme kindric keeps in step with its terminals (claude_theme).
+    let launched = launcher::launch(&request, Some(claude_theme::NAME))?;
     let mut warnings = launched.warnings;
     if let Err(error) = keep_recorded(recorded, &request.account, &launched.short_id) {
         warnings.push(error);

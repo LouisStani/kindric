@@ -44,14 +44,15 @@ pub fn base(variant: Variant, light: bool) -> &'static str {
     }
 }
 
-/// Red, green and blue of `css`, "#rrggbb", "#rgb" or "rgb(r, g, b)".
+/// Red, green and blue of `css`, "#rrggbb", "#rgb", "#rrggbbaa" (the forms of `theme.json`, the
+/// opacity left aside) or "rgb(r, g, b)".
 fn rgb(css: &str) -> Option<[u8; 3]> {
     let css = css.trim();
     if let Some(hex) = css.strip_prefix('#') {
         let digits: Vec<u8> = hex.chars().map(|digit| digit.to_digit(16).and_then(|digit| u8::try_from(digit).ok())).collect::<Option<_>>()?;
         return match digits[..] {
             [r, g, b] => Some([r * 17, g * 17, b * 17]),
-            [r1, r2, g1, g2, b1, b2] => Some([r1 * 16 + r2, g1 * 16 + g2, b1 * 16 + b2]),
+            [r1, r2, g1, g2, b1, b2] | [r1, r2, g1, g2, b1, b2, _, _] => Some([r1 * 16 + r2, g1 * 16 + g2, b1 * 16 + b2]),
             _ => None,
         };
     }
@@ -178,6 +179,8 @@ mod tests {
         assert_eq!(is_light("#FFF"), Some(true));
         assert_eq!(is_light("rgb(251, 246, 238)"), Some(true));
         assert_eq!(is_light(" #1f120a "), Some(false));
+        assert_eq!(is_light("#fbf6ee00"), Some(true), "opacity left aside");
+        assert_eq!(is_light("#1f120aff"), Some(false));
         // Just under and over one half: 0.2126 + 0.7152 + 0.0722 = 1.
         assert_eq!(is_light("#7f7f7f"), Some(false));
         assert_eq!(is_light("#818181"), Some(true));

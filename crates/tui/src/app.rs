@@ -186,7 +186,7 @@ impl App {
                 self.status = Some(format!("starting a session on {}…", request.account));
                 let events = self.events.clone();
                 thread::spawn(move || {
-                    let result = launcher::launch(&request).map(|launched| (request.account.clone(), launched));
+                    let result = launcher::launch(&request, None).map(|launched| (request.account.clone(), launched));
                     // The receiver only disappears when the app is shutting down.
                     let _ = events.send(AppEvent::Created(result));
                 });

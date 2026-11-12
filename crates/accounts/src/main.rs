@@ -215,7 +215,7 @@ fn cmd_run(paths: &Paths, name: &str, claude_args: &[OsString]) -> Result<Exit> 
     let shared_mcp = mcp::prepare(paths, name)?;
     print_warnings(&shared_mcp.warnings);
     let conversation_dir = conversation_dir(claude_args);
-    let prepared = launch::prepare(paths, name, shared_mcp.file.as_deref(), claude_args, conversation_dir.as_deref())?;
+    let prepared = launch::prepare(paths, name, shared_mcp.file.as_deref(), claude_args, conversation_dir.as_deref(), None)?;
     print_warnings(&prepared.warnings);
     #[cfg(unix)]
     return Err(launch::exec(prepared.command));
