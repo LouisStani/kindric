@@ -12,5 +12,6 @@ pub mod mcp;
 pub mod progress;
 pub mod refresher;
 pub mod search;
+pub mod wake;
 pub mod watcher;
 pub mod worktrees;

@@ -53,6 +53,7 @@ mod tests {
             from_account: "louis".into(),
             sent_at: 10,
             text: format!("{from} to {to}"),
+            wake: false,
         };
         Entry { message, to_session: to.into(), unread }
     }
