@@ -24,8 +24,20 @@
       <ol id="welcome-list" class="checks"></ol>
       <p class="muted">F1 shows this list again</p>
     </section>
+    <section id="quick" tabindex="-1" hidden>
+      <h1 id="quick-title">start a session</h1>
+      <ol class="launch-list"></ol>
+      <p class="launch-message"></p>
+      <p class="muted">↑ ↓ choose · enter start</p>
+    </section>
   </div>
   <div id="tip" hidden></div>
+  <dialog id="quick-launch" tabindex="-1">
+    <h1 id="quick-launch-title">new session</h1>
+    <ol class="launch-list"></ol>
+    <p class="launch-message"></p>
+    <p class="muted">↑ ↓ choose · enter start · esc close</p>
+  </dialog>
   <dialog id="new-session">
     <form id="new-form">
       <h1>new session</h1>
