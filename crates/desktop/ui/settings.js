@@ -38,9 +38,14 @@ function plural(count, word) {
 
 export class SettingsWindow {
   // `onAccounts(accounts)`: the accounts each time they are read, for the rest of the app.
-  constructor(dialog, { shortcuts, onAccounts }) {
+  // `onAtlas()`: opens the memory atlas, once the settings are closed.
+  constructor(dialog, { shortcuts, onAccounts, onAtlas }) {
     this.dialog = dialog;
     this.onAccounts = onAccounts;
+    dialog.querySelector(".memory-atlas-open").addEventListener("click", () => {
+      dialog.close();
+      onAtlas();
+    });
     this.search = dialog.querySelector(".settings-search");
     this.content = dialog.querySelector(".settings-content");
     this.sections = [...dialog.querySelectorAll(".settings-section")];

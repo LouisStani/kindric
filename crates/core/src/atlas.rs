@@ -69,6 +69,11 @@ pub struct Atlas {
     pub warnings: Vec<String>,
 }
 
+/// The memory's folder: `~/.kindric/memory`, or the one `KINDRIC_MEMORY_DIR` names.
+pub fn default_root() -> Result<PathBuf, String> {
+    kindric_accounts::memory::Memory::default_root().map_err(|error| format!("cannot find the memory: {error}"))
+}
+
 /// Reads the whole memory under `root`. A missing root gives an empty atlas.
 pub fn read(root: &Path) -> Atlas {
     let mut warnings = Vec::new();
