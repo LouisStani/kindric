@@ -1475,7 +1475,9 @@ input:focus, select:focus {
   display: none;
 }
 
-/* The memory atlas: a star chart in the theme's colors. */
+/* The memory atlas: the whole memory as a cluster of stars, every file a planet. Its colors are
+   its own (decision 280); the background and the panels follow the theme. Sizes in the map use
+   --inv, map units per screen pixel, so names keep their size whatever the zoom. */
 #atlas {
   width: 100vw;
   height: 100vh;
@@ -1487,43 +1489,17 @@ input:focus, select:focus {
   border-radius: 0;
   background: var(--background);
   outline: none;
+  overflow: hidden;
 }
 
 .atlas-map {
+  --inv: 1;
   display: block;
   width: 100%;
   height: 100%;
   font-family: var(--font);
+  touch-action: none;
 }
-
-.atlas-frame { fill: none; stroke: var(--line-strong); stroke-width: 1.2; }
-.atlas-frame.thin { stroke: var(--line); stroke-width: 0.6; }
-.atlas-tick { stroke: var(--faint); stroke-width: 0.6; }
-.atlas-grid { fill: none; stroke: var(--line); stroke-width: 0.5; stroke-dasharray: 1 5; }
-.atlas-thread { stroke: var(--line-strong); stroke-width: 0.6; stroke-dasharray: 2 5; }
-.atlas-stars circle { fill: var(--muted); }
-.atlas-scale { font-size: 8px; fill: var(--faint); }
-.atlas-title { font-size: 18px; font-weight: 700; fill: var(--waiting); }
-.atlas-name { font-size: 11px; font-weight: 700; letter-spacing: 0.18em; fill: var(--text); }
-.atlas-small { font-size: 8.5px; fill: var(--muted); }
-.atlas-hint { font-size: 10px; fill: var(--faint); }
-.atlas-warning { font-size: 8.5px; fill: var(--error); }
-.atlas-orbit { fill: none; stroke: var(--line-strong); stroke-width: 0.5; }
-.atlas-halo { fill: none; stroke: var(--line-strong); stroke-width: 0.5; stroke-dasharray: 1 3; }
-.atlas-glow { fill: var(--waiting); opacity: 0.12; }
-.atlas-sun { fill: var(--waiting); }
-.atlas-sun.pale, .atlas-star.stale .atlas-sun { fill: var(--faint); }
-.atlas-star.stale .atlas-glow { opacity: 0.04; }
-.atlas-stale-ring { fill: none; stroke: var(--error); stroke-width: 0.6; stroke-dasharray: 2 2; }
-.atlas-planet { stroke: var(--background); stroke-width: 0.8; }
-.atlas-planet.decisions { fill: var(--active); }
-.atlas-planet.knowledge { fill: var(--text); }
-.atlas-planet.lessons { fill: var(--faint); }
-.atlas-planet.core { fill: var(--muted); }
-.atlas-planet.repeated { fill: var(--error); }
-.atlas-planet.empty { fill: none; stroke: var(--faint); stroke-dasharray: 1 1.5; }
-.atlas-ring { fill: none; stroke: var(--active); stroke-width: 0.6; opacity: 0.7; }
-.atlas-asteroids polygon, .atlas-asteroid-key { fill: var(--muted); opacity: 0.8; }
 
 .memory-atlas {
   display: flex;
@@ -1532,39 +1508,56 @@ input:focus, select:focus {
   flex-wrap: wrap;
 }
 
-.memory-atlas button {
-  cursor: pointer;
-}
+.memory-atlas button { cursor: pointer; }
 
-/* Zoomed in, lines keep their width and what grows too big is left out. */
-.atlas-map line, .atlas-map rect, .atlas-map ellipse, .atlas-orbit, .atlas-halo, .atlas-stale-ring, .atlas-planet {
-  vector-effect: non-scaling-stroke;
+.atlas-hint { font-size: 12px; fill: var(--faint); }
+.atlas-hit { fill: transparent; cursor: pointer; }
+.atlas-orbit { fill: none; stroke: hsl(220 40% 60% / 0.18); stroke-width: 0.6; vector-effect: non-scaling-stroke; }
+.atlas-stale-ring { fill: none; stroke: #ff5a4f; stroke-width: 1.4; stroke-dasharray: 3 3; vector-effect: non-scaling-stroke; }
+.atlas-rock { fill: hsl(0 0% 58%); }
+.atlas-cursor { fill: none; stroke: #fff6c8; stroke-width: 2; vector-effect: non-scaling-stroke; }
+
+.atlas-labels text { pointer-events: none; paint-order: stroke; stroke: var(--background); stroke-width: calc(3px * var(--inv)); dominant-baseline: hanging; }
+.atlas-name { font-size: calc(13px * var(--inv)); font-weight: 700; letter-spacing: 0.16em; fill: var(--text-strong); }
+.atlas-name-under { font-size: calc(10px * var(--inv)); transform: translateY(calc(17px * var(--inv))); }
+.atlas-name-under2 { font-size: calc(10px * var(--inv)); transform: translateY(calc(30px * var(--inv))); }
+.atlas-warning { fill: #ff7a6b; }
+.atlas-part { display: none; font-size: calc(10px * var(--inv)); fill: var(--muted); }
+.atlas-mid .atlas-part { display: inline; }
+.atlas-found { font-size: calc(12px * var(--inv)); font-weight: 700; fill: #ffe066; dominant-baseline: auto; }
+.atlas-part-found { display: none; }
+.atlas-mid .atlas-part-found { display: inline; }
+
+.searching .atlas-p:not(.found) { opacity: 0.12; }
+.searching .atlas-p.found { stroke: #fff6c8; stroke-width: 1.5; vector-effect: non-scaling-stroke; }
+
+.atlas-cartouche, .atlas-legend {
+  position: absolute;
+  margin: 0;
+  padding: 10px 12px;
+  border-radius: var(--radius);
+  background: color-mix(in srgb, var(--background) 78%, transparent);
+  pointer-events: none;
+  font-size: 11px;
+  color: var(--muted);
 }
-.atlas-target { cursor: pointer; }
-.level-system .atlas-target, .level-planet .atlas-target { cursor: default; }
-.level-system .atlas-planet, .level-system .atlas-sun { cursor: pointer; }
-.level-planet .atlas-stars, .level-note .atlas-stars { display: none; }
-.level-planet .atlas-system text, .level-planet .atlas-core text, .level-note .atlas-system text, .level-note .atlas-core text { display: none; }
-.level-planet .atlas-detail, .level-note .atlas-detail { display: none; }
-.level-planet .atlas-asteroids, .level-note .atlas-asteroids { display: none; }
-.atlas-label { font-weight: 700; fill: var(--text); }
-.atlas-label-small { fill: var(--muted); }
-.atlas-warning-label { fill: var(--error); }
-.atlas-note-dot { cursor: pointer; }
-.atlas-note-dot.decisions { fill: var(--active); }
-.atlas-note-dot.knowledge { fill: var(--text); }
-.atlas-note-dot.lessons, .atlas-note-dot.status { fill: var(--waiting); }
-.atlas-note-dot.global, .atlas-note-dot.setup, .atlas-note-dot.perso, .atlas-note-dot.skills { fill: var(--muted); }
-.atlas-note-dot.lost { fill: var(--error); }
-.atlas-note-dot:hover { fill: var(--text-strong); }
+.atlas-cartouche { top: 16px; left: 18px; }
+.atlas-cartouche strong { display: block; font-size: 17px; color: var(--waiting); margin-bottom: 2px; }
+.atlas-legend { right: 18px; bottom: 16px; display: grid; gap: 3px; }
+.atlas-legend span::before { content: "● "; }
+.atlas-legend .sun::before { color: #ffd166; }
+.atlas-legend .pale::before { color: #ff5a4f; }
+.atlas-legend .planet::before { color: #6bd3ff; }
+.atlas-legend .again::before { color: #ff3b30; }
+.atlas-legend .rock::before { content: "◆ "; color: #949494; }
 
 .atlas-caption {
   position: absolute;
-  left: 0;
-  right: 0;
+  left: 18px;
+  max-width: calc(100% - 600px);
   bottom: 18px;
   margin: 0;
-  text-align: center;
+  text-align: left;
   font-size: 12px;
   color: var(--muted);
   pointer-events: none;
@@ -1582,7 +1575,6 @@ input:focus, select:focus {
   border: var(--stroke) solid var(--line-strong);
   border-radius: var(--radius-pane);
 }
-
 .atlas-note[hidden] { display: none; }
 .atlas-note h2 { margin: 0 0 4px; font-size: 14px; color: var(--waiting); }
 .atlas-note header p { margin: 0 0 12px; font-size: 11px; }
@@ -1595,12 +1587,7 @@ input:focus, select:focus {
   line-height: 1.55;
   color: var(--text);
 }
-.atlas-cursor { fill: none; stroke: var(--waiting); stroke-width: 1.5; vector-effect: non-scaling-stroke; }
-.level-system .atlas-again { display: none; }
-.level-system .atlas-warning { display: none; }
-.level-system .atlas-system:not(.focused) text, .level-system .atlas-core:not(.focused) text { display: none; }
 
-/* The atlas's search: what holds every word lights up, the rest dims. */
 .atlas-search {
   position: absolute;
   top: 3vh;
@@ -1610,9 +1597,4 @@ input:focus, select:focus {
   background: var(--raised);
 }
 .atlas-search[hidden] { display: none; }
-.searching .atlas-planet:not(.found), .searching .atlas-sun:not(.found) { opacity: 0.18; }
-.searching .atlas-planet.found, .searching .atlas-sun.found { stroke: var(--waiting); stroke-width: 2; }
-.searching .atlas-note-dot:not(.found) { opacity: 0.15; }
-.searching .atlas-note-dot.found { fill: var(--waiting); }
-.atlas-found-count { fill: var(--waiting); font-weight: 700; }
-.searching .atlas-legend circle { opacity: 1; stroke: none; }
+.atlas-near .atlas-dust { display: none; }
