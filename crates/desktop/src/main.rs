@@ -24,7 +24,7 @@ use kindric_core::launcher::{self, Request, resolve_directory};
 use kindric_core::mailbox::Mailbox;
 use kindric_core::accounts::SessionInfo;
 use kindric_core::artifacts::{self, Kind};
-use kindric_core::{accounts, changes, checks, images, mailbox, refresher, worktrees};
+use kindric_core::{accounts, changes, checks, claude_theme, images, mailbox, refresher, worktrees};
 use serde::Serialize;
 use serde::de::DeserializeOwned;
 use tauri::ipc::{Channel, InvokeResponseBody, Response};
@@ -678,6 +678,15 @@ fn set_theme(shared: State<'_, Shared>, name: String) -> Result<(), String> {
     Ok(())
 }
 
+/// The terminal of the theme shown is on `background`: Claude Code's theme `kindric` follows, so
+/// the sessions that use it draw for that background (see `claude_theme`).
+#[tauri::command]
+fn follow_claude_theme(shared: State<'_, Shared>, background: String) -> Result<(), String> {
+    let _span = shared.trace.span("follow_claude_theme");
+    let paths = accounts::paths().map_err(|error| format!("Claude Code's theme not changed: {error}"))?;
+    claude_theme::follow(&paths.shared_root, &background).map(|_| ())
+}
+
 /// A shortcut changed in the settings, saved before it counts; None gives it its own keys back.
 #[tauri::command]
 fn set_key(shared: State<'_, Shared>, id: String, keys: Option<String>) -> Result<(), String> {
@@ -1213,6 +1222,7 @@ fn main() -> ExitCode {
             drop_restore,
             settings,
             set_theme,
+            follow_claude_theme,
             custom_theme,
             trace_enabled,
             trace,
