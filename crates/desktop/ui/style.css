@@ -398,7 +398,7 @@ ol, ul {
 
 /* Over the panes rather than instead of them: a terminal opened while hidden would measure
    its cells wrong. */
-#welcome {
+#welcome, #quick {
   position: absolute;
   inset: 0;
   overflow: auto;
@@ -410,12 +410,51 @@ ol, ul {
   background: var(--background);
 }
 
-#welcome[hidden] {
+#quick {
+  grid-template-columns: min(480px, 100%);
+  outline: none;
+}
+
+#welcome[hidden], #quick[hidden] {
   display: none;
 }
 
-#welcome > p {
+#welcome > p, #quick > p {
   margin: 20px 0 0;
+}
+
+.launch-list {
+  display: grid;
+  gap: 2px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  user-select: none;
+}
+
+.launch-list li {
+  padding: 6px 8px;
+  border: var(--stroke) solid transparent;
+  border-radius: var(--radius);
+  cursor: pointer;
+}
+
+.launch-list .launch-form {
+  margin-top: 6px;
+}
+
+.launch-message:empty {
+  display: none;
+}
+
+.launch-message button {
+  margin-left: 8px;
+  padding: 2px 8px;
+  cursor: pointer;
+}
+
+#quick-launch > p {
+  margin: 12px 0 0;
 }
 
 .checks {
