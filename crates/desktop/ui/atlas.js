@@ -1,34 +1,33 @@
-// The memory atlas (Settings › memory, decisions 270-278): the memory drawn as a star chart. Each
-// project is a system whose sun is its status and whose planets are its decisions, knowledge and
-// lessons; what belongs to no project is the core. A pale sun is a status older than the last
-// decision, a red planet holds a lesson given more than once, an asteroid is a note the zone's
-// INDEX.md does not name. A click zooms: a system, then a planet whose notes come out around it,
-// then a note, shown to read. Escape or a click on the sky goes back one level. Rust reads the
-// files (atlas.rs); this module only draws.
+// The memory atlas (Settings › memory, decisions 270-281): the whole memory as a cluster of stars,
+// every file a planet. A small project is one system around its sun, its status; a big one is a
+// galaxy of systems: its knowledge, its lessons, its decisions in runs (atlas.rs). The core holds
+// what belongs to no project. A pale sun ringed in red is a status older than the last decision,
+// a red planet holds a lesson given more than once, a grey rock is a note INDEX.md does not name.
+// A pinch or ctrl+wheel zooms, two fingers move, a click dives in, Escape comes back, "/" searches.
+// Rust reads the files; this module only draws.
 
 const { invoke } = window.__TAURI__.core;
 
 const SVG = "http://www.w3.org/2000/svg";
-const WIDTH = 1600;
-const HEIGHT = 900;
-const CENTER = { x: 800, y: 470 };
-// The ellipse the systems sit on, around the core.
-const ORBIT = { x: 600, y: 300 };
-// Where each planet sits around its sun, and how far.
-const PLANETS = {
-  decisions: { angle: -35, distance: 30 },
-  knowledge: { angle: 110, distance: 22 },
-  lessons: { angle: 215, distance: 40 },
-};
-// Width of the view on a planet, in the chart's units; its notes fill most of its height.
-const PLANET_VIEW = 120;
-const ZOOM_MS = 450;
-// Typing pauses this long before the memory is searched.
+const TAU = Math.PI * 2;
+const CENTER = { x: 800, y: 450 };
+// The ellipse the projects sit on, around the core.
+const RING = { x: 640, y: 360 };
+const ZOOM_MS = 500;
 const SEARCH_MS = 200;
+// Planets this far apart along an orbit, orbits this far apart, in the map's units.
+const PLANET_GAP = 4.6;
+const ORBIT_GAP = 4.4;
+// A galaxy's runs of decisions go out along two arms from its sun.
+const ARM_START = 30;
+const ARM_STEP = 7;
+const ARM_TURN = 0.95;
+// Seconds for the innermost orbit to go round once; outer ones are slower (Kepler).
+const INNER_PERIOD = 24;
 const HINTS = {
-  galaxy: "click a system · esc close",
-  system: "click a planet, or the sun for the status · esc back",
-  planet: "click a note to read it · esc back",
+  root: "click a project · pinch or ctrl+wheel zoom · two fingers move · / search · esc close",
+  zone: "click a system or a planet · esc back · / search",
+  part: "click a planet to read it · esc back · / search",
   note: "esc back",
 };
 
@@ -46,12 +45,7 @@ function html(tag, className, text) {
   return element;
 }
 
-function titled(element, text) {
-  element.append(node("title", {}, text));
-  return element;
-}
-
-// The same sky at every opening: a small seeded generator.
+// The same sky at every opening.
 function seeded(seed) {
   let state = seed;
   return () => {
@@ -62,21 +56,8 @@ function seeded(seed) {
   };
 }
 
-function polar(center, radiusX, radiusY, degrees) {
-  const radians = (degrees * Math.PI) / 180;
-  return { x: center.x + radiusX * Math.cos(radians), y: center.y + radiusY * Math.sin(radians) };
-}
-
-function planetOf(system, name) {
-  return system.planets.find((planet) => planet.name === name) ?? { name, notes: [], repeated: 0 };
-}
-
-function notesOf(system) {
-  return system.planets.reduce((sum, planet) => sum + planet.notes.length, (system.sun?.notes.length ?? 0) + system.others.length);
-}
-
-function lostOf(system) {
-  return [...system.planets.flatMap((planet) => planet.notes), ...(system.sun?.notes ?? []), ...system.others].filter((note) => note.lost);
+function around(center, radius, angle) {
+  return { x: center.x + radius * Math.cos(angle), y: center.y + radius * Math.sin(angle) };
 }
 
 // `2026-11-06` → `06/11`.
@@ -84,14 +65,32 @@ function day(date) {
   return date ? `${date.slice(8, 10)}/${date.slice(5, 7)}` : "none";
 }
 
-// A view of `width` centered on `point`, with the chart's proportions.
-function viewAround(point, width) {
-  const height = (width * HEIGHT) / WIDTH;
-  return { x: point.x - width / 2, y: point.y - height / 2, width, height };
+function planetRadius(bytes) {
+  return Math.min(3.2, 0.75 + Math.sqrt(bytes) / 45);
 }
 
 function ease(t) {
   return t < 0.5 ? 4 * t * t * t : 1 - (-2 * t + 2) ** 3 / 2;
+}
+
+// Notes on orbits around a star: each orbit holds as many as fit, the first notes closest.
+function orbits(notes, from) {
+  const rings = [];
+  let radius = from;
+  for (let index = 0; index < notes.length; ) {
+    const room = Math.max(4, Math.floor((TAU * radius) / PLANET_GAP));
+    rings.push({ radius, notes: notes.slice(index, index + room) });
+    index += room;
+    radius += ORBIT_GAP;
+  }
+  return rings;
+}
+
+// A star and its notes: the size it takes, and its orbits.
+function systemOf(notes, starRadius) {
+  const rings = orbits(notes, starRadius + 4);
+  const reach = rings.length === 0 ? starRadius + 3 : rings[rings.length - 1].radius + 3;
+  return { rings, reach };
 }
 
 export class AtlasWindow {
@@ -100,42 +99,49 @@ export class AtlasWindow {
     this.svg = dialog.querySelector(".atlas-map");
     this.caption = dialog.querySelector(".atlas-caption");
     this.reader = dialog.querySelector(".atlas-note");
+    this.title = dialog.querySelector(".atlas-cartouche-count");
+    this.search = dialog.querySelector(".atlas-search");
     this.onError = onError;
-    this.atlas = null;
-    // "galaxy", "system", "planet" or "note"; what is zoomed on.
-    this.level = "galaxy";
-    this.focus = { system: null, planet: null };
-    this.view = viewAround({ x: WIDTH / 2, y: HEIGHT / 2 }, WIDTH);
+    this.layout = null;
+    this.focus = { zone: null, part: null };
+    this.reading = false;
+    this.found = null;
+    this.searchTimer = null;
+    this.searchRequest = 0;
     this.frame = 0;
-    // Escape goes back one level; from the whole chart, it closes.
-    dialog.addEventListener("cancel", (event) => {
-      if (this.level === "galaxy") return;
-      event.preventDefault();
-      this.back();
-    });
-    this.svg.addEventListener("click", (event) => {
-      if (!event.target.closest(".atlas-target")) this.back();
-    });
-    // The keyboard does what the mouse does: arrows choose, Enter zooms or opens.
+    this.spinning = 0;
     this.selected = -1;
-    this.noteTargets = [];
+    this.still = matchMedia("(prefers-reduced-motion: reduce)").matches;
+    dialog.addEventListener("cancel", (event) => {
+      if (!this.atHome()) event.preventDefault();
+    });
+    dialog.addEventListener("close", () => cancelAnimationFrame(this.spinning));
     dialog.addEventListener("keydown", (event) => {
-      if (this.onKey(event.key)) {
+      if (this.onKey(event)) {
         event.preventDefault();
         event.stopPropagation();
       }
     });
-    // "/" searches: the planets that hold every word light up, with how many notes.
-    this.search = dialog.querySelector(".atlas-search");
-    this.found = null;
-    this.searchTimer = null;
-    this.searchRequest = 0;
+    this.svg.addEventListener("click", (event) => {
+      if (!event.target.closest(".atlas-hit")) this.back();
+    });
+    this.svg.addEventListener("wheel", (event) => this.onWheel(event), { passive: false });
+    // WebKit's own pinch events, where the system gives them.
+    let lastScale = 1;
+    this.svg.addEventListener("gesturestart", (event) => {
+      event.preventDefault();
+      lastScale = 1;
+    });
+    this.svg.addEventListener("gesturechange", (event) => {
+      event.preventDefault();
+      this.zoomAt(this.pointOf(event), event.scale / lastScale);
+      lastScale = event.scale;
+    });
     this.search.addEventListener("input", () => {
       clearTimeout(this.searchTimer);
       this.searchTimer = setTimeout(() => this.runSearch(), SEARCH_MS);
     });
     this.search.addEventListener("keydown", (event) => {
-      // The map's keys stay out of the field.
       event.stopPropagation();
       if (event.key === "Escape") {
         event.preventDefault();
@@ -146,6 +152,529 @@ export class AtlasWindow {
       }
     });
   }
+
+  async open() {
+    this.focus = { zone: null, part: null };
+    this.reading = false;
+    this.reader.hidden = true;
+    this.search.value = "";
+    this.search.hidden = true;
+    this.found = null;
+    this.layout = null;
+    this.svg.replaceChildren(node("text", { x: CENTER.x, y: CENTER.y, class: "atlas-hint", "text-anchor": "middle" }, "reading the memory…"));
+    this.setView({ x: 0, y: 0, width: 1600, height: 900 });
+    this.dialog.showModal();
+    this.dialog.focus();
+    let atlas;
+    try {
+      atlas = await invoke("memory_atlas");
+    } catch (error) {
+      this.dialog.close();
+      this.onError(`${error}`);
+      return;
+    }
+    this.layout = this.place(atlas);
+    this.draw(atlas);
+    this.setView(this.home());
+    this.say();
+    if (!this.still) this.spin();
+  }
+
+  // ----- Where everything is -----
+
+  place(atlas) {
+    const zones = atlas.systems.map((system, index) => this.placeZone(system, index));
+    // Each project gets a share of the ellipse in proportion to its size.
+    const total = zones.reduce((sum, zone) => sum + zone.reach * 2 + 40, 0);
+    let along = 0;
+    for (const zone of zones) {
+      const share = zone.reach * 2 + 40;
+      const angle = ((along + share / 2) / total) * TAU - Math.PI / 2;
+      along += share;
+      zone.center = { x: CENTER.x + RING.x * Math.cos(angle), y: CENTER.y + RING.y * Math.sin(angle) };
+    }
+    const coreNotes = atlas.center.parts.flatMap((part) => part.notes.map((note) => ({ ...note, kind: part.kind })));
+    const core = { name: "core", hue: 45, center: CENTER, galaxy: false, sun: null, notes: coreNotes, parts: [], ...systemOf(coreNotes, 5) };
+    core.system = core;
+    return { zones, core, all: [...zones, core] };
+  }
+
+  placeZone(system, index) {
+    // The golden angle: two projects side by side never get close colors.
+    const hue = (index * 137.508 + 10) % 360;
+    const zone = { name: system.name, hue, sun: system.sun, galaxy: system.galaxy, parts: [], notes: [] };
+    if (!system.galaxy) {
+      zone.notes = system.parts.flatMap((part) => part.notes.map((note) => ({ ...note, kind: part.kind, repeated: part.repeated })));
+      Object.assign(zone, systemOf(zone.notes, 5));
+      zone.system = zone;
+      return zone;
+    }
+    // A galaxy: its parts on two arms, the first ones closest to the sun.
+    let reach = 0;
+    zone.parts = system.parts.map((part, order) => {
+      const notes = part.notes.map((note) => ({ ...note, kind: part.kind, repeated: part.repeated }));
+      const placed = { label: part.label, kind: part.kind, repeated: part.repeated, notes, zone, ...systemOf(notes, 2.6) };
+      placed.system = placed;
+      const distance = ARM_START + order * ARM_STEP;
+      placed.offset = around({ x: 0, y: 0 }, distance, order * ARM_TURN + (order % 2) * Math.PI);
+      reach = Math.max(reach, distance + placed.reach);
+      return placed;
+    });
+    zone.reach = reach + 6;
+    return zone;
+  }
+
+  // ----- Drawing -----
+
+  draw(atlas) {
+    const defs = node("defs");
+    this.gradients = new Map();
+    this.defs = defs;
+    const sky = node("g", { class: "atlas-sky" });
+    sky.append(this.stars());
+    const nebulae = node("g");
+    const bodies = node("g");
+    this.rings = [];
+    this.notes = [];
+    for (const zone of this.layout.all) {
+      nebulae.append(this.nebula(zone));
+      bodies.append(this.drawZone(zone));
+    }
+    this.detail = node("g", { class: "atlas-labels" });
+    for (const zone of this.layout.all) this.detail.append(...this.labels(zone));
+    this.searchLayer = node("g", { class: "atlas-labels" });
+    this.cursorHome = node("g");
+    this.svg.replaceChildren(defs, sky, nebulae, bodies, this.detail, this.searchLayer, this.cursorHome);
+    const total = this.layout.all.reduce((sum, zone) => sum + this.notesIn(zone).length + (zone.sun?.notes.length ?? 0), 0);
+    this.title.textContent = `${total} files · ${atlas.systems.length} projects${atlas.warnings.length > 0 ? ` · not read: ${atlas.warnings.join(" · ")}` : ""}`;
+  }
+
+  notesIn(zone) {
+    return zone.galaxy ? zone.parts.flatMap((part) => part.notes) : zone.notes;
+  }
+
+  // A sphere's shading in one hue, made once and shared.
+  gradient(hue, light = 58) {
+    const key = `${Math.round(hue)}-${light}`;
+    if (!this.gradients.has(key)) {
+      const id = `atlas-g-${this.gradients.size}`;
+      const gradient = node("radialGradient", { id, cx: "0.35", cy: "0.32", r: "0.75" });
+      gradient.append(
+        node("stop", { offset: "0", "stop-color": `hsl(${hue} 95% ${Math.min(light + 30, 95)}%)` }),
+        node("stop", { offset: "0.55", "stop-color": `hsl(${hue} 88% ${light}%)` }),
+        node("stop", { offset: "1", "stop-color": `hsl(${hue} 80% ${Math.max(light - 32, 12)}%)` }),
+      );
+      this.defs.append(gradient);
+      this.gradients.set(key, id);
+    }
+    return `url(#${this.gradients.get(key)})`;
+  }
+
+  glow(hue, id) {
+    const gradient = node("radialGradient", { id });
+    gradient.append(
+      node("stop", { offset: "0", "stop-color": `hsl(${hue} 90% 60%)`, "stop-opacity": "0.34" }),
+      node("stop", { offset: "0.5", "stop-color": `hsl(${hue + 30} 85% 45%)`, "stop-opacity": "0.12" }),
+      node("stop", { offset: "1", "stop-color": `hsl(${hue + 60} 80% 30%)`, "stop-opacity": "0" }),
+    );
+    this.defs.append(gradient);
+    return `url(#${id})`;
+  }
+
+  stars() {
+    const random = seeded(1107);
+    const stars = node("g", { class: "atlas-stars" });
+    for (let index = 0; index < 700; index += 1) {
+      const hue = random() < 0.3 ? 200 + random() * 120 : 30 + random() * 30;
+      stars.append(
+        node("circle", {
+          cx: (-300 + random() * 2200).toFixed(1),
+          cy: (-250 + random() * 1400).toFixed(1),
+          r: (0.25 + random() ** 4 * 1.6).toFixed(2),
+          fill: `hsl(${hue.toFixed(0)} 80% 85%)`,
+          opacity: (0.2 + random() * 0.6).toFixed(2),
+        }),
+      );
+    }
+    return stars;
+  }
+
+  nebula(zone) {
+    const group = node("g");
+    const fill = this.glow(zone.hue, `atlas-n-${zone.name || "core"}`.replace(/[^\w-]/g, "_"));
+    group.append(node("ellipse", { cx: zone.center.x, cy: zone.center.y, rx: zone.reach * 1.6, ry: zone.reach * 1.25, fill }));
+    if (zone.galaxy) {
+      // Dust along the arms.
+      const random = seeded(zone.name.length * 131 + Math.round(zone.hue));
+      for (let index = 0; index < zone.parts.length * 26; index += 1) {
+        const order = random() * zone.parts.length;
+        const arm = Math.floor(random() * 2);
+        const spot = around(zone.center, ARM_START + order * ARM_STEP + (random() - 0.5) * 14, order * ARM_TURN + arm * Math.PI + (random() - 0.5) * 0.5);
+        group.append(node("circle", { cx: spot.x.toFixed(1), cy: spot.y.toFixed(1), r: (0.3 + random() * 0.8).toFixed(2), fill: `hsl(${zone.hue + random() * 60 - 30} 90% 75%)`, opacity: (0.25 + random() * 0.45).toFixed(2), class: "atlas-dust" }));
+      }
+    }
+    return group;
+  }
+
+  drawZone(zone) {
+    const group = node("g", { class: "atlas-zone" });
+    // The whole project, under everything else: a click anywhere on it dives in.
+    group.append(this.hit(zone.center, zone.reach, () => this.zoomToZone(zone)));
+    if (zone.galaxy) {
+      group.append(this.sun(zone, zone.center, 6));
+      for (const part of zone.parts) {
+        part.center = { x: zone.center.x + part.offset.x, y: zone.center.y + part.offset.y };
+        group.append(this.hit(part.center, part.reach, () => this.zoomToPart(part)));
+        const hue = this.partHue(zone, part);
+        const star = node("circle", { cx: part.center.x, cy: part.center.y, r: 2.6, fill: this.gradient(hue, 70), class: part.repeated > 0 ? "atlas-star repeated" : "atlas-star" });
+        group.append(star, this.systemBodies(part, part.center, hue));
+      }
+    } else {
+      group.append(this.sun(zone, zone.center, 5));
+      group.append(this.systemBodies(zone, zone.center, zone.hue));
+    }
+    return group;
+  }
+
+  partHue(zone, part) {
+    if (part.kind === "knowledge") return zone.hue + 55;
+    if (part.kind === "lessons") return part.repeated > 0 ? 0 : zone.hue - 55;
+    if (part.kind === "others") return zone.hue + 180;
+    // Runs of decisions shift a little in hue, oldest to newest.
+    return zone.hue + (zone.parts.indexOf(part) % 6) * 7 - 18;
+  }
+
+  noteHue(base, note) {
+    if (note.kind === "lessons" && note.repeated > 0) return 0;
+    if (note.kind === "knowledge") return base + 55;
+    if (note.kind === "lessons") return base - 55;
+    if (note.kind === "others") return base + 180;
+    if (["global", "setup", "perso", "skills"].includes(note.kind)) return base + ["global", "setup", "perso", "skills"].indexOf(note.kind) * 70;
+    return base;
+  }
+
+  // The status: bright, or pale and ringed in red when older than the last decision.
+  sun(zone, center, radius) {
+    const group = node("g");
+    const stale = zone.sun?.stale;
+    group.append(node("circle", { cx: center.x, cy: center.y, r: radius * 2.6, fill: this.glow(stale ? 30 : 48, `atlas-s-${zone.name || "core"}`.replace(/[^\w-]/g, "_")), class: "atlas-corona" }));
+    const fill = stale ? "hsl(30 25% 55%)" : this.gradient(48, 72);
+    const body = node("circle", { cx: center.x, cy: center.y, r: radius, fill, class: "atlas-sun" });
+    group.append(body);
+    if (stale) group.append(node("circle", { cx: center.x, cy: center.y, r: radius + 2.4, class: "atlas-stale-ring" }));
+    const status = zone.sun?.notes ?? [];
+    if (status.length > 0) {
+      // The status notes ride on the sun itself, a click on it reads the newest.
+      const newest = [...status].sort((one, other) => (other.date ?? "").localeCompare(one.date ?? ""))[0];
+      group.append(this.hit(center, radius + 1, (event) => this.noteClick(event, newest, zone)));
+    }
+    return group;
+  }
+
+  systemBodies(owner, center, hue) {
+    const group = node("g");
+    owner.ringNodes = [];
+    for (const ring of owner.rings) {
+      group.append(node("circle", { cx: center.x, cy: center.y, r: ring.radius, class: "atlas-orbit" }));
+      const spinner = node("g");
+      const speed = TAU / (INNER_PERIOD * (ring.radius / 9) ** 1.5);
+      const state = { node: spinner, center, angle: ring.radius * 1.7, speed };
+      ring.notes.forEach((note, index) => {
+        const at = around(center, ring.radius, (index / ring.notes.length) * TAU);
+        const radius = planetRadius(note.bytes);
+        const color = this.noteHue(hue, note) + ((index * 47) % 25) - 12;
+        const body = note.lost ? this.rock(at, radius) : node("circle", { cx: at.x.toFixed(2), cy: at.y.toFixed(2), r: radius.toFixed(2), fill: this.gradient(color), class: "atlas-p" });
+        spinner.append(body);
+        const entry = { note, body, owner, at, radius, ring: state };
+        this.notes.push(entry);
+        const hit = this.hit(at, radius + 1.4, (event) => this.noteClick(event, note, owner));
+        hit.addEventListener("mouseenter", () => this.say(`${owner.label ?? owner.name} · ${day(note.date)} · ${note.description}`));
+        hit.addEventListener("mouseleave", () => this.say());
+        spinner.append(hit);
+      });
+      group.append(spinner);
+      this.rings.push(state);
+      owner.ringNodes.push(state);
+    }
+    return group;
+  }
+
+  // A note INDEX.md does not name: a grey rock.
+  rock(at, radius) {
+    const random = seeded(Math.round(at.x * 31 + at.y * 17));
+    const points = [0, 1, 2, 3, 4, 5].map((corner) => {
+      const angle = (corner / 6) * TAU;
+      const reach = radius * (0.75 + random() * 0.5);
+      return `${(at.x + reach * Math.cos(angle)).toFixed(2)},${(at.y + reach * Math.sin(angle)).toFixed(2)}`;
+    });
+    return node("polygon", { points: points.join(" "), class: "atlas-p atlas-rock" });
+  }
+
+  // A target bigger than what it covers, invisible.
+  hit(center, radius, onClick) {
+    const target = node("circle", { cx: center.x, cy: center.y, r: radius, class: "atlas-hit" });
+    target.addEventListener("click", (event) => {
+      event.stopPropagation();
+      onClick(event);
+    });
+    return target;
+  }
+
+  // Names drawn at the same size whatever the zoom (CSS: calc(… * var(--inv))).
+  labels(zone) {
+    const labels = [];
+    const name = zone.name === "core" ? "CORE" : zone.name.toUpperCase();
+    labels.push(node("text", { x: zone.center.x, y: zone.center.y + zone.reach + 4, class: "atlas-name", "text-anchor": "middle" }, name));
+    if (zone.sun?.stale) {
+      const told = zone.sun.notes.length === 0 ? "no status" : `status of ${day(zone.sun.updated)}`;
+      labels.push(node("text", { x: zone.center.x, y: zone.center.y + zone.reach + 4, class: "atlas-name-under atlas-warning", "text-anchor": "middle" }, `stale: ${told} · decision ${day(zone.sun.last_decision)}`));
+    }
+    const repeated = zone.galaxy ? zone.parts.find((part) => part.repeated > 0)?.repeated : zone.notes.find((note) => note.repeated > 0)?.repeated;
+    if (repeated) {
+      const line = zone.sun?.stale ? "atlas-name-under2" : "atlas-name-under";
+      labels.push(node("text", { x: zone.center.x, y: zone.center.y + zone.reach + 4, class: `${line} atlas-warning`, "text-anchor": "middle" }, `a lesson given again ×${repeated}`));
+    }
+    for (const part of zone.parts) {
+      labels.push(node("text", { x: part.center.x, y: part.center.y + part.reach + 1, class: "atlas-part", "text-anchor": "middle" }, part.label));
+    }
+    return labels;
+  }
+
+  // ----- Moving -----
+
+  spin() {
+    let last = performance.now();
+    const step = (now) => {
+      const seconds = Math.min((now - last) / 1000, 0.1);
+      last = now;
+      for (const ring of this.rings) {
+        ring.angle += ring.speed * seconds * 57.29578;
+        ring.node.setAttribute("transform", `rotate(${ring.angle.toFixed(2)} ${ring.center.x} ${ring.center.y})`);
+      }
+      this.spinning = requestAnimationFrame(step);
+    };
+    this.spinning = requestAnimationFrame(step);
+  }
+
+  home() {
+    const reaches = this.layout.all.map((zone) => ({ left: zone.center.x - zone.reach, right: zone.center.x + zone.reach, top: zone.center.y - zone.reach, bottom: zone.center.y + zone.reach + 30 }));
+    // Room around for the title, the legend and the line of help, which stay on screen.
+    const box = {
+      left: Math.min(...reaches.map((reach) => reach.left)) - 30,
+      right: Math.max(...reaches.map((reach) => reach.right)) + 30,
+      top: Math.min(...reaches.map((reach) => reach.top)) - 70,
+      bottom: Math.max(...reaches.map((reach) => reach.bottom)) + 90,
+    };
+    return this.fit({ x: (box.left + box.right) / 2, y: (box.top + box.bottom) / 2 }, box.right - box.left, box.bottom - box.top);
+  }
+
+  // The view on `center` showing at least `width` × `height`, in the screen's proportions.
+  fit(center, width, height) {
+    const ratio = this.svg.clientHeight > 0 ? this.svg.clientWidth / this.svg.clientHeight : 16 / 9;
+    const w = Math.max(width, height * ratio);
+    const h = w / ratio;
+    return { x: center.x - w / 2, y: center.y - h / 2, width: w, height: h };
+  }
+
+  setView(view) {
+    this.view = view;
+    this.svg.setAttribute("viewBox", `${view.x} ${view.y} ${view.width} ${view.height}`);
+    const pixels = this.svg.clientWidth || 1600;
+    // Map units per screen pixel: what keeps names and lines the same size on screen.
+    this.svg.style.setProperty("--inv", (view.width / pixels).toFixed(5));
+    const close = this.layout ? this.home().width / view.width : 1;
+    this.svg.classList.toggle("atlas-mid", close >= 2.2);
+    this.svg.classList.toggle("atlas-near", close >= 7);
+  }
+
+  zoomTo(target) {
+    const start = this.view;
+    const begun = performance.now();
+    const frame = ++this.frame;
+    const step = (now) => {
+      if (frame !== this.frame) return;
+      const t = ease(Math.min((now - begun) / ZOOM_MS, 1));
+      const mix = (from, to) => from + (to - from) * t;
+      this.setView({ x: mix(start.x, target.x), y: mix(start.y, target.y), width: mix(start.width, target.width), height: mix(start.height, target.height) });
+      if (t < 1) requestAnimationFrame(step);
+    };
+    requestAnimationFrame(step);
+  }
+
+  // The point of the map under the pointer.
+  pointOf(event) {
+    const box = this.svg.getBoundingClientRect();
+    const scale = Math.max(this.view.width / box.width, this.view.height / box.height);
+    const shownWidth = this.view.width / scale;
+    const shownHeight = this.view.height / scale;
+    const x = event.clientX - box.left - (box.width - shownWidth) / 2;
+    const y = event.clientY - box.top - (box.height - shownHeight) / 2;
+    return { x: this.view.x + x * scale, y: this.view.y + y * scale };
+  }
+
+  // Zooms by `factor` (above 1 closer) keeping `point` where it is on screen.
+  zoomAt(point, factor) {
+    if (!this.layout || !Number.isFinite(factor) || factor <= 0) return;
+    this.frame += 1;
+    const homeWidth = this.home().width;
+    const width = Math.min(Math.max(this.view.width / factor, homeWidth / 400), homeWidth * 1.6);
+    const applied = this.view.width / width;
+    this.setView({
+      x: point.x - (point.x - this.view.x) / applied,
+      y: point.y - (point.y - this.view.y) / applied,
+      width,
+      height: this.view.height / applied,
+    });
+  }
+
+  onWheel(event) {
+    event.preventDefault();
+    if (!this.layout) return;
+    const lines = event.deltaMode === 1 ? 16 : 1;
+    if (event.ctrlKey) {
+      // A touchpad pinch comes as a wheel with ctrl held.
+      this.zoomAt(this.pointOf(event), Math.exp((-event.deltaY * lines) / 120));
+      return;
+    }
+    this.frame += 1;
+    const perPixel = this.view.width / (this.svg.clientWidth || 1600);
+    this.setView({ ...this.view, x: this.view.x + event.deltaX * lines * perPixel, y: this.view.y + event.deltaY * lines * perPixel });
+  }
+
+  atHome() {
+    return !this.reading && this.focus.zone === null;
+  }
+
+  zoomToZone(zone) {
+    this.focus = { zone, part: null };
+    this.selected = -1;
+    this.cursorHome.replaceChildren();
+    this.zoomTo(this.fit(zone.center, zone.reach * 2.4, zone.reach * 2.4 + 20));
+    this.say();
+  }
+
+  zoomToPart(part) {
+    this.focus = { zone: part.zone, part };
+    this.selected = -1;
+    this.cursorHome.replaceChildren();
+    this.zoomTo(this.fit(part.center, part.reach * 5, part.reach * 5));
+    this.say();
+  }
+
+  // A planet far away takes the click to its system; close enough, it opens.
+  noteClick(event, note, owner) {
+    const zone = owner.zone ?? owner;
+    const inside = owner === this.focus.part || (!zone.galaxy && this.focus.zone === zone);
+    const pixels = planetRadius(note.bytes) / (this.view.width / (this.svg.clientWidth || 1600));
+    if (inside || pixels >= 7) {
+      this.showNote(note);
+    } else if (zone.galaxy && this.focus.zone === zone && owner !== zone) {
+      this.zoomToPart(owner);
+    } else {
+      this.zoomToZone(zone);
+    }
+  }
+
+  back() {
+    if (this.reading) {
+      this.reading = false;
+      this.reader.hidden = true;
+      this.say();
+    } else if (this.focus.part) {
+      this.zoomToZone(this.focus.zone);
+    } else if (this.focus.zone) {
+      this.focus = { zone: null, part: null };
+      this.selected = -1;
+      this.cursorHome.replaceChildren();
+      this.zoomTo(this.home());
+      this.say();
+    }
+  }
+
+  // ----- Keys -----
+
+  // What the arrows go through: the projects, then a galaxy's systems, then a system's planets.
+  targets() {
+    if (!this.layout) return [];
+    const { zone, part } = this.focus;
+    if (zone === null) return this.layout.all.map((each) => ({ label: each.name, at: () => each.center, radius: each.reach, open: () => this.zoomToZone(each) }));
+    if (zone.galaxy && part === null) return zone.parts.map((each) => ({ label: `${zone.name} · ${each.label}`, at: () => each.center, radius: each.reach, open: () => this.zoomToPart(each) }));
+    const owner = part ?? zone;
+    const notes = this.notes.filter((entry) => entry.owner === owner && (this.found === null || this.found.has(entry.note.path)));
+    return notes.map((entry) => ({
+      label: `${day(entry.note.date)} · ${entry.note.description}`,
+      entry,
+      radius: entry.radius + 1.2,
+      open: () => this.showNote(entry.note),
+    }));
+  }
+
+  onKey(event) {
+    const key = event.key;
+    if (key === "Escape") {
+      if (this.atHome()) return false;
+      this.back();
+      return true;
+    }
+    if (key === "/" && this.layout && !this.reading) {
+      this.search.hidden = false;
+      this.search.focus();
+      this.search.select();
+      return true;
+    }
+    if (key === "+" || key === "=" || key === "-") {
+      const center = { x: this.view.x + this.view.width / 2, y: this.view.y + this.view.height / 2 };
+      this.zoomAt(center, key === "-" ? 1 / 1.4 : 1.4);
+      return true;
+    }
+    const targets = this.targets();
+    if (["ArrowRight", "ArrowDown", "ArrowLeft", "ArrowUp"].includes(key) && targets.length > 0) {
+      const step = key === "ArrowRight" || key === "ArrowDown" ? 1 : -1;
+      this.selected = this.selected < 0 ? (step > 0 ? 0 : targets.length - 1) : (this.selected + step + targets.length) % targets.length;
+      this.mark(targets[this.selected]);
+      this.say(targets[this.selected].label);
+      return true;
+    }
+    if (key === "Enter" && targets[this.selected]) {
+      targets[this.selected].open();
+      return true;
+    }
+    return false;
+  }
+
+  // A ring around what the arrows chose; on a planet, it goes round with it.
+  mark(target) {
+    this.cursorHome.replaceChildren();
+    for (const entry of this.notes) entry.cursor?.remove();
+    if (target.entry) {
+      const { at } = target.entry;
+      target.entry.cursor = node("circle", { cx: at.x, cy: at.y, r: target.radius, class: "atlas-cursor" });
+      target.entry.ring.node.append(target.entry.cursor);
+      return;
+    }
+    const at = target.at();
+    this.cursorHome.append(node("circle", { cx: at.x, cy: at.y, r: target.radius, class: "atlas-cursor" }));
+  }
+
+  // ----- Reading -----
+
+  async showNote(note) {
+    this.reading = true;
+    const head = html("header");
+    head.append(html("h2", "", note.description), html("p", "muted", `${note.date ?? ""} · ${note.path}`));
+    const body = html("pre", "", "reading…");
+    this.reader.replaceChildren(head, body);
+    this.reader.hidden = false;
+    this.say();
+    try {
+      const text = await invoke("memory_note", { path: note.path });
+      body.textContent = text.replace(/^---\r?\n[\s\S]*?\r?\n---\r?\n/, "").trim();
+    } catch (error) {
+      body.textContent = `${error}`;
+    }
+  }
+
+  // ----- Searching -----
 
   async runSearch() {
     const query = this.search.value.trim();
@@ -178,458 +707,32 @@ export class AtlasWindow {
     this.dialog.focus();
   }
 
-  // Lights what the search found and dims the rest; the counts are drawn at the size of the view.
+  // Lights the planets found, dims the rest, and says how many each project and system holds.
   paintSearch() {
-    if (!this.layouts) return;
     const found = this.found;
     this.svg.classList.toggle("searching", found !== null);
-    const unit = this.targetWidth / WIDTH;
-    const counts = node("g");
-    for (const layout of this.layouts) {
-      const bodies = layout.sun ? [layout.sun, ...layout.planets] : layout.planets;
-      for (const body of bodies) {
-        const hits = found === null ? 0 : body.planet.notes.filter((note) => found.has(note.path)).length;
-        body.circle?.classList.toggle("found", hits > 0);
-        if (hits > 0 && this.level !== "planet" && this.level !== "note") {
-          const at = { x: body.at.x + body.radius + 3 * unit, y: body.at.y - body.radius - 2 * unit };
-          counts.append(node("text", { x: at.x, y: at.y, class: "atlas-found-count", "font-size": (11 * unit).toFixed(2) }, `${hits}`));
+    const counts = [];
+    for (const entry of this.notes) entry.body.classList.toggle("found", found !== null && found.has(entry.note.path));
+    if (found !== null) {
+      for (const zone of this.layout.all) {
+        const hits = this.notesIn(zone).filter((note) => found.has(note.path)).length + (zone.sun?.notes ?? []).filter((note) => found.has(note.path)).length;
+        if (hits > 0) counts.push(node("text", { x: zone.center.x, y: zone.center.y - zone.reach - 2, class: "atlas-found", "text-anchor": "middle" }, `${hits} found`));
+        for (const part of zone.parts) {
+          const inPart = part.notes.filter((note) => found.has(note.path)).length;
+          if (inPart > 0) counts.push(node("text", { x: part.center.x, y: part.center.y - part.reach, class: "atlas-found atlas-part-found", "text-anchor": "middle" }, `${inPart}`));
         }
       }
     }
-    for (const target of this.noteTargets) target.circle?.classList.toggle("found", found !== null && found.has(target.path));
-    this.searchLayer.replaceChildren(counts);
-  }
-
-  async open() {
-    this.level = "galaxy";
-    this.svg.setAttribute("class", "atlas-map");
-    this.focus = { system: null, planet: null };
-    this.reader.hidden = true;
-    this.search.value = "";
-    this.search.hidden = true;
-    this.found = null;
-    this.layouts = null;
-    this.noteTargets = [];
-    this.targetWidth = WIDTH;
-    this.setView(viewAround({ x: WIDTH / 2, y: HEIGHT / 2 }, WIDTH));
-    this.svg.replaceChildren(node("text", { x: WIDTH / 2, y: HEIGHT / 2, class: "atlas-hint", "text-anchor": "middle" }, "reading the memory…"));
-    this.dialog.showModal();
-    this.dialog.focus();
-    try {
-      this.atlas = await invoke("memory_atlas");
-    } catch (error) {
-      this.dialog.close();
-      this.onError(`${error}`);
-      return;
-    }
-    this.draw();
-    this.say();
+    this.searchLayer.replaceChildren(...counts);
   }
 
   say(text) {
-    const searched = this.found === null ? " · / search" : ` · ${this.found.size} notes hold “${this.search.value.trim()}” · / change`;
-    this.caption.textContent = text ?? `${HINTS[this.level]}${this.level === "note" ? "" : searched}`;
-  }
-
-  setView(view) {
-    this.view = view;
-    this.svg.setAttribute("viewBox", `${view.x} ${view.y} ${view.width} ${view.height}`);
-  }
-
-  zoomTo(target) {
-    this.targetWidth = target.width;
-    const start = this.view;
-    const begun = performance.now();
-    const frame = ++this.frame;
-    const step = (now) => {
-      if (frame !== this.frame) return;
-      const t = ease(Math.min((now - begun) / ZOOM_MS, 1));
-      const mix = (from, to) => from + (to - from) * t;
-      this.setView({ x: mix(start.x, target.x), y: mix(start.y, target.y), width: mix(start.width, target.width), height: mix(start.height, target.height) });
-      if (t < 1) requestAnimationFrame(step);
-    };
-    requestAnimationFrame(step);
-  }
-
-  setLevel(level) {
-    this.svg.classList.remove(`level-${this.level}`);
-    this.level = level;
-    this.svg.classList.add(`level-${level}`);
-    this.selected = -1;
-    this.cursorLayer?.replaceChildren();
-    this.say();
-  }
-
-  // What the arrows go through at this level: where it is, how big, what Enter does.
-  targets() {
-    if (this.level === "galaxy") {
-      return (this.layouts ?? []).map((layout) => ({ at: layout.place, radius: layout.reach + 10, label: layout.name, open: () => this.showSystem(layout) }));
+    if (text !== undefined) {
+      this.caption.textContent = text;
+      return;
     }
-    if (this.level === "system") {
-      const layout = this.focus.system;
-      const bodies = layout.sun ? [layout.sun, ...layout.planets] : layout.planets;
-      const unit = this.view.width / WIDTH;
-      return bodies.map((body) => ({ at: body.at, radius: body.radius + 5 * unit, label: `${body.planet.name} · ${body.planet.notes.length} notes`, open: () => this.showPlanet(layout, body) }));
-    }
-    // While searching, the arrows go only through the notes found.
-    if (this.level === "planet") return this.found === null ? this.noteTargets : this.noteTargets.filter((target) => this.found.has(target.path));
-    return [];
-  }
-
-  onKey(key) {
-    // Here rather than in "cancel": a dialog lets its close be refused only once between two user
-    // activations, and a second Escape in a row would close the atlas instead of going back.
-    if (key === "Escape" && this.level !== "galaxy") {
-      this.back();
-      return true;
-    }
-    if (key === "/" && this.layouts && this.level !== "note") {
-      this.search.hidden = false;
-      this.search.focus();
-      this.search.select();
-      return true;
-    }
-    const targets = this.targets();
-    if ((key === "ArrowRight" || key === "ArrowDown" || key === "ArrowLeft" || key === "ArrowUp") && targets.length > 0) {
-      const step = key === "ArrowRight" || key === "ArrowDown" ? 1 : -1;
-      this.selected = this.selected < 0 ? (step > 0 ? 0 : targets.length - 1) : (this.selected + step + targets.length) % targets.length;
-      const target = targets[this.selected];
-      this.cursorLayer.replaceChildren(node("circle", { cx: target.at.x, cy: target.at.y, r: target.radius, class: "atlas-cursor" }));
-      this.say(target.label);
-      return true;
-    }
-    if (key === "Enter" && this.selected >= 0 && targets[this.selected]) {
-      targets[this.selected].open();
-      return true;
-    }
-    return false;
-  }
-
-  back() {
-    if (this.level === "note") {
-      this.reader.hidden = true;
-      this.setLevel("planet");
-    } else if (this.level === "planet") {
-      this.notesLayer.replaceChildren();
-      this.showSystem(this.focus.system);
-    } else if (this.level === "system") {
-      this.detailLayer.replaceChildren();
-      this.focus = { system: null, planet: null };
-      this.setLevel("galaxy");
-      this.zoomTo(viewAround({ x: WIDTH / 2, y: HEIGHT / 2 }, WIDTH));
-      this.paintSearch();
-    }
-  }
-
-  draw() {
-    const atlas = this.atlas;
-    const sky = node("g");
-    sky.append(this.chart(), this.stars());
-    const systems = node("g");
-    const biggest = Math.max(1, ...atlas.systems.map(notesOf));
-    const mostDecisions = Math.max(1, ...atlas.systems.map((system) => planetOf(system, "decisions").notes.length));
-    this.layouts = atlas.systems.map((system, index) => {
-      const angle = (index / atlas.systems.length) * 360 - 90;
-      const place = polar(CENTER, ORBIT.x, ORBIT.y, angle);
-      sky.append(node("line", { x1: CENTER.x, y1: CENTER.y, x2: place.x, y2: place.y, class: "atlas-thread" }));
-      const layout = this.layout(system, place, notesOf(system) / biggest, mostDecisions);
-      systems.append(this.system(layout));
-      return layout;
-    });
-    const core = this.coreLayout(atlas.center);
-    this.layouts.push(core);
-    this.detailLayer = node("g", { class: "atlas-detail" });
-    this.notesLayer = node("g", { class: "atlas-notes" });
-    this.cursorLayer = node("g");
-    this.searchLayer = node("g");
-    this.svg.replaceChildren(sky, this.core(core), systems, this.detailLayer, this.notesLayer, this.searchLayer, this.cursorLayer, this.cartouche(atlas), this.legend());
-    this.svg.classList.add("level-galaxy");
-  }
-
-  // Where a system's bodies are, in the chart's units: what the drawing and the zoom share.
-  layout(system, place, size, mostDecisions) {
-    const scale = 0.9 + size * 0.6;
-    const planets = Object.entries(PLANETS).map(([name, { angle, distance }]) => {
-      const planet = planetOf(system, name);
-      const count = planet.notes.length;
-      const radius = name === "decisions" ? 2 + 7 * Math.sqrt(count / mostDecisions) : 2 + Math.min(count, 16) ** 0.5;
-      const at = polar(place, distance * scale, distance * scale, angle);
-      return { planet, at, radius, orbit: distance * scale };
-    });
-    const sun = { planet: { name: "status", notes: system.sun?.notes ?? [], repeated: 0 }, at: place, radius: 5 };
-    return { system, name: system.name, place, scale, planets, sun, reach: 46 * scale };
-  }
-
-  coreLayout(center) {
-    const planets = center.planets.map((planet, index) => ({
-      planet,
-      at: polar(CENTER, 26, 26, index * 90 - 45),
-      radius: 2 + Math.sqrt(planet.notes.length),
-      orbit: 26,
-    }));
-    return { system: center, name: "core", place: CENTER, scale: 1, planets, sun: null, reach: 46, core: true };
-  }
-
-  // The plate: its frame, graduations, and a polar grid around the core.
-  chart() {
-    const chart = node("g", { class: "atlas-chart" });
-    chart.append(node("rect", { x: 14, y: 14, width: WIDTH - 28, height: HEIGHT - 28, class: "atlas-frame" }));
-    chart.append(node("rect", { x: 24, y: 24, width: WIDTH - 48, height: HEIGHT - 48, class: "atlas-frame thin" }));
-    for (let x = 24; x <= WIDTH - 24; x += 16) {
-      for (const [edge, toward] of [[24, 1], [HEIGHT - 24, -1]]) {
-        chart.append(node("line", { x1: x, y1: edge, x2: x, y2: edge + toward * 4, class: "atlas-tick" }));
-      }
-    }
-    for (let y = 24; y <= HEIGHT - 24; y += 16) {
-      for (const [edge, toward] of [[24, 1], [WIDTH - 24, -1]]) {
-        chart.append(node("line", { x1: edge, y1: y, x2: edge + toward * 4, y2: y, class: "atlas-tick" }));
-      }
-    }
-    // Right ascension along the top, every 2 hours; declination down the side, every 30°.
-    for (let hour = 0; hour <= 24; hour += 2) {
-      const x = 24 + (hour / 24) * (WIDTH - 48);
-      chart.append(node("line", { x1: x, y1: 24, x2: x, y2: 34, class: "atlas-tick" }));
-      chart.append(node("line", { x1: x, y1: HEIGHT - 24, x2: x, y2: HEIGHT - 34, class: "atlas-tick" }));
-      if (hour > 0 && hour < 24) chart.append(node("text", { x, y: 46, class: "atlas-scale", "text-anchor": "middle" }, `${hour}h`));
-    }
-    for (let degrees = 60; degrees >= -60; degrees -= 30) {
-      const y = 24 + ((90 - degrees) / 180) * (HEIGHT - 48);
-      chart.append(node("line", { x1: 24, y1: y, x2: 34, y2: y, class: "atlas-tick" }));
-      chart.append(node("line", { x1: WIDTH - 24, y1: y, x2: WIDTH - 34, y2: y, class: "atlas-tick" }));
-      chart.append(node("text", { x: 40, y: y + 3, class: "atlas-scale" }, `${degrees > 0 ? "+" : ""}${degrees}°`));
-    }
-    for (let ring = 1; ring <= 5; ring += 1) {
-      chart.append(node("ellipse", { cx: CENTER.x, cy: CENTER.y, rx: ring * 150, ry: ring * 80, class: "atlas-grid" }));
-    }
-    for (let degrees = 0; degrees < 360; degrees += 30) {
-      const end = polar(CENTER, 760, 420, degrees);
-      chart.append(node("line", { x1: CENTER.x, y1: CENTER.y, x2: end.x, y2: end.y, class: "atlas-grid" }));
-    }
-    return chart;
-  }
-
-  stars() {
-    const random = seeded(1107);
-    const stars = node("g", { class: "atlas-stars" });
-    for (let index = 0; index < 320; index += 1) {
-      const radius = 0.3 + random() ** 3 * 1.4;
-      stars.append(node("circle", { cx: 30 + random() * (WIDTH - 60), cy: 30 + random() * (HEIGHT - 60), r: radius.toFixed(2), opacity: (0.15 + random() * 0.45).toFixed(2) }));
-    }
-    return stars;
-  }
-
-  // What belongs to no project: a small cluster at the center.
-  core(layout) {
-    const core = node("g", { class: "atlas-core atlas-target" });
-    core.append(node("circle", { cx: CENTER.x, cy: CENTER.y, r: 46, class: "atlas-halo" }));
-    core.append(node("circle", { cx: CENTER.x, cy: CENTER.y, r: 3.5, class: "atlas-sun" }));
-    for (const [index, body] of layout.planets.entries()) {
-      core.append(this.body(layout, body, "atlas-planet core"));
-      const label = polar(CENTER, 40, 40, index * 90 - 45);
-      core.append(node("text", { x: label.x, y: label.y + 3, class: "atlas-small", "text-anchor": label.x < CENTER.x ? "end" : "start" }, body.planet.name));
-    }
-    core.append(node("text", { x: CENTER.x, y: CENTER.y + 66, class: "atlas-name", "text-anchor": "middle" }, "CORE"));
-    core.addEventListener("click", (event) => this.onSystemClick(event, layout));
-    layout.group = core;
-    return core;
-  }
-
-  system(layout) {
-    const { system, place, reach } = layout;
-    const group = node("g", { class: "atlas-system atlas-target" });
-    for (const body of layout.planets) {
-      group.append(node("circle", { cx: place.x, cy: place.y, r: body.orbit.toFixed(1), class: "atlas-orbit" }));
-    }
-    group.append(this.sun(layout, reach + 46));
-    for (const body of layout.planets) group.append(this.planet(layout, body));
-    const lost = lostOf(system);
-    if (lost.length > 0) group.append(this.asteroids(lost, place, reach + 10));
-    const counts = layout.planets.map((body) => body.planet.notes.length);
-    group.append(node("text", { x: place.x, y: place.y + reach + 22, class: "atlas-name", "text-anchor": "middle" }, system.name.toUpperCase()));
-    group.append(node("text", { x: place.x, y: place.y + reach + 34, class: "atlas-small", "text-anchor": "middle" }, `${counts[0]} d · ${counts[1]} k · ${counts[2]} l`));
-    group.addEventListener("click", (event) => this.onSystemClick(event, layout));
-    layout.group = group;
-    return group;
-  }
-
-  // A body a click on a zoomed system opens: a planet, or the sun with the status notes.
-  body(layout, body, classes) {
-    const circle = node("circle", { cx: body.at.x.toFixed(1), cy: body.at.y.toFixed(1), r: body.radius.toFixed(1), class: classes });
-    body.circle = circle;
-    titled(circle, `${body.planet.name} · ${body.planet.notes.length}`);
-    circle.addEventListener("click", (event) => {
-      if (this.level !== "system" || this.focus.system !== layout) return;
-      event.stopPropagation();
-      this.showPlanet(layout, body);
-    });
-    return circle;
-  }
-
-  // The status. Pale when it is older than the last decision: it no longer tells where things are.
-  // The warning goes under the system's name, at `below`.
-  sun(layout, below) {
-    const sun = layout.system.sun;
-    const { x, y } = layout.place;
-    const group = node("g", { class: sun.stale ? "atlas-star stale" : "atlas-star" });
-    group.append(node("circle", { cx: x, cy: y, r: 12, class: "atlas-glow" }));
-    const told = sun.notes.length === 0 ? "no status" : `status of ${day(sun.updated)}`;
-    const body = this.body(layout, layout.sun, "atlas-sun");
-    body.firstChild.textContent = `${layout.name} · ${told} · last decision ${day(sun.last_decision)}`;
-    group.append(body);
-    if (sun.stale) {
-      group.append(node("circle", { cx: x, cy: y, r: 9, class: "atlas-stale-ring" }));
-      group.append(node("text", { x, y: y + below, class: "atlas-warning", "text-anchor": "middle" }, `stale: ${told} · decision ${day(sun.last_decision)}`));
-    }
-    return group;
-  }
-
-  planet(layout, body) {
-    const { planet, at, radius } = body;
-    const count = planet.notes.length;
-    const classes = ["atlas-planet", planet.name, planet.repeated > 0 ? "repeated" : "", count === 0 ? "empty" : ""].filter(Boolean).join(" ");
-    const group = node("g");
-    if (planet.name === "decisions" && count >= 50) {
-      group.append(node("ellipse", { cx: at.x, cy: at.y, rx: radius + 5, ry: (radius + 5) * 0.35, class: "atlas-ring" }));
-    }
-    const circle = this.body(layout, body, classes);
-    if (planet.repeated > 0) circle.firstChild.textContent += ` · ${planet.repeated} given again`;
-    group.append(circle);
-    if (planet.repeated > 0) {
-      group.append(node("text", { x: at.x + radius + 3, y: at.y + 3, class: "atlas-warning atlas-again" }, `${planet.repeated} again`));
-    }
-    return group;
-  }
-
-  // Notes the INDEX does not name: small rocks drifting past the last orbit.
-  asteroids(lost, place, distance) {
-    const random = seeded(lost.length * 7919);
-    const group = node("g", { class: "atlas-asteroids" });
-    lost.forEach((note, index) => {
-      const at = polar(place, distance, distance, 150 + index * 11 + random() * 4);
-      const size = 2.4 + random() * 1.2;
-      const points = [0, 1, 2, 3, 4].map((corner) => {
-        const angle = (corner / 5) * Math.PI * 2;
-        const reach = size * (0.7 + random() * 0.6);
-        return `${(at.x + reach * Math.cos(angle)).toFixed(1)},${(at.y + reach * Math.sin(angle)).toFixed(1)}`;
-      });
-      group.append(titled(node("polygon", { points: points.join(" ") }), `not in INDEX.md: ${note.path}`));
-    });
-    const label = polar(place, distance + 10, distance + 10, 150);
-    group.append(node("text", { x: label.x, y: label.y, class: "atlas-small", "text-anchor": "end" }, `${lost.length} not in INDEX`));
-    return group;
-  }
-
-  onSystemClick(event, layout) {
-    if (this.level !== "galaxy") return;
-    event.stopPropagation();
-    this.showSystem(layout);
-  }
-
-  // Zooms on a system and writes what its planets are, and what its status says.
-  showSystem(layout) {
-    this.focus = { system: layout, planet: null };
-    this.setLevel("system");
-    const width = (layout.reach + 70) * 2 * 1.6;
-    this.zoomTo(viewAround({ x: layout.place.x, y: layout.place.y + 12 }, width));
-    const unit = width / WIDTH;
-    const text = (x, y, size, classes, value, anchor = "start") =>
-      node("text", { x, y, class: classes, "text-anchor": anchor, "font-size": (size * unit).toFixed(2) }, value);
-    const detail = node("g");
-    for (const body of layout.planets) {
-      const side = body.at.x >= layout.place.x ? 1 : -1;
-      const x = body.at.x + side * (body.radius + 4 * unit);
-      detail.append(text(x, body.at.y - 2 * unit, 13, "atlas-label", body.planet.name, side > 0 ? "start" : "end"));
-      const repeated = body.planet.repeated > 0 ? ` · ${body.planet.repeated} given again` : "";
-      const count = body.planet.notes.length;
-      detail.append(text(x, body.at.y + 12 * unit, 10, "atlas-label-small", `${count} ${count === 1 ? "note" : "notes"}${repeated}`, side > 0 ? "start" : "end"));
-    }
-    if (layout.sun) {
-      const sun = layout.system.sun;
-      const newest = [...sun.notes].sort((one, other) => (other.date ?? "").localeCompare(one.date ?? ""))[0];
-      const told = newest ? `status of ${day(sun.updated)}: ${newest.description}` : "no status";
-      const clipped = told.length > 110 ? `${told.slice(0, 109)}…` : told;
-      // Under the system's name and counts, where no neighbor reaches.
-      detail.append(text(layout.place.x, layout.place.y + layout.reach + 48, 11, sun.stale ? "atlas-warning-label" : "atlas-label-small", clipped, "middle"));
-    }
-    this.detailLayer.replaceChildren(detail);
-    this.paintSearch();
-    for (const other of this.layouts) other.group.classList.toggle("focused", other === layout);
-  }
-
-  // Zooms on a planet; its notes come out around it in a spiral, the oldest closest.
-  showPlanet(layout, body) {
-    this.focus = { system: layout, planet: body };
-    this.setLevel("planet");
-    this.zoomTo(viewAround(body.at, PLANET_VIEW));
-    const unit = PLANET_VIEW / WIDTH;
-    const notes = [...body.planet.notes].sort((one, other) => (one.date ?? "").localeCompare(other.date ?? ""));
-    const outer = 330 * unit;
-    const inner = body.radius + 18 * unit;
-    const step = (outer - inner) / Math.sqrt(Math.max(notes.length, 1));
-    const dot = Math.min(step * 0.38, 5 * unit);
-    const group = node("g");
-    group.append(node("circle", { cx: body.at.x, cy: body.at.y, r: outer + 8 * unit, class: "atlas-orbit" }));
-    this.noteTargets = [];
-    notes.forEach((note, index) => {
-      const at = polar(body.at, inner + step * Math.sqrt(index + 0.5), inner + step * Math.sqrt(index + 0.5), index * 137.508);
-      const classes = ["atlas-note-dot", body.planet.name, note.lost ? "lost" : ""].filter(Boolean).join(" ");
-      const circle = node("circle", { cx: at.x.toFixed(2), cy: at.y.toFixed(2), r: dot.toFixed(2), class: classes });
-      const said = `${day(note.date)} · ${note.description}`;
-      circle.addEventListener("mouseenter", () => this.say(said));
-      circle.addEventListener("mouseleave", () => this.say());
-      circle.addEventListener("click", (event) => {
-        if (this.level !== "planet") return;
-        event.stopPropagation();
-        this.showNote(note);
-      });
-      group.append(titled(circle, said));
-      this.noteTargets.push({ at, radius: dot + 3 * unit, label: said, open: () => this.showNote(note), circle, path: note.path });
-    });
-    const name = `${layout.name === "core" ? "core" : layout.name} · ${body.planet.name} · ${notes.length} notes`;
-    group.append(node("text", { x: body.at.x, y: body.at.y - outer - 14 * unit, class: "atlas-label", "text-anchor": "middle", "font-size": (14 * unit).toFixed(2) }, name));
-    this.notesLayer.replaceChildren(group);
-    this.paintSearch();
-  }
-
-  async showNote(note) {
-    this.setLevel("note");
-    const head = html("header");
-    head.append(html("h2", "", note.description), html("p", "muted", `${note.date ?? ""} · ${note.path}`));
-    const body = html("pre", "", "reading…");
-    this.reader.replaceChildren(head, body);
-    this.reader.hidden = false;
-    try {
-      const text = await invoke("memory_note", { path: note.path });
-      // The header is already shown above: the text starts after it.
-      body.textContent = text.replace(/^---\r?\n[\s\S]*?\r?\n---\r?\n/, "").trim();
-    } catch (error) {
-      body.textContent = `${error}`;
-    }
-  }
-
-  cartouche(atlas) {
-    const total = atlas.systems.reduce((sum, system) => sum + notesOf(system), notesOf(atlas.center));
-    const group = node("g", { class: "atlas-cartouche" });
-    group.append(node("text", { x: 56, y: 76, class: "atlas-title" }, "~ $ memory atlas"));
-    group.append(node("text", { x: 56, y: 96, class: "atlas-small" }, `${total} notes · ${atlas.systems.length} systems · ${new Date().toLocaleDateString()}`));
-    if (atlas.warnings.length > 0) group.append(node("text", { x: 56, y: 112, class: "atlas-warning" }, `not read: ${atlas.warnings.join(" · ")}`));
-    return group;
-  }
-
-  legend() {
-    const group = node("g", { class: "atlas-legend", transform: `translate(${WIDTH - 300} ${HEIGHT - 128})` });
-    const rows = [
-      ["atlas-sun", "sun: the project's status"],
-      ["atlas-sun pale", "pale sun: status older than the last decision"],
-      ["atlas-planet decisions", "planets: decisions · knowledge · lessons"],
-      ["atlas-planet repeated", "red: a lesson given again"],
-    ];
-    rows.forEach(([shape, text], index) => {
-      group.append(node("circle", { cx: 6, cy: index * 18, r: 4, class: shape }));
-      group.append(node("text", { x: 18, y: index * 18 + 3, class: "atlas-small" }, text));
-    });
-    group.append(node("polygon", { points: "3,70 8,68 10,73 5,76 2,74", class: "atlas-asteroid-key" }));
-    group.append(node("text", { x: 18, y: 75, class: "atlas-small" }, "asteroid: a note INDEX.md does not name"));
-    return group;
+    const level = this.reading ? "note" : this.focus.part ? "part" : this.focus.zone ? "zone" : "root";
+    const searched = this.found === null || level === "note" ? "" : ` · ${this.found.size} files hold “${this.search.value.trim()}”`;
+    this.caption.textContent = `${HINTS[level]}${searched}`;
   }
 }

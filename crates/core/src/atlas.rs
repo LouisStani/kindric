@@ -1,8 +1,9 @@
-//! The memory atlas (decisions 270-278): the notes of `~/.kindric/memory` grouped for the app's
-//! map. One system per project, whose sun is its `status/` notes and whose planets are its
-//! decisions, knowledge and lessons; a center for what belongs to no project. Each signal is read
-//! from the files alone: a status older than the last decision, a lesson learned more than once,
-//! a note its zone's `INDEX.md` does not mention.
+//! The memory atlas (decisions 270-280): the notes of `~/.kindric/memory` grouped for the app's
+//! map. Each project's sun is its `status/` notes; every other note is a planet, in parts: its
+//! knowledge, its lessons, and its decisions in runs of `PART_SIZE`, in order. A project with more
+//! than `GALAXY_FROM` notes is drawn as a galaxy of those parts. A center holds what belongs to no
+//! project. Each signal is read from the files alone: a status older than the last decision, a
+//! lesson learned more than once, a note its zone's `INDEX.md` does not mention.
 
 use std::fs;
 use std::io;
@@ -19,6 +20,10 @@ const PLANETS: [&str; 3] = ["decisions", "knowledge", "lessons"];
 const STATUS: &str = "status";
 /// The folders of the center, in the order drawn.
 const CENTER: [&str; 4] = ["global", "setup", "perso", "skills"];
+/// Decisions are drawn in runs of this many, oldest first.
+pub const PART_SIZE: usize = 24;
+/// A project with more notes than this is a galaxy rather than a single system.
+pub const GALAXY_FROM: usize = 30;
 
 #[derive(Debug, Serialize, PartialEq, Eq)]
 pub struct Note {
@@ -30,11 +35,17 @@ pub struct Note {
     pub date: Option<String>,
     /// Neither the note nor its folder is in its zone's `INDEX.md` (a project's notes only).
     pub lost: bool,
+    /// The file's length, which sets the planet's size.
+    pub bytes: u64,
 }
 
+/// Notes drawn together around one star.
 #[derive(Debug, Serialize, PartialEq, Eq)]
-pub struct Planet {
-    pub name: String,
+pub struct Part {
+    /// "decisions", "knowledge", "lessons", "others", or a folder of the center.
+    pub kind: String,
+    /// Its name on the map: the kind, or a run of decisions, `001–024 · 15/10–23/10`.
+    pub label: String,
     pub notes: Vec<Note>,
     /// Lessons only: the lines that carry more than one date, a correction given again.
     pub repeated: usize,
@@ -56,9 +67,11 @@ pub struct System {
     pub name: String,
     /// None for the center, which has no status.
     pub sun: Option<Sun>,
-    pub planets: Vec<Planet>,
-    /// Notes outside the folders above (a project's subfolder of its own).
-    pub others: Vec<Note>,
+    /// Knowledge, lessons, notes outside the usual folders, then the runs of decisions; only
+    /// those that hold notes.
+    pub parts: Vec<Part>,
+    /// More than `GALAXY_FROM` notes: drawn as a galaxy of its parts.
+    pub galaxy: bool,
 }
 
 #[derive(Debug, Serialize, PartialEq, Eq)]
@@ -94,11 +107,12 @@ pub fn read(root: &Path) -> Atlas {
 }
 
 fn read_center(root: &Path, warnings: &mut Vec<String>) -> System {
-    let planets = CENTER
+    let parts = CENTER
         .iter()
-        .map(|name| Planet { name: (*name).to_owned(), notes: notes_in(root, &root.join(name), None, warnings), repeated: 0 })
+        .map(|name| Part { kind: (*name).to_owned(), label: (*name).to_owned(), notes: notes_in(root, &root.join(name), None, warnings), repeated: 0 })
+        .filter(|part| !part.notes.is_empty())
         .collect();
-    System { name: String::new(), sun: None, planets, others: Vec::new() }
+    System { name: String::new(), sun: None, parts, galaxy: false }
 }
 
 fn read_zone(root: &Path, zone: &Path, warnings: &mut Vec<String>) -> System {
@@ -106,16 +120,9 @@ fn read_zone(root: &Path, zone: &Path, warnings: &mut Vec<String>) -> System {
     let index = fs::read_to_string(zone.join(INDEX)).unwrap_or_default();
     let indexed = Some((zone, index.as_str()));
     let status = notes_in(root, &zone.join(STATUS), indexed, warnings);
-    let planets: Vec<Planet> = PLANETS
-        .iter()
-        .map(|planet| {
-            let folder = zone.join(planet);
-            let notes = notes_in(root, &folder, indexed, warnings);
-            let repeated = if *planet == "lessons" { repeated_lessons(&folder) } else { 0 };
-            Planet { name: (*planet).to_owned(), notes, repeated }
-        })
-        .collect();
-    let last_decision = planets[0].notes.iter().filter_map(|note| note.date.clone()).max();
+    let mut folders = PLANETS.iter().map(|planet| notes_in(root, &zone.join(planet), indexed, warnings));
+    let (decisions, knowledge, lessons) = (folders.next().unwrap_or_default(), folders.next().unwrap_or_default(), folders.next().unwrap_or_default());
+    let last_decision = decisions.iter().filter_map(|note| note.date.clone()).max();
     let updated = status.iter().filter_map(|note| note.date.clone()).max();
     let stale = match (&updated, &last_decision) {
         (Some(updated), Some(decision)) => updated < decision,
@@ -123,7 +130,41 @@ fn read_zone(root: &Path, zone: &Path, warnings: &mut Vec<String>) -> System {
         _ => false,
     };
     let others = other_notes(root, zone, indexed, warnings);
-    System { name, sun: Some(Sun { notes: status, updated, last_decision, stale }), planets, others }
+    let repeated = repeated_lessons(&zone.join("lessons"));
+    let mut parts: Vec<Part> = [("knowledge", knowledge, 0), ("lessons", lessons, repeated), ("others", others, 0)]
+        .into_iter()
+        .filter(|(_, notes, _)| !notes.is_empty())
+        .map(|(kind, notes, repeated)| Part { kind: kind.to_owned(), label: kind.to_owned(), notes, repeated })
+        .collect();
+    parts.extend(decision_runs(decisions));
+    let count = status.len() + parts.iter().map(|part| part.notes.len()).sum::<usize>();
+    System { name, sun: Some(Sun { notes: status, updated, last_decision, stale }), parts, galaxy: count > GALAXY_FROM }
+}
+
+/// The decisions in runs of `PART_SIZE`, oldest first, each named by its numbers and its days.
+fn decision_runs(mut decisions: Vec<Note>) -> Vec<Part> {
+    decisions.sort_by(|one, other| one.path.cmp(&other.path));
+    let mut runs = Vec::new();
+    while !decisions.is_empty() {
+        let rest = decisions.split_off(decisions.len().min(PART_SIZE));
+        let run = std::mem::replace(&mut decisions, rest);
+        let first = run.first().map(decision_mark).unwrap_or_default();
+        let last = run.last().map(decision_mark).unwrap_or_default();
+        let numbers = if first.0 == last.0 { first.0.clone() } else { format!("{}–{}", first.0, last.0) };
+        let days = if first.1 == last.1 { first.1 } else { format!("{}–{}", first.1, last.1) };
+        let label = if days.is_empty() { numbers } else { format!("{numbers} · {days}") };
+        runs.push(Part { kind: "decisions".to_owned(), label, notes: run, repeated: 0 });
+    }
+    runs
+}
+
+/// `…/2026-10-15-002.md` → (`002`, `15/10`); a name without that shape gives itself and no day.
+fn decision_mark(note: &Note) -> (String, String) {
+    let name = note.path.rsplit('/').next().unwrap_or_default();
+    let stem = name.strip_suffix(".md").unwrap_or(name);
+    let number = stem.get(11..).filter(|_| leading_date(stem).is_some()).unwrap_or(stem).to_owned();
+    let day = note.date.as_deref().filter(|date| date.len() == 10).map(|date| format!("{}/{}", &date[8..10], &date[5..7])).unwrap_or_default();
+    (number, day)
 }
 
 /// The notes of a zone that are in none of its usual folders.
@@ -165,7 +206,7 @@ fn note(root: &Path, path: &Path, indexed: Option<(&Path, &str)>) -> Note {
     // A decision's name holds the day it was taken; its header may be the day it was converted.
     let date = leading_date(&file_name).or_else(|| field(header, "updated"));
     let lost = indexed.is_some_and(|(zone, index)| !is_indexed(&relative(zone, path), index));
-    Note { path: relative(root, path), description, date, lost }
+    Note { path: relative(root, path), description, date, lost, bytes: text.len() as u64 }
 }
 
 /// Whether the index names the note (`knowledge/tests.md`) or its folder alone (`decisions/ :`);
@@ -362,9 +403,30 @@ mod tests {
         let lessons = "---\ndescription: corrections\n---\n\n- 2026-10-29 a : once (voir 2026-11-03)\n- 2026-11-01 b, 2026-11-05 b : twice\n- 2026-11-02 c : once\n- 2026-11-05 d : again. Récidive du 2026-11-02 (one point at a time)\n";
         write(&root, "projets/api/lessons/lecons.md", lessons);
         let atlas = read(&root);
-        let planet = atlas.systems[0].planets.iter().find(|planet| planet.name == "lessons").unwrap();
-        assert_eq!(planet.repeated, 2);
-        assert_eq!(planet.notes[0].description, "corrections");
+        let part = atlas.systems[0].parts.iter().find(|part| part.kind == "lessons").unwrap();
+        assert_eq!(part.repeated, 2);
+        assert_eq!(part.notes[0].description, "corrections");
+        assert_eq!(part.notes[0].bytes, lessons.len() as u64);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn decisions_come_in_runs_named_by_their_numbers_and_days() {
+        let root = scratch("runs");
+        write(&root, "projets/big/status/big.md", &header("where", "2026-11-12"));
+        for number in 1..=50 {
+            let day = if number <= 24 { "2026-10-15" } else { "2026-10-23" };
+            write(&root, &format!("projets/big/decisions/{day}-{number:03}.md"), "a choice");
+        }
+        write(&root, "projets/small/decisions/2026-11-01-001.md", "a choice");
+        let atlas = read(&root);
+        let big = &atlas.systems[0];
+        let labels: Vec<&str> = big.parts.iter().map(|part| part.label.as_str()).collect();
+        assert_eq!(labels, ["001–024 · 15/10", "025–048 · 23/10", "049–050 · 23/10"]);
+        assert_eq!(big.parts[0].notes.len(), PART_SIZE);
+        assert!(big.galaxy, "51 notes");
+        assert!(!atlas.systems[1].galaxy);
+        assert_eq!(atlas.systems[1].parts[0].label, "001 · 01/11");
         fs::remove_dir_all(root).unwrap();
     }
 
@@ -382,15 +444,15 @@ mod tests {
         let atlas = read(&root);
         let system = &atlas.systems[0];
         let lost: Vec<&str> = system
-            .planets
+            .parts
             .iter()
-            .flat_map(|planet| &planet.notes)
+            .flat_map(|part| &part.notes)
             .chain(&system.sun.as_ref().unwrap().notes)
             .filter(|note| note.lost)
             .map(|note| note.path.as_str())
             .collect();
         assert_eq!(lost, ["projets/api/knowledge/forgotten.md", "projets/api/knowledge/max.md"]);
-        assert!(system.others.is_empty(), "claude.md and INDEX.md are not notes: {:?}", system.others);
+        assert!(!system.parts.iter().any(|part| part.kind == "others"), "claude.md and INDEX.md are not notes: {:?}", system.parts);
         fs::remove_dir_all(root).unwrap();
     }
 
@@ -401,13 +463,13 @@ mod tests {
         write(&root, "skills/rust/SKILL.md", &header("rust pitfalls", "2026-11-02"));
         write(&root, "projets/api/notes/idea.md", &header("an idea", "2026-11-03"));
         let atlas = read(&root);
-        let names: Vec<&str> = atlas.center.planets.iter().map(|planet| planet.name.as_str()).collect();
-        assert_eq!(names, CENTER);
-        assert_eq!(atlas.center.planets[0].notes[0].description, "rules");
-        assert_eq!(atlas.center.planets[3].notes[0].path, "skills/rust/SKILL.md");
-        assert!(!atlas.center.planets[0].notes[0].lost, "the center has no index to miss");
-        assert_eq!(atlas.systems[0].others.len(), 1, "a project's own folder is kept, not dropped");
-        assert_eq!(atlas.systems[0].others[0].path, "projets/api/notes/idea.md");
+        let names: Vec<&str> = atlas.center.parts.iter().map(|part| part.label.as_str()).collect();
+        assert_eq!(names, ["global", "skills"], "empty folders are left out");
+        assert_eq!(atlas.center.parts[0].notes[0].description, "rules");
+        assert_eq!(atlas.center.parts[1].notes[0].path, "skills/rust/SKILL.md");
+        assert!(!atlas.center.parts[0].notes[0].lost, "the center has no index to miss");
+        let others = atlas.systems[0].parts.iter().find(|part| part.kind == "others").unwrap();
+        assert_eq!(others.notes[0].path, "projets/api/notes/idea.md", "a project's own folder is kept, not dropped");
         fs::remove_dir_all(root).unwrap();
     }
 
