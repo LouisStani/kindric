@@ -16,6 +16,8 @@ use serde::{Deserialize, Serialize};
 const LARGEST_COUNTED: u64 = 1024 * 1024;
 /// Git calls a file binary when its first 8000 bytes hold a NUL; kindric does the same.
 const BINARY_PROBE: usize = 8000;
+/// A diff longer than this is cut at the end of a line: the window shows text, not a file.
+const LARGEST_SHOWN: usize = 1024 * 1024;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(tag = "type", rename_all = "kebab-case")]
@@ -52,7 +54,8 @@ pub enum Start {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(tag = "type", rename_all = "kebab-case")]
 pub enum Block {
-    Changes { copy: PathBuf, branch: Option<String>, start: Start, files: Vec<FileChange> },
+    /// `base`: the commit the copy is compared with, to ask git for one file's diff later.
+    Changes { copy: PathBuf, branch: Option<String>, start: Start, base: String, files: Vec<FileChange> },
     /// A copy that no longer exists, such as a worktree removed since.
     Removed { copy: PathBuf },
     Failed { copy: PathBuf, error: String },
@@ -374,12 +377,12 @@ fn highest_missing(path: &Path) -> PathBuf {
 
 fn block_of(top: PathBuf, since: i64, started: i64, recorded: Option<&Recorded>, marks: Option<&[GitMark]>) -> Block {
     match changes_of(&top, since, started, recorded, marks) {
-        Ok((branch, start, files)) => Block::Changes { copy: top, branch, start, files },
+        Ok((branch, start, base, files)) => Block::Changes { copy: top, branch, start, base, files },
         Err(error) => Block::Failed { copy: top, error },
     }
 }
 
-type CopyChanges = (Option<String>, Start, Vec<FileChange>);
+type CopyChanges = (Option<String>, Start, String, Vec<FileChange>);
 
 /// `marks`: for the copy the session started in, the git marks of its conversation; a tracked
 /// file then counts only when it is not committed or one of these commits touched it.
@@ -417,7 +420,7 @@ fn changes_of(top: &Path, since: i64, started: i64, recorded: Option<&Recorded>,
         files.push(FileChange { path, kind: ChangeKind::Added, added, removed });
     }
     files.sort_by(|a, b| a.path.cmp(&b.path));
-    Ok((branch, start, files))
+    Ok((branch, start, base, files))
 }
 
 /// The tracked paths of the copy that are not committed, or that a commit or merge of `marks`
@@ -548,6 +551,80 @@ fn count_lines(path: &Path) -> Option<u32> {
     let newlines = bytes.iter().filter(|&&byte| byte == b'\n').count();
     let unterminated = bytes.last().is_some_and(|&byte| byte != b'\n');
     u32::try_from(newlines + usize::from(unterminated)).ok()
+}
+
+/// The diff of one file of a block: `copy`, `base` and the paths as the block gave them; `from`
+/// is the old path of a renamed file. An untracked file is shown whole, each line added.
+pub fn file_diff(copy: &Path, base: &str, path: &str, from: Option<&str>) -> Result<String, String> {
+    if !is_sha(base) {
+        return Err(format!("not a commit: {base}"));
+    }
+    for name in std::iter::once(path).chain(from) {
+        if !inside_copy(name) {
+            return Err(format!("not a path of the copy: {name}"));
+        }
+    }
+    let top = PathBuf::from(text(&git(copy, &["rev-parse", "--show-toplevel"])?).trim());
+    if !same_directory(&top, copy) {
+        return Err(format!("not the top of a repository: {}", copy.display()));
+    }
+    let untracked = git(copy, &["--no-optional-locks", "ls-files", "-z", "--others", "--exclude-standard", "--", path])?;
+    let whole = if untracked.is_empty() {
+        let mut args = vec!["--no-optional-locks", "diff", "--no-color", "--no-ext-diff", "-M", base, "--"];
+        args.extend(from);
+        args.push(path);
+        text(&git(copy, &args)?).into_owned()
+    } else {
+        added_whole(&copy.join(path))?
+    };
+    Ok(shortened(whole))
+}
+
+/// A relative path that stays inside the copy: no root, no `..`.
+fn inside_copy(name: &str) -> bool {
+    use std::path::Component;
+    !name.is_empty() && Path::new(name).components().all(|component| matches!(component, Component::Normal(_) | Component::CurDir))
+}
+
+/// Whether two paths name the same directory, whatever their spelling (`/` or `\`, links).
+fn same_directory(one: &Path, other: &Path) -> bool {
+    match (one.canonicalize(), other.canonicalize()) {
+        (Ok(one), Ok(other)) => one == other,
+        _ => false,
+    }
+}
+
+/// An untracked file as a diff from nothing: every line added.
+fn added_whole(file: &Path) -> Result<String, String> {
+    let size = file.metadata().map_err(|error| format!("cannot read {}: {error}", file.display()))?.len();
+    if size > LARGEST_COUNTED {
+        return Ok(format!("new file, too big to show ({} KB)", size / 1024));
+    }
+    let bytes = std::fs::read(file).map_err(|error| format!("cannot read {}: {error}", file.display()))?;
+    if bytes[..bytes.len().min(BINARY_PROBE)].contains(&0) {
+        return Ok("new binary file".to_string());
+    }
+    let mut shown = String::from("new file\n");
+    for line in text(&bytes).lines() {
+        shown.push('+');
+        shown.push_str(line);
+        shown.push('\n');
+    }
+    Ok(shown)
+}
+
+/// `whole` cut at the end of a line once longer than `LARGEST_SHOWN`, saying how much is left.
+fn shortened(whole: String) -> String {
+    if whole.len() <= LARGEST_SHOWN {
+        return whole;
+    }
+    let mut end = LARGEST_SHOWN;
+    while !whole.is_char_boundary(end) {
+        end -= 1;
+    }
+    let end = whole[..end].rfind('\n').map_or(end, |newline| newline + 1);
+    let left = whole[end..].lines().count();
+    format!("{}… {left} more lines not shown\n", &whole[..end])
 }
 
 enum GitError {
@@ -756,6 +833,13 @@ mod tests {
         i64::try_from(elapsed.as_secs()).unwrap()
     }
 
+    fn without_base(block: Block) -> Block {
+        match block {
+            Block::Changes { copy, branch, start, files, .. } => Block::Changes { copy, branch, start, base: String::new(), files },
+            other => other,
+        }
+    }
+
     fn top_of(dir: &Path) -> PathBuf {
         PathBuf::from(setup_git(dir, &["rev-parse", "--show-toplevel"]))
     }
@@ -830,6 +914,8 @@ mod tests {
         fs::write(project.join("abc-123.jsonl"), conversation).unwrap();
 
         let blocks = session_changes(&account, "abc-123", None).unwrap();
+        assert!(blocks.iter().all(|block| !matches!(block, Block::Changes { base, .. } if !is_sha(base))), "{blocks:?}");
+        let blocks: Vec<Block> = blocks.into_iter().map(without_base).collect();
         let file = |path: &str, kind, added, removed| FileChange { path: path.into(), kind, added: Some(added), removed: Some(removed) };
         assert_eq!(
             blocks,
@@ -838,6 +924,7 @@ mod tests {
                     copy: top_of(&repo),
                     branch: Some("main".into()),
                     start: Start::Estimated,
+                    base: String::new(),
                     // Estimated: what was not committed before the session counts as its own.
                     files: vec![
                         file("before.txt", ChangeKind::Added, 1, 0),
@@ -850,6 +937,7 @@ mod tests {
                     copy: top_of(&worktree),
                     branch: Some("worktree-w".into()),
                     start: Start::BranchCreated,
+                    base: String::new(),
                     files: vec![
                         file("gone.txt", ChangeKind::Deleted, 0, 1),
                         file("new.txt", ChangeKind::Added, 2, 0),
@@ -927,7 +1015,7 @@ mod tests {
     #[test]
     fn the_count_adds_the_files_of_every_copy() {
         let file = |path: &str| FileChange { path: path.into(), kind: ChangeKind::Added, added: Some(1), removed: Some(0) };
-        let changes = |files| Block::Changes { copy: PathBuf::from("/r"), branch: None, start: Start::Estimated, files };
+        let changes = |files| Block::Changes { copy: PathBuf::from("/r"), branch: None, start: Start::Estimated, base: String::new(), files };
         let blocks = vec![
             changes(vec![file("a"), file("b")]),
             Block::Removed { copy: PathBuf::from("/gone") },
@@ -945,6 +1033,50 @@ mod tests {
         assert_eq!(session_changes(&account, "../escape", None), Ok(Vec::new()));
     }
 
+    /// A modified, a renamed and an untracked file, each shown against the commit of the block.
+    #[test]
+    fn one_file_diff_against_the_base() {
+        let repo = std::env::temp_dir().join(format!("kindric-changes-diff-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&repo);
+        fs::create_dir_all(&repo).unwrap();
+        setup_git(&repo, &["init", "-q"]);
+        fs::write(repo.join("notes.txt"), "old\nsame\n").unwrap();
+        fs::write(repo.join("a.txt"), "moved\nlines\nhere\n").unwrap();
+        setup_git(&repo, &["add", "-A"]);
+        setup_git(&repo, &["commit", "-q", "-m", "first"]);
+        let base = setup_git(&repo, &["rev-parse", "HEAD"]);
+        fs::write(repo.join("notes.txt"), "new\nsame\n").unwrap();
+        setup_git(&repo, &["mv", "a.txt", "b.txt"]);
+        fs::write(repo.join("scratch.txt"), "hi\n").unwrap();
+        let top = top_of(&repo);
+
+        let modified = file_diff(&top, &base, "notes.txt", None).unwrap();
+        assert!(modified.contains("\n-old\n") && modified.contains("\n+new\n"), "{modified}");
+        let renamed = file_diff(&top, &base, "b.txt", Some("a.txt")).unwrap();
+        assert!(renamed.contains("rename from a.txt") && renamed.contains("rename to b.txt"), "{renamed}");
+        assert_eq!(file_diff(&top, &base, "scratch.txt", None), Ok("new file\n+hi\n".to_string()));
+
+        assert!(file_diff(&top, "HEAD; rm", "notes.txt", None).is_err());
+        for outside in ["../x", "/etc/passwd", ""] {
+            assert!(file_diff(&top, &base, outside, None).is_err(), "{outside}");
+        }
+        assert!(file_diff(&top, &base, "b.txt", Some("../a.txt")).is_err());
+        assert!(file_diff(&top.join(".git"), &base, "notes.txt", None).is_err());
+        fs::remove_dir_all(&repo).unwrap();
+    }
+
+    #[test]
+    fn a_long_diff_is_cut_at_the_end_of_a_line() {
+        let line = "+0123456789\n";
+        let whole = line.repeat(LARGEST_SHOWN / line.len() + 10);
+        let cut = shortened(whole.clone());
+        assert!(cut.len() <= LARGEST_SHOWN + 40, "{}", cut.len());
+        let (shown, note) = cut.rsplit_once("… ").unwrap();
+        assert!(shown.ends_with('\n') && shown.lines().all(|kept| kept == "+0123456789"));
+        assert_eq!(note, format!("{} more lines not shown\n", whole.lines().count() - shown.lines().count()));
+        assert_eq!(shortened("short\n".to_string()), "short\n");
+    }
+
     #[test]
     fn blocks_read_as_json_by_the_window() {
         let renamed = FileChange {
@@ -954,7 +1086,13 @@ mod tests {
             removed: None,
         };
         let blocks = vec![
-            Block::Changes { copy: PathBuf::from("/repo"), branch: Some("main".into()), start: Start::BranchCreated, files: vec![renamed] },
+            Block::Changes {
+                copy: PathBuf::from("/repo"),
+                branch: Some("main".into()),
+                start: Start::BranchCreated,
+                base: "0123abc".into(),
+                files: vec![renamed],
+            },
             Block::Removed { copy: PathBuf::from("/gone") },
             Block::Failed { copy: PathBuf::from("/odd"), error: "no git".into() },
         ];
@@ -962,7 +1100,7 @@ mod tests {
         assert_eq!(
             json,
             serde_json::json!([
-                {"type": "changes", "copy": "/repo", "branch": "main", "start": "branch-created", "files": [
+                {"type": "changes", "copy": "/repo", "branch": "main", "start": "branch-created", "base": "0123abc", "files": [
                     {"path": "b.rs", "kind": {"type": "renamed", "from": "a.rs"}, "added": 2, "removed": null}
                 ]},
                 {"type": "removed", "copy": "/gone"},
@@ -992,7 +1130,7 @@ mod tests {
         println!("{} blocks in {:?}", blocks.len(), begun.elapsed());
         for block in blocks {
             match block {
-                Block::Changes { copy, branch, start, files } => {
+                Block::Changes { copy, branch, start, files, .. } => {
                     println!("{} ({}, {start:?}): {} files", copy.display(), branch.unwrap_or_default(), files.len());
                     for file in files {
                         println!("  {:?} {} +{:?} -{:?}", file.kind, file.path, file.added, file.removed);
