@@ -1061,6 +1061,41 @@ input:focus, select:focus {
   color: var(--faint);
 }
 
+#worktrees {
+  width: min(760px, 90vw);
+}
+
+.worktree-branch {
+  font-size: 11px;
+  color: var(--faint);
+}
+
+.worktree-state {
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 11px;
+  color: var(--muted);
+}
+
+.state-merged, .state-merged-squash {
+  color: var(--done);
+}
+
+.state-busy, .state-uncommitted, .state-locked {
+  color: var(--waiting);
+}
+
+.state-failed, .state-missing {
+  color: var(--error);
+}
+
+.worktrees-note:empty {
+  display: none;
+}
+
 #messages-title {
   overflow: hidden;
   text-overflow: ellipsis;
