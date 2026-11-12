@@ -93,8 +93,9 @@ class PaneView {
     this.done = element("span", "head-done", "✓ done");
     this.progress = element("span", "head-progress");
     this.changed = element("span", "head-changed");
+    this.away = element("span", "head-away");
     const head = element("div", "pane-head");
-    head.append(element("span", "prompt", "~ $"), this.title, this.account, this.progress, this.changed, this.done);
+    head.append(element("span", "prompt", "~ $"), this.title, this.account, this.progress, this.changed, this.away, this.done);
     this.screen = element("div", "screen");
     // Over the top of the terminal, which keeps its size: Claude Code does not draw again.
     this.gallery = element("div", "pane-images");
@@ -141,15 +142,16 @@ class PaneView {
     note(`pane ${this.id} measures ${measured}`);
   }
 
-  // The head names the session shown, says how many files it changed in its repositories, and
-  // when it finished a turn not looked at yet.
-  label(key, title, finished, progress, changed) {
+  // The head names the session shown, says how many files it changed in its repositories, until
+  // when the user is away from it, and when it finished a turn not looked at yet.
+  label(key, title, finished, progress, changed, away) {
     this.shown = key;
     setText(this.title, key === null ? "empty" : title);
     setText(this.account, key === null ? "" : `· ${key.account}`);
     setText(this.progress, key === null || !progress ? "" : `· ${progress}`);
     this.progress.title = progress || "";
     setText(this.changed, key === null || !changed ? "" : `· ${changed} ${changed === 1 ? "file" : "files"}`);
+    setText(this.away, key === null || !away ? "" : `· ${away}`);
     this.done.hidden = !finished;
     this.element.classList.toggle("finished", finished);
   }
@@ -193,6 +195,15 @@ class PaneView {
     invoke(command, { pane: this.id, ...args }).catch((error) => console.error(error));
   }
 
+  // Sends `text` to the session as if the user typed it, then Enter. Pasted, so that the program
+  // reads it as one block; Enter apart, so that it sends the message instead of adding a line.
+  say(text) {
+    if (!this.current || this.current.ended) return false;
+    this.terminal.paste(text);
+    setTimeout(() => this.forward("write_input", { data: "\r" }), 300);
+    return true;
+  }
+
   connecting(title) {
     this.waiting = true;
     setText(this.placeholder, `connecting to ${title}…`);
@@ -229,7 +240,7 @@ function leaves(node, found = []) {
 }
 
 export class Panes {
-  constructor(container, bar, { keyFilter, onChange, onError, titleOf, isFinished, markOf, progressOf, changedOf, onChangedClick, imagesOf }) {
+  constructor(container, bar, { keyFilter, onChange, onError, titleOf, isFinished, markOf, progressOf, changedOf, awayOf, onChangedClick, imagesOf }) {
     this.container = container;
     this.bar = bar;
     this.keyFilter = keyFilter;
@@ -240,6 +251,7 @@ export class Panes {
     this.markOf = markOf;
     this.progressOf = progressOf;
     this.changedOf = changedOf;
+    this.awayOf = awayOf;
     this.onChangedClick = onChangedClick;
     this.imagesOf = imagesOf;
     this.state = null;
@@ -410,7 +422,7 @@ export class Panes {
       const title = key === null ? "" : this.titleOf(key);
       const view = this.view(leaf.id);
       const known = key !== null;
-      view.label(key, title, known && this.isFinished(key), known ? this.progressOf(key) : null, known ? this.changedOf(key) : null);
+      view.label(key, title, known && this.isFinished(key), known ? this.progressOf(key) : null, known ? this.changedOf(key) : null, known ? this.awayOf(key) : null);
       view.showImages(key === null ? [] : this.imagesOf(key));
     }
   }

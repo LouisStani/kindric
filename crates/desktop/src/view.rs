@@ -47,6 +47,8 @@ pub struct SessionRow {
     /// How many files the session changed in its repositories (see `changes`), counted when its
     /// state last changed; `None` when it could not be counted.
     pub changed: Option<usize>,
+    /// The user said they are away until then (Unix seconds): the session keeps working.
+    pub away_until: Option<i64>,
     /// Kept for Ctrl+P, which searches the same fields as the terminal picker.
     #[serde(skip)]
     pub info: SessionInfo,
@@ -100,6 +102,7 @@ fn row(position: usize, session: &SessionInfo, unread: usize, finished: bool) ->
         finished,
         images: Vec::new(),
         changed: None,
+        away_until: None,
         info: session.clone(),
         position,
     }
@@ -183,6 +186,13 @@ pub fn propose_images(next: &mut ListView, previous: &ListView, lookup: impl Fn(
             (SessionState::Waiting, Some(SessionState::Waiting)) => before.map(|before| before.images.clone()).unwrap_or_default(),
             _ => Vec::new(),
         };
+    }
+}
+
+/// Until when each session keeps working while the user is away, as `until` reads it.
+pub fn mark_away(view: &mut ListView, until: impl Fn(&str) -> Option<i64>) {
+    for row in &mut view.sessions {
+        row.away_until = until(&row.session_id);
     }
 }
 
@@ -319,6 +329,18 @@ mod tests {
         assert_eq!(view.sessions[0].short_id.as_deref(), Some("abc"));
         assert_eq!(view.sessions[0].state, "waiting");
         assert!(view.sessions[0].isolated);
+    }
+
+    #[test]
+    fn a_session_the_user_is_away_from_carries_the_end() {
+        let sessions = vec![session("pro", "x", false), session("louis", "y", false)];
+        let mut view = apply(&ListView::default(), Ok((snapshot(sessions), HashMap::new())), None);
+        let away_from = view.sessions[0].session_id.clone();
+        mark_away(&mut view, |session| (session == away_from).then_some(1_800));
+        assert_eq!(view.sessions[0].away_until, Some(1_800));
+        assert_eq!(view.sessions[1].away_until, None);
+        mark_away(&mut view, |_| None);
+        assert_eq!(view.sessions[0].away_until, None, "back");
     }
 
     #[test]

@@ -118,9 +118,9 @@ pub fn prepare(
     }
     // The status line that writes down how much of its limits the account used.
     let isolated_file = isolated.as_ref().map(|settings| settings.file.as_path());
-    // The hook that tells a session of its unread messages; never for an isolated account (039).
-    let unread = if isolated.is_none() { usage::unread_hook_command() } else { None };
-    let settings = usage::settings_file(paths, name, isolated_file, usage::wrapper_command().as_deref(), unread.as_deref(), &mut warnings);
+    // kindric's hooks (unread messages, the user away); never for an isolated account (039).
+    let hooks = if isolated.is_none() { usage::kindric_hooks() } else { usage::KindricHooks::default() };
+    let settings = usage::settings_file(paths, name, isolated_file, usage::wrapper_command().as_deref(), &hooks, &mut warnings);
     let args = claude_args(paths, isolated.as_ref(), settings.as_deref(), mcp_config, conversation_dir.is_some());
     let memory = conversation_dir.map(|directory| injection::for_session(paths, name, directory)).unwrap_or_default();
     warnings.extend(memory.warnings);

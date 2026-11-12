@@ -81,6 +81,11 @@ function markOf(tabId) {
   return state === "finished" || state === "waiting" ? state : null;
 }
 
+// The user said they are away from `session` and the time has not passed.
+function awayNow(session) {
+  return Boolean(session.away_until) && session.away_until * 1000 > Date.now();
+}
+
 function sessionItem(session) {
   const item = element("li", "session");
   const title = element("div", "title");
@@ -92,6 +97,7 @@ function sessionItem(session) {
   const project = panes.projectName(session.tab);
   if (project) detail.push(project);
   if (session.hidden) detail.push("hidden");
+  if (awayNow(session)) detail.push(`away until ${clockOf(session.away_until)}`);
   item.append(title, element("div", "detail", detail.join(" · ")));
   if (session.progress) item.append(element("div", "detail progress", session.progress));
   return item;
@@ -122,6 +128,7 @@ function showTip(session, item) {
   const tip = document.getElementById("tip");
   const state = [session.finished ? "done" : session.state];
   if (session.isolated) state.push("isolated");
+  if (awayNow(session)) state.push(`away until ${clockOf(session.away_until)}`);
   const head = element("div");
   head.append(element("b", "", session.title), element("span", `tip-state ${chipState(session)}`, state.join(" · ")));
   const unread = session.unread > 0 ? ` · ${session.unread} unread` : "";
@@ -613,6 +620,68 @@ function openRenameForm() {
   form.elements.label.focus();
 }
 
+// The local time `seconds` (Unix) stands for, "14:05".
+function clockOf(seconds) {
+  return new Date(seconds * 1000).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+}
+
+// Ctrl+Shift+Y: the user is away from the session of the active pane for some minutes; it keeps
+// working until then instead of stopping to wait for an approval (Rust, away.rs).
+function openAwayForm() {
+  const key = panes.activeSession();
+  const session = key && rowOf(key);
+  if (!session) {
+    setStatus("no session in this pane");
+    return;
+  }
+  const form = document.getElementById("away-form");
+  form.dataset.sessionId = session.session_id;
+  const away = session.away_until && session.away_until * 1000 > Date.now();
+  form.elements.minutes.value = away ? "0" : "60";
+  document.getElementById("away-note").textContent = away
+    ? `away until ${clockOf(session.away_until)} · 0: back now, or new minutes from now`
+    : "it keeps working until then without waiting for you, told so by a message in your name; only sessions started since kindric was installed have it";
+  document.getElementById("away-message").textContent = "";
+  document.getElementById("away").showModal();
+  form.elements.minutes.select();
+}
+
+async function setAway(event) {
+  event.preventDefault();
+  const form = event.target;
+  const minutes = Number.parseInt(form.elements.minutes.value, 10);
+  if (!Number.isInteger(minutes) || minutes < 0) {
+    document.getElementById("away-message").textContent = "minutes: a whole number, 0 for back";
+    return;
+  }
+  let until;
+  try {
+    until = await invoke("set_away", { sessionId: form.dataset.sessionId, minutes });
+  } catch (error) {
+    document.getElementById("away-message").textContent = `${error}`;
+    return;
+  }
+  document.getElementById("away").close();
+  const sessionId = form.dataset.sessionId;
+  const key = panes.activeSession();
+  const shown = key && rowOf(key);
+  const said = shown?.session_id === sessionId && panes.active().say(awayWords(sessionId, until));
+  const state = until ? `away until ${clockOf(until)}` : "back: the session may stop again";
+  setStatus(said ? state : `${state} · not told: the pane no longer shows it`);
+}
+
+// What the user says to the session when they leave until `until` (Unix seconds), or come back.
+// The session takes it from the user, not from the Stop hook (away.rs): a hook's text does not
+// override what the user asked.
+function awayWords(sessionId, until) {
+  if (!until) return "I am back: the usual rules apply again, ask before acting.";
+  return `I am away until ${clockOf(until)}. Keep working on the task without waiting for my approval: `
+    + "when a choice is needed, make it, write it down where the project keeps its decisions, and go on. "
+    + "Allowed: edit, test, commit in your own worktree, write notes in memory. "
+    + "Never: push, merge, delete what you did not create, install, use another account. "
+    + `When the whole task is done and verified, run \`kindric away done ${sessionId}\`, then stop.`;
+}
+
 async function renameSession(event) {
   event.preventDefault();
   const form = event.target;
@@ -771,6 +840,7 @@ const SHORTCUTS = [
   { group: "sessions", id: "hide", keys: "ctrl+shift+k", help: () => `stop and hide (${keyText("find-session")} brings it back)`, run: confirmHide },
   { group: "sessions", id: "messages", keys: "ctrl+shift+m", help: "read its messages", run: openActiveMessages },
   { group: "sessions", id: "changes", keys: "ctrl+shift+g", help: "files it changed", run: () => openChanges(panes.activeSession()) },
+  { group: "sessions", id: "away", keys: "ctrl+shift+y", help: "you are away: it keeps working until then", run: openAwayForm },
   { group: "panes", id: "split", keys: "ctrl+shift+d", help: "split the pane", run: () => panes.split() },
   { group: "panes", id: "close-pane", keys: "ctrl+shift+w", help: "close the pane (the session keeps running)", run: () => panes.close() },
   { group: "panes", id: "previous-pane", keys: "ctrl+h", mac: "ctrl+bracketleft", help: "previous pane", run: () => panes.step(-1) },
@@ -915,6 +985,10 @@ const panes = new Panes(document.getElementById("panes"), document.getElementByI
   markOf,
   progressOf: (key) => rowOf(key)?.progress ?? null,
   changedOf: (key) => rowOf(key)?.changed ?? null,
+  awayOf: (key) => {
+    const row = rowOf(key);
+    return row && awayNow(row) ? `away until ${clockOf(row.away_until)}` : null;
+  },
   onChangedClick: openChanges,
   imagesOf: (key) => rowOf(key)?.images ?? [],
 });
@@ -942,6 +1016,7 @@ new ResizeObserver(fitChips).observe(document.getElementById("chips"));
 document.getElementById("new-form").addEventListener("submit", startNewSession);
 document.getElementById("project-form").addEventListener("submit", addProject);
 document.getElementById("rename-form").addEventListener("submit", renameSession);
+document.getElementById("away-form").addEventListener("submit", setAway);
 document.getElementById("hide-form").addEventListener("submit", hideSession);
 document.getElementById("hide-cancel").addEventListener("click", () => document.getElementById("confirm-hide").close());
 document.getElementById("helper-done").addEventListener("click", () => document.getElementById("helper").close());
