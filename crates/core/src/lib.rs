@@ -1,5 +1,6 @@
 pub mod accounts;
 pub mod artifacts;
+pub mod atlas;
 pub mod attach;
 pub mod away;
 pub mod changes;
