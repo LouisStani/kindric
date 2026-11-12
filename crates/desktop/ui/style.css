@@ -1030,6 +1030,37 @@ input:focus, select:focus {
   color: var(--faint);
 }
 
+.change-diff {
+  max-height: 60vh;
+  margin: 0;
+  padding: 8px 10px;
+  overflow: auto;
+  font-family: var(--font);
+  font-size: 12px;
+  line-height: 1.45;
+  white-space: pre;
+  color: var(--terminal-text);
+  background: var(--terminal);
+  border-radius: var(--radius);
+  outline: none;
+}
+
+.diff-add {
+  color: var(--done);
+}
+
+.diff-del {
+  color: var(--error);
+}
+
+.diff-hunk {
+  color: var(--muted);
+}
+
+.diff-meta {
+  color: var(--faint);
+}
+
 #messages-title {
   overflow: hidden;
   text-overflow: ellipsis;

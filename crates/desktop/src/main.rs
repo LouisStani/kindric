@@ -974,6 +974,15 @@ async fn session_changes(shared: State<'_, Shared>, account: String, short_id: S
         .map_err(|error| error.to_string())?
 }
 
+/// The diff of one file of a block of `session_changes`, against the block's `base`.
+#[tauri::command]
+async fn file_diff(shared: State<'_, Shared>, copy: PathBuf, base: String, path: String, from: Option<String>) -> Result<String, String> {
+    let _span = shared.trace.span("file_diff");
+    tauri::async_runtime::spawn_blocking(move || changes::file_diff(&copy, &base, &path, from.as_deref()))
+        .await
+        .map_err(|error| error.to_string())?
+}
+
 /// Runs `command` in the helper window, closing the one running before. Returns the generation
 /// that `helper-ended` will carry.
 fn start_helper(
@@ -1197,6 +1206,7 @@ fn main() -> ExitCode {
             account_statuses,
             account_usage,
             session_changes,
+            file_diff,
             add_account,
             forget_account,
             memory_warning,
