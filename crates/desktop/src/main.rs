@@ -943,14 +943,35 @@ fn count_changes(app: &AppHandle, to_count: &[SessionInfo], implicit_default: bo
 /// How many files `session` changed in its repositories; `None` when it cannot be told (no
 /// conversation, git missing).
 fn changed_count(session: &SessionInfo, implicit_default: bool) -> Option<usize> {
-    let paths = accounts::paths().ok()?;
+    blocks_of(session, implicit_default).ok().map(|blocks| changes::count(&blocks))
+}
+
+/// What `session` changed, one block per working copy, compared with the state kindric wrote
+/// down when it launched it, if it did.
+fn blocks_of(session: &SessionInfo, implicit_default: bool) -> Result<Vec<changes::Block>, String> {
+    let paths = accounts::paths().map_err(|error| error.to_string())?;
     let account_dir = accounts::dir_of(&paths, &session.account, implicit_default);
     let recorded = session.short_id.as_deref().and_then(|short_id| {
         let data_dir = mailbox::data_dir().ok()?;
         changes::load_recorded(&data_dir, &account_dir, &session.account, short_id, &session.session_id)
     });
-    let blocks = changes::session_changes(&account_dir, &session.session_id, recorded.as_ref()).ok()?;
-    Some(changes::count(&blocks))
+    changes::session_changes(&account_dir, &session.session_id, recorded.as_ref())
+}
+
+/// The files the background session `short_id` of `account` changed, for the window of
+/// Ctrl+Shift+G.
+#[tauri::command]
+async fn session_changes(shared: State<'_, Shared>, account: String, short_id: String) -> Result<Vec<changes::Block>, String> {
+    let _span = shared.trace.span("session_changes");
+    let session = {
+        let view = shared.view.lock().unwrap_or_else(PoisonError::into_inner);
+        let row = view.sessions.iter().find(|row| row.account == account && row.short_id.as_deref() == Some(short_id.as_str()));
+        row.map(|row| row.info.clone()).ok_or_else(|| format!("no session {short_id}"))?
+    };
+    let implicit = implicit_default(&account)?;
+    tauri::async_runtime::spawn_blocking(move || blocks_of(&session, implicit))
+        .await
+        .map_err(|error| error.to_string())?
 }
 
 /// Runs `command` in the helper window, closing the one running before. Returns the generation
@@ -1175,6 +1196,7 @@ fn main() -> ExitCode {
             open_login,
             account_statuses,
             account_usage,
+            session_changes,
             add_account,
             forget_account,
             memory_warning,

@@ -80,6 +80,8 @@ class PaneView {
   constructor(id, keyFilter) {
     this.id = id;
     this.current = null;
+    // The session the head names, or null.
+    this.shown = null;
     // A session can end before `open_session` has returned its generation.
     this.lastEnded = null;
     this.used = false;
@@ -142,6 +144,7 @@ class PaneView {
   // The head names the session shown, says how many files it changed in its repositories, and
   // when it finished a turn not looked at yet.
   label(key, title, finished, progress, changed) {
+    this.shown = key;
     setText(this.title, key === null ? "empty" : title);
     setText(this.account, key === null ? "" : `· ${key.account}`);
     setText(this.progress, key === null || !progress ? "" : `· ${progress}`);
@@ -226,7 +229,7 @@ function leaves(node, found = []) {
 }
 
 export class Panes {
-  constructor(container, bar, { keyFilter, onChange, onError, titleOf, isFinished, markOf, progressOf, changedOf, imagesOf }) {
+  constructor(container, bar, { keyFilter, onChange, onError, titleOf, isFinished, markOf, progressOf, changedOf, onChangedClick, imagesOf }) {
     this.container = container;
     this.bar = bar;
     this.keyFilter = keyFilter;
@@ -237,6 +240,7 @@ export class Panes {
     this.markOf = markOf;
     this.progressOf = progressOf;
     this.changedOf = changedOf;
+    this.onChangedClick = onChangedClick;
     this.imagesOf = imagesOf;
     this.state = null;
     this.views = new Map();
@@ -294,7 +298,15 @@ export class Panes {
   }
 
   view(id) {
-    if (!this.views.has(id)) this.views.set(id, new PaneView(id, this.keyFilter));
+    if (!this.views.has(id)) {
+      const view = new PaneView(id, this.keyFilter);
+      // "N files" in the head opens the list of those files.
+      view.changed.onclick = (event) => {
+        event.stopPropagation();
+        if (view.shown) this.onChangedClick?.(view.shown);
+      };
+      this.views.set(id, view);
+    }
     return this.views.get(id);
   }
 

@@ -622,6 +622,7 @@ ol, ul {
   flex: none;
   white-space: nowrap;
   color: var(--muted);
+  cursor: pointer;
 }
 
 .pane.active .head-changed {
@@ -996,6 +997,37 @@ input:focus, select:focus {
 .artifacts-hint {
   margin: 10px 0 0;
   font-size: 11px;
+}
+
+#changes {
+  width: min(760px, 90vw);
+}
+
+.artifact-group.change-failed {
+  color: var(--error);
+}
+
+.change-kind {
+  flex: 0 0 1.5em;
+  font-weight: 700;
+  color: var(--muted);
+}
+
+.change-added, .kind-added {
+  color: var(--done);
+}
+
+.change-removed, .kind-deleted {
+  color: var(--error);
+}
+
+.change-added, .change-removed, .change-binary {
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+}
+
+.change-binary {
+  color: var(--faint);
 }
 
 #messages-title {
