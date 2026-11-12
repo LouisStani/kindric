@@ -23,6 +23,8 @@ const PLANETS = {
 // Width of the view on a planet, in the chart's units; its notes fill most of its height.
 const PLANET_VIEW = 120;
 const ZOOM_MS = 450;
+// Typing pauses this long before the memory is searched.
+const SEARCH_MS = 200;
 const HINTS = {
   galaxy: "click a system · esc close",
   system: "click a planet, or the sun for the status · esc back",
@@ -123,6 +125,79 @@ export class AtlasWindow {
         event.stopPropagation();
       }
     });
+    // "/" searches: the planets that hold every word light up, with how many notes.
+    this.search = dialog.querySelector(".atlas-search");
+    this.found = null;
+    this.searchTimer = null;
+    this.searchRequest = 0;
+    this.search.addEventListener("input", () => {
+      clearTimeout(this.searchTimer);
+      this.searchTimer = setTimeout(() => this.runSearch(), SEARCH_MS);
+    });
+    this.search.addEventListener("keydown", (event) => {
+      // The map's keys stay out of the field.
+      event.stopPropagation();
+      if (event.key === "Escape") {
+        event.preventDefault();
+        this.clearSearch();
+      } else if (event.key === "Enter") {
+        event.preventDefault();
+        this.dialog.focus();
+      }
+    });
+  }
+
+  async runSearch() {
+    const query = this.search.value.trim();
+    const request = ++this.searchRequest;
+    if (query === "") {
+      this.found = null;
+    } else {
+      let paths;
+      try {
+        paths = await invoke("memory_search", { query });
+      } catch (error) {
+        this.say(`${error}`);
+        return;
+      }
+      if (request !== this.searchRequest) return;
+      this.found = new Set(paths);
+    }
+    this.paintSearch();
+    this.say();
+  }
+
+  clearSearch() {
+    clearTimeout(this.searchTimer);
+    this.searchRequest += 1;
+    this.search.value = "";
+    this.search.hidden = true;
+    this.found = null;
+    this.paintSearch();
+    this.say();
+    this.dialog.focus();
+  }
+
+  // Lights what the search found and dims the rest; the counts are drawn at the size of the view.
+  paintSearch() {
+    if (!this.layouts) return;
+    const found = this.found;
+    this.svg.classList.toggle("searching", found !== null);
+    const unit = this.targetWidth / WIDTH;
+    const counts = node("g");
+    for (const layout of this.layouts) {
+      const bodies = layout.sun ? [layout.sun, ...layout.planets] : layout.planets;
+      for (const body of bodies) {
+        const hits = found === null ? 0 : body.planet.notes.filter((note) => found.has(note.path)).length;
+        body.circle?.classList.toggle("found", hits > 0);
+        if (hits > 0 && this.level !== "planet" && this.level !== "note") {
+          const at = { x: body.at.x + body.radius + 3 * unit, y: body.at.y - body.radius - 2 * unit };
+          counts.append(node("text", { x: at.x, y: at.y, class: "atlas-found-count", "font-size": (11 * unit).toFixed(2) }, `${hits}`));
+        }
+      }
+    }
+    for (const target of this.noteTargets) target.circle?.classList.toggle("found", found !== null && found.has(target.path));
+    this.searchLayer.replaceChildren(counts);
   }
 
   async open() {
@@ -130,6 +205,12 @@ export class AtlasWindow {
     this.svg.setAttribute("class", "atlas-map");
     this.focus = { system: null, planet: null };
     this.reader.hidden = true;
+    this.search.value = "";
+    this.search.hidden = true;
+    this.found = null;
+    this.layouts = null;
+    this.noteTargets = [];
+    this.targetWidth = WIDTH;
     this.setView(viewAround({ x: WIDTH / 2, y: HEIGHT / 2 }, WIDTH));
     this.svg.replaceChildren(node("text", { x: WIDTH / 2, y: HEIGHT / 2, class: "atlas-hint", "text-anchor": "middle" }, "reading the memory…"));
     this.dialog.showModal();
@@ -146,7 +227,8 @@ export class AtlasWindow {
   }
 
   say(text) {
-    this.caption.textContent = text ?? HINTS[this.level];
+    const searched = this.found === null ? " · / search" : ` · ${this.found.size} notes hold “${this.search.value.trim()}” · / change`;
+    this.caption.textContent = text ?? `${HINTS[this.level]}${this.level === "note" ? "" : searched}`;
   }
 
   setView(view) {
@@ -155,6 +237,7 @@ export class AtlasWindow {
   }
 
   zoomTo(target) {
+    this.targetWidth = target.width;
     const start = this.view;
     const begun = performance.now();
     const frame = ++this.frame;
@@ -188,7 +271,8 @@ export class AtlasWindow {
       const unit = this.view.width / WIDTH;
       return bodies.map((body) => ({ at: body.at, radius: body.radius + 5 * unit, label: `${body.planet.name} · ${body.planet.notes.length} notes`, open: () => this.showPlanet(layout, body) }));
     }
-    if (this.level === "planet") return this.noteTargets;
+    // While searching, the arrows go only through the notes found.
+    if (this.level === "planet") return this.found === null ? this.noteTargets : this.noteTargets.filter((target) => this.found.has(target.path));
     return [];
   }
 
@@ -197,6 +281,12 @@ export class AtlasWindow {
     // activations, and a second Escape in a row would close the atlas instead of going back.
     if (key === "Escape" && this.level !== "galaxy") {
       this.back();
+      return true;
+    }
+    if (key === "/" && this.layouts && this.level !== "note") {
+      this.search.hidden = false;
+      this.search.focus();
+      this.search.select();
       return true;
     }
     const targets = this.targets();
@@ -227,6 +317,7 @@ export class AtlasWindow {
       this.focus = { system: null, planet: null };
       this.setLevel("galaxy");
       this.zoomTo(viewAround({ x: WIDTH / 2, y: HEIGHT / 2 }, WIDTH));
+      this.paintSearch();
     }
   }
 
@@ -250,7 +341,8 @@ export class AtlasWindow {
     this.detailLayer = node("g", { class: "atlas-detail" });
     this.notesLayer = node("g", { class: "atlas-notes" });
     this.cursorLayer = node("g");
-    this.svg.replaceChildren(sky, this.core(core), systems, this.detailLayer, this.notesLayer, this.cursorLayer, this.cartouche(atlas), this.legend());
+    this.searchLayer = node("g");
+    this.svg.replaceChildren(sky, this.core(core), systems, this.detailLayer, this.notesLayer, this.searchLayer, this.cursorLayer, this.cartouche(atlas), this.legend());
     this.svg.classList.add("level-galaxy");
   }
 
@@ -363,6 +455,7 @@ export class AtlasWindow {
   // A body a click on a zoomed system opens: a planet, or the sun with the status notes.
   body(layout, body, classes) {
     const circle = node("circle", { cx: body.at.x.toFixed(1), cy: body.at.y.toFixed(1), r: body.radius.toFixed(1), class: classes });
+    body.circle = circle;
     titled(circle, `${body.planet.name} · ${body.planet.notes.length}`);
     circle.addEventListener("click", (event) => {
       if (this.level !== "system" || this.focus.system !== layout) return;
@@ -459,6 +552,7 @@ export class AtlasWindow {
       detail.append(text(layout.place.x, layout.place.y + layout.reach + 48, 11, sun.stale ? "atlas-warning-label" : "atlas-label-small", clipped, "middle"));
     }
     this.detailLayer.replaceChildren(detail);
+    this.paintSearch();
     for (const other of this.layouts) other.group.classList.toggle("focused", other === layout);
   }
 
@@ -489,11 +583,12 @@ export class AtlasWindow {
         this.showNote(note);
       });
       group.append(titled(circle, said));
-      this.noteTargets.push({ at, radius: dot + 3 * unit, label: said, open: () => this.showNote(note) });
+      this.noteTargets.push({ at, radius: dot + 3 * unit, label: said, open: () => this.showNote(note), circle, path: note.path });
     });
     const name = `${layout.name === "core" ? "core" : layout.name} · ${body.planet.name} · ${notes.length} notes`;
     group.append(node("text", { x: body.at.x, y: body.at.y - outer - 14 * unit, class: "atlas-label", "text-anchor": "middle", "font-size": (14 * unit).toFixed(2) }, name));
     this.notesLayer.replaceChildren(group);
+    this.paintSearch();
   }
 
   async showNote(note) {
