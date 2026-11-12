@@ -56,7 +56,30 @@ Open a new terminal, then run `kindric-accounts --version`. Windows support is n
 cargo install --locked --git https://github.com/LouisStani/kindric kindric-accounts
 ```
 
-**Upgrading from claude-accounts.** kindric-accounts is claude-accounts under a new name. It reads the same files, so your accounts work as they are. Remove the old command (`cargo uninstall claude-accounts`, or the 1.x Bash script), then install this one. Bash, `jq` and `gum` are no longer needed.
+**Upgrading from claude-accounts.** kindric-accounts is claude-accounts under a new name, and its folders are now called `kindric-accounts` too. Move them once, and your accounts keep their logins:
+
+1. Close every Claude Code session started by claude-accounts, background sessions included.
+2. Remove the old command (`cargo uninstall claude-accounts`, or the 1.x Bash script), then install this one. Bash, `jq` and `gum` are no longer needed.
+3. Move the folders. On Linux and macOS (use your `XDG_CONFIG_HOME` and `XDG_DATA_HOME` if you set them):
+
+   ```sh
+   mv ~/.config/claude-accounts ~/.config/kindric-accounts
+   mv ~/.local/share/claude-accounts ~/.local/share/kindric-accounts
+   ```
+
+   On Windows, in PowerShell:
+
+   ```powershell
+   Rename-Item "$env:APPDATA\claude-accounts" kindric-accounts
+   ```
+
+4. Plugins installed from an account session are recorded with the old path. Fix it on Linux and macOS with:
+
+   ```sh
+   sed -i.bak 's|/claude-accounts/|/kindric-accounts/|g' ~/.claude/plugins/installed_plugins.json ~/.claude/plugins/known_marketplaces.json
+   ```
+
+   On Windows, replace `claude-accounts` with `kindric-accounts` in the paths of these two files.
 
 ## Quick start
 
@@ -118,8 +141,8 @@ Other programs can drive kindric-accounts through the commands below. Their outp
 
 ```json
 [
-  {"name": "personal", "state": "logged-in", "sessions": 1, "plan": "pro", "dir": "/home/me/.local/share/claude-accounts/personal", "isolated": false, "login_expires": "2026-11-13T15:45:31.701Z"},
-  {"name": "work", "state": "logged-out", "sessions": 0, "plan": null, "dir": "/home/me/.local/share/claude-accounts/work", "isolated": true, "login_expires": null}
+  {"name": "personal", "state": "logged-in", "sessions": 1, "plan": "pro", "dir": "/home/me/.local/share/kindric-accounts/personal", "isolated": false, "login_expires": "2026-11-13T15:45:31.701Z"},
+  {"name": "work", "state": "logged-out", "sessions": 0, "plan": null, "dir": "/home/me/.local/share/kindric-accounts/work", "isolated": true, "login_expires": null}
 ]
 ```
 
@@ -140,18 +163,18 @@ Each account gets its own `CLAUDE_CONFIG_DIR`.
 | --- | --- |
 | Credentials, sessions, history, project memory | Private to each account |
 | `CLAUDE.md`, `skills/`, `agents/`, `commands/`, `plugins/`, `themes/` | Symbolic links to `~/.claude` (see Windows below) |
-| `settings.json` | Read from `~/.claude/settings.json`, copied at launch to `~/.local/share/claude-accounts/.shared-settings/<name>.json` with the status line of kindric-accounts, and passed with `--settings`. Your file is never written. |
+| `settings.json` | Read from `~/.claude/settings.json`, copied at launch to `~/.local/share/kindric-accounts/.shared-settings/<name>.json` with the status line of kindric-accounts, and passed with `--settings`. Your file is never written. |
 | MCP servers of the other accounts | Merged at launch and passed with `--mcp-config` |
 | Read rules of an isolated account | Added to the same `.shared-settings/<name>.json` |
-| Usage of the limits | `~/.local/share/claude-accounts/.usage/<name>.json`, written by `kindric-accounts statusline` |
+| Usage of the limits | `~/.local/share/kindric-accounts/.usage/<name>.json`, written by `kindric-accounts statusline` |
 | Unread messages of kindric | A hook added to the same `.shared-settings/<name>.json`, see below |
 | The user away, in kindric | A Stop hook added to the same `.shared-settings/<name>.json`, see below |
 
 Links are checked on every launch. On Linux and macOS, account directories use `700` permissions and the account list uses `600`.
 
-When a session starts with the memory of kindric (`~/.kindric/memory`), kindric-accounts warns if that memory is above 30 KB. Nothing is cut. To change that size, write a number of KB from 1 to 1024 in `~/.config/claude-accounts/memory-warning`.
+When a session starts with the memory of kindric (`~/.kindric/memory`), kindric-accounts warns if that memory is above 30 KB. Nothing is cut. To change that size, write a number of KB from 1 to 1024 in `~/.config/kindric-accounts/memory-warning`.
 
-On Windows, a symbolic link needs developer mode. Without it, folders are shared through junctions and `CLAUDE.md` is copied, then refreshed from `~/.claude` at each launch. If you edit that copy inside an account, it is no longer refreshed and kindric-accounts warns you: copy your changes to `~/.claude/CLAUDE.md`. Accounts live in `%APPDATA%\claude-accounts`.
+On Windows, a symbolic link needs developer mode. Without it, folders are shared through junctions and `CLAUDE.md` is copied, then refreshed from `~/.claude` at each launch. If you edit that copy inside an account, it is no longer refreshed and kindric-accounts warns you: copy your changes to `~/.claude/CLAUDE.md`. Accounts live in `%APPDATA%\kindric-accounts`.
 
 ## Shared MCP servers
 
@@ -172,7 +195,7 @@ At each launch, kindric-accounts reads the `mcpServers` of the other accounts, m
 
 ## Usage of the limits
 
-Claude Code tells how much of its limits an account used, over five hours and over the week, only to the command of its status line. So the sessions kindric-accounts starts get `kindric-accounts statusline` as their status line. It notes the two figures in `~/.local/share/claude-accounts/.usage/<name>.json`, then runs the status line of your `~/.claude/settings.json` with the same input and shows what it prints. You see the same status line as before.
+Claude Code tells how much of its limits an account used, over five hours and over the week, only to the command of its status line. So the sessions kindric-accounts starts get `kindric-accounts statusline` as their status line. It notes the two figures in `~/.local/share/kindric-accounts/.usage/<name>.json`, then runs the status line of your `~/.claude/settings.json` with the same input and shows what it prints. You see the same status line as before.
 
 - Only sessions started by kindric-accounts, or by kindric, note figures. A `claude` started some other way does not.
 - An account billed by API key has no limits and notes nothing.
@@ -208,7 +231,7 @@ An isolated account gives its MCP servers to no other account and receives none 
 
 Isolation applies from the next launch. Sessions already running keep the servers they loaded: restart them, on the isolated account and on the others.
 
-Its sessions also get `permissions.deny` rules against reading and editing the folders of the other accounts, the transcripts in `~/.claude/projects` and the data and memory of kindric. To add your own paths, list them in `~/.config/claude-accounts/isolated-deny`, one absolute path or `~/...` per line, `#` for comments. If these rules cannot be written, the session does not start.
+Its sessions also get `permissions.deny` rules against reading and editing the folders of the other accounts, the transcripts in `~/.claude/projects` and the data and memory of kindric. To add your own paths, list them in `~/.config/kindric-accounts/isolated-deny`, one absolute path or `~/...` per line, `#` for comments. If these rules cannot be written, the session does not start.
 
 Its sessions also receive the files of `~/.kindric/memory/global`, if there are any, and nothing else from that folder. They do not load `~/CLAUDE.md`, which Claude Code would otherwise read for any folder under your home.
 

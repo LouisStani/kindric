@@ -24,7 +24,7 @@ use kindric_core::launcher::{self, Request, resolve_directory};
 use kindric_core::mailbox::Mailbox;
 use kindric_core::accounts::SessionInfo;
 use kindric_core::artifacts::{self, Kind};
-use kindric_core::{accounts, away, changes, checks, images, mailbox, refresher};
+use kindric_core::{accounts, away, changes, checks, images, mailbox, refresher, worktrees};
 use serde::Serialize;
 use serde::de::DeserializeOwned;
 use tauri::ipc::{Channel, InvokeResponseBody, Response};
@@ -1025,6 +1025,32 @@ async fn file_diff(shared: State<'_, Shared>, copy: PathBuf, base: String, path:
         .map_err(|error| error.to_string())?
 }
 
+/// The folders of the live sessions with their names, for the worktrees a session works in.
+fn session_folders(shared: &Shared) -> Vec<(PathBuf, String)> {
+    let view = shared.view.lock().unwrap_or_else(PoisonError::into_inner);
+    view.sessions.iter().filter(|row| !row.directory.is_empty()).map(|row| (PathBuf::from(&row.directory), row.label.clone())).collect()
+}
+
+/// The worktrees of the repository of `project` (a tab's folder), main checkout first.
+#[tauri::command]
+async fn project_worktrees(shared: State<'_, Shared>, project: PathBuf) -> Result<Vec<worktrees::Worktree>, String> {
+    let _span = shared.trace.span("project_worktrees");
+    let sessions = session_folders(&shared);
+    tauri::async_runtime::spawn_blocking(move || worktrees::list(&project, &sessions))
+        .await
+        .map_err(|error| error.to_string())?
+}
+
+/// Removes a worktree of `project` and its branch if git finds it merged; never forced.
+#[tauri::command]
+async fn remove_worktree(shared: State<'_, Shared>, project: PathBuf, path: PathBuf) -> Result<worktrees::BranchOutcome, String> {
+    let _span = shared.trace.span("remove_worktree");
+    let sessions = session_folders(&shared);
+    tauri::async_runtime::spawn_blocking(move || worktrees::remove(&project, &path, &sessions))
+        .await
+        .map_err(|error| error.to_string())?
+}
+
 /// Runs `command` in the helper window, closing the one running before. Returns the generation
 /// that `helper-ended` will carry.
 fn start_helper(
@@ -1250,6 +1276,8 @@ fn main() -> ExitCode {
             session_changes,
             file_diff,
             set_away,
+            project_worktrees,
+            remove_worktree,
             add_account,
             forget_account,
             memory_warning,
@@ -1261,7 +1289,8 @@ fn main() -> ExitCode {
         ])
         .setup(|app| {
             let handle = app.handle().clone();
-            refresher::spawn(move |update| publish(&handle, update));
+            // Stopped sessions too: Ctrl+P finds them and opening one starts it again.
+            refresher::spawn(true, move |update| publish(&handle, update));
             Ok(())
         })
         .build(tauri::generate_context!());

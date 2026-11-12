@@ -13,20 +13,35 @@ use notify::{RecommendedWatcher, RecursiveMode, Watcher};
 /// `daemon/` holds the roster of background sessions; `jobs/<id>/` their state.
 /// `.claude.json` is left out on purpose: Claude Code rewrites it all the time.
 /// `registry_dir` holds the list of accounts: one added or removed shows at once.
+/// Reads `jobs/` to list the job directories present now.
 pub fn targets(account_dirs: &[PathBuf], mailbox_root: &Path, registry_dir: &Path) -> Vec<(PathBuf, RecursiveMode)> {
-    let mut targets: Vec<(PathBuf, RecursiveMode)> = account_dirs
-        .iter()
-        .flat_map(|dir| {
-            [
-                (dir.join("sessions"), RecursiveMode::NonRecursive),
-                (dir.join("daemon"), RecursiveMode::NonRecursive),
-                (dir.join("jobs"), RecursiveMode::Recursive),
-            ]
-        })
-        .collect();
+    let mut targets = Vec::new();
+    for dir in account_dirs {
+        let jobs = dir.join("jobs");
+        targets.push((dir.join("sessions"), RecursiveMode::NonRecursive));
+        targets.push((dir.join("daemon"), RecursiveMode::NonRecursive));
+        targets.extend(job_dirs(&jobs).into_iter().map(|job| (job, RecursiveMode::NonRecursive)));
+        targets.push((jobs, RecursiveMode::NonRecursive));
+    }
     targets.push((registry_dir.to_path_buf(), RecursiveMode::NonRecursive));
     targets.push((mailbox_root.to_path_buf(), RecursiveMode::Recursive));
     targets
+}
+
+/// The directory of each background session, where only `state.json` is read. Not deeper:
+/// `jobs/<id>/tmp/` holds links to whole trees (`~/.config`, `~/.local/share`), and watching
+/// through them took tens of thousands of watches and failed on the first unreadable folder.
+/// A link in `jobs/` is skipped for the same reason. `jobs/` itself is watched, so a new job
+/// wakes the list up and the next call adds its directory.
+fn job_dirs(jobs: &Path) -> Vec<PathBuf> {
+    let Ok(entries) = std::fs::read_dir(jobs) else {
+        return Vec::new();
+    };
+    entries
+        .flatten()
+        .filter(|entry| entry.file_type().is_ok_and(|kind| kind.is_dir()))
+        .map(|entry| entry.path())
+        .collect()
 }
 
 pub struct ChangeWatcher {
@@ -60,8 +75,10 @@ impl ChangeWatcher {
 
     /// Starts watching the targets not watched yet. Missing directories are skipped
     /// silently (an account that never ran a background session has no `jobs/`);
-    /// other failures are returned.
+    /// other failures are returned. A watched directory that disappeared (a finished job)
+    /// is forgotten: its watch went with it.
     pub fn ensure(&mut self, targets: &[(PathBuf, RecursiveMode)]) -> Vec<String> {
+        self.watched.retain(|path| path.is_dir());
         let mut errors = Vec::new();
         for (path, mode) in targets {
             if self.watched.contains(path) || !path.is_dir() {
@@ -113,10 +130,81 @@ mod tests {
         let targets = targets(&dirs, Path::new("/m"), Path::new("/c"));
         assert_eq!(targets.len(), 8);
         assert!(targets.contains(&(PathBuf::from("/c"), RecursiveMode::NonRecursive)));
-        assert!(targets.contains(&(PathBuf::from("/a/pro/jobs"), RecursiveMode::Recursive)));
+        assert!(targets.contains(&(PathBuf::from("/a/pro/jobs"), RecursiveMode::NonRecursive)));
         assert!(targets.contains(&(PathBuf::from("/a/louis/sessions"), RecursiveMode::NonRecursive)));
         assert_eq!(targets.last(), Some(&(PathBuf::from("/m"), RecursiveMode::Recursive)));
         assert!(!targets.iter().any(|(path, _)| path.ends_with(".claude.json")));
+    }
+
+    /// Waits until a wake-up reports a file named `name`, letting other reports go by.
+    fn woken_by(watcher: &ChangeWatcher, name: &str) -> bool {
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while Instant::now() < deadline {
+            if let Wake::Changed(paths) = watcher.wait(Duration::from_millis(500), Duration::from_millis(50), Duration::from_secs(1))
+                && paths.iter().any(|path| path.file_name().is_some_and(|file| file == name))
+            {
+                return true;
+            }
+        }
+        false
+    }
+
+    #[test]
+    fn each_job_directory_is_watched_but_not_what_it_holds() {
+        let root = std::env::temp_dir().join(format!("kindric-watch-targets-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(root.join("jobs/abc/tmp/deep")).unwrap();
+        fs::create_dir_all(root.join("jobs/def")).unwrap();
+        fs::write(root.join("jobs/notes.txt"), b"").unwrap();
+        let mut found = targets(std::slice::from_ref(&root), Path::new("/m"), Path::new("/c"));
+        found.retain(|(path, _)| path.starts_with(root.join("jobs")));
+        found.sort();
+        let jobs = root.join("jobs");
+        let expected = [jobs.clone(), jobs.join("abc"), jobs.join("def")].map(|path| (path, RecursiveMode::NonRecursive));
+        assert_eq!(found, expected);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn a_new_job_wakes_up_the_list_and_its_state_is_watched_next() {
+        let root = std::env::temp_dir().join(format!("kindric-watch-new-job-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(root.join("jobs")).unwrap();
+        let account = [root.clone()];
+        let mut watcher = ChangeWatcher::new().unwrap();
+        assert!(watcher.ensure(&targets(&account, &root.join("mailbox"), &root.join("registry"))).is_empty());
+        fs::create_dir(root.join("jobs/abc")).unwrap();
+        assert!(woken_by(&watcher, "abc"), "the new job did not wake the list up");
+        assert!(watcher.ensure(&targets(&account, &root.join("mailbox"), &root.join("registry"))).is_empty());
+        fs::write(root.join("jobs/abc/state.json"), b"{}").unwrap();
+        assert!(woken_by(&watcher, "state.json"), "the state of the new job did not wake the list up");
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    /// Claude Code links `jobs/<id>/tmp/` to whole trees; one unreadable folder in them made
+    /// the whole `jobs/` unwatched, after setting tens of thousands of watches.
+    #[cfg(unix)]
+    #[test]
+    fn a_link_to_an_unreadable_folder_in_a_job_is_neither_an_error_nor_watched() {
+        use std::os::unix::fs::{PermissionsExt, symlink};
+        let root = std::env::temp_dir().join(format!("kindric-watch-link-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        let (account, outside) = (root.join("account"), root.join("outside"));
+        fs::create_dir_all(account.join("jobs/abc/tmp")).unwrap();
+        fs::create_dir_all(outside.join("locked")).unwrap();
+        fs::set_permissions(outside.join("locked"), fs::Permissions::from_mode(0o000)).unwrap();
+        symlink(&outside, account.join("jobs/abc/tmp/config")).unwrap();
+        symlink(&outside, account.join("jobs/linked")).unwrap();
+        let mut watcher = ChangeWatcher::new().unwrap();
+        let errors = watcher.ensure(&targets(std::slice::from_ref(&account), &root.join("mailbox"), &root.join("registry")));
+        fs::set_permissions(outside.join("locked"), fs::Permissions::from_mode(0o700)).unwrap();
+        assert!(errors.is_empty(), "{errors:?}");
+        assert!(!watcher.watched.iter().any(|path| path.starts_with(account.join("jobs/abc/tmp")) || path.ends_with("linked")));
+        fs::write(outside.join("written"), b"").unwrap();
+        assert!(!woken_by(&watcher, "written"), "a write behind a link woke the list up");
+        fs::write(account.join("jobs/abc/state.json"), b"{}").unwrap();
+        assert!(woken_by(&watcher, "state.json"));
+        fs::remove_dir_all(root).unwrap();
     }
 
     #[test]

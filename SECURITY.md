@@ -9,4 +9,4 @@ Contact the repository maintainer privately first, including:
 - reproduction steps without real credentials;
 - the expected impact.
 
-Never attach the contents of `~/.claude`, `~/.local/share/claude-accounts`, `~/.local/share/kindric`, `~/.config/claude-accounts`, or `%APPDATA%\claude-accounts` and `%APPDATA%\kindric` on Windows.
+Never attach the contents of `~/.claude`, `~/.local/share/kindric-accounts`, `~/.local/share/kindric`, `~/.config/kindric-accounts`, or `%APPDATA%\kindric-accounts` and `%APPDATA%\kindric` on Windows.

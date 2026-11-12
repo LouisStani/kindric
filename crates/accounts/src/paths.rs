@@ -53,8 +53,8 @@ impl Paths {
 
     pub fn from_roots(config: PathBuf, data: PathBuf, home: PathBuf) -> Self {
         Self {
-            config_dir: config.join("claude-accounts"),
-            data_root: data.join("claude-accounts"),
+            config_dir: config.join("kindric-accounts"),
+            data_root: data.join("kindric-accounts"),
             shared_root: home.join(".claude"),
         }
     }
@@ -120,12 +120,12 @@ mod tests {
     #[test]
     fn layout_matches_the_bash_script() {
         let paths = Paths::from_roots("/h/.config".into(), "/h/.local/share".into(), "/h".into());
-        assert_eq!(paths.registry_file(), PathBuf::from("/h/.config/claude-accounts/accounts"));
-        assert_eq!(paths.isolated_file(), PathBuf::from("/h/.config/claude-accounts/isolated"));
-        assert_eq!(paths.account_dir("work"), PathBuf::from("/h/.local/share/claude-accounts/work"));
+        assert_eq!(paths.registry_file(), PathBuf::from("/h/.config/kindric-accounts/accounts"));
+        assert_eq!(paths.isolated_file(), PathBuf::from("/h/.config/kindric-accounts/isolated"));
+        assert_eq!(paths.account_dir("work"), PathBuf::from("/h/.local/share/kindric-accounts/work"));
         assert_eq!(
             paths.shared_mcp_file("work"),
-            PathBuf::from("/h/.local/share/claude-accounts/.shared-mcp/work.json")
+            PathBuf::from("/h/.local/share/kindric-accounts/.shared-mcp/work.json")
         );
         assert_eq!(paths.shared_root, PathBuf::from("/h/.claude"));
     }

@@ -197,10 +197,12 @@ pub fn mark_away(view: &mut ListView, until: impl Fn(&str) -> Option<i64>) {
 }
 
 /// The sessions of `next` whose changed files must be counted again: those that just appeared
-/// and those whose state changed since `previous` (decision 234).
+/// and those whose state changed since `previous` (decision 234). Not those without a process:
+/// they change nothing, and git would run for each of the dozens a first list holds.
 pub fn to_count(next: &ListView, previous: &ListView) -> Vec<SessionInfo> {
     next.sessions
         .iter()
+        .filter(|row| row.info.state != SessionState::Paused)
         .filter(|row| {
             let before = previous.sessions.iter().find(|before| before.info.session_id == row.info.session_id);
             before.is_none_or(|before| before.info.state != row.info.state)
@@ -628,6 +630,18 @@ mod tests {
         let counted: HashMap<String, Option<usize>> = asked.iter().map(|session| (session.session_id.clone(), Some(session.name.len()))).collect();
         carry_changed(&mut next, previous, &counted);
         (next, asked.into_iter().map(|session| session.name).collect())
+    }
+
+    /// `agents --json --all` gives dozens of stopped sessions: git must not run for each, and
+    /// Ctrl+P must still find them.
+    #[test]
+    fn sessions_without_a_process_are_not_counted_but_found() {
+        let sessions = vec![in_state("louis", "stopped", SessionState::Paused), in_state("louis", "live", SessionState::Waiting)];
+        let (mut view, asked) = with_counts(&ListView::default(), sessions);
+        assert_eq!(asked, ["live"]);
+        let tabs = Tabs::default();
+        assign(&mut view, &tabs, &Prefs::new());
+        assert_eq!(titles(&filter(&view, tabs.active_tab(), "stopped")), ["stopped"]);
     }
 
     #[test]

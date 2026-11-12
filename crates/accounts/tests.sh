@@ -59,7 +59,7 @@ ca() {
 }
 
 data_dir() {
-	printf '%s\n' "$HOME/.local/share/claude-accounts/$1"
+	printf '%s\n' "$HOME/.local/share/kindric-accounts/$1"
 }
 
 perm_of() {
@@ -100,7 +100,7 @@ test_add_and_list() {
 		'"$0" list --json | jq -e ". == [\"pro1\",\"pro2\"]" >/dev/null' "$SCRIPT"
 	check "list refuse une option inconnue" bash -c '! "$0" list --tsv 2>/dev/null' "$SCRIPT"
 	check "add crée le dossier en 700" test "$(perm_of "$(data_dir pro1)")" = 700
-	check "dossier racine en 700" test "$(perm_of "$HOME/.local/share/claude-accounts")" = 700
+	check "dossier racine en 700" test "$(perm_of "$HOME/.local/share/kindric-accounts")" = 700
 	check "list affiche les deux comptes" test "$(ca list)" = $'pro1\npro2'
 	check "add refuse un doublon" bash -c '! "$0" add pro1 2>/dev/null' "$SCRIPT"
 	check "add refuse un nom dangereux" bash -c '! "$0" add ../x 2>/dev/null' "$SCRIPT"
@@ -118,7 +118,7 @@ test_run() {
 	out=$(ANTHROPIC_API_KEY=secret ca run pro2 --resume)
 	check "run passe le bon CLAUDE_CONFIG_DIR" grep -qxF "CONFIG=$(data_dir pro2)" <<<"$out"
 	check "run retire ANTHROPIC_API_KEY" grep -qx 'APIKEY=unset' <<<"$out"
-	local own="$HOME/.local/share/claude-accounts/.shared-settings/pro2.json"
+	local own="$HOME/.local/share/kindric-accounts/.shared-settings/pro2.json"
 	check "run charge les réglages du compte et passe les arguments" \
 		grep -qxF "ARGS=--settings $own --resume" <<<"$out"
 	check "réglages du compte : la ligne d'état passe par kindric-accounts" \
@@ -161,7 +161,7 @@ test_status_json_escaping() {
 	XDG_DATA_HOME="$weird" XDG_CONFIG_HOME="$SANDBOX/cfg-weird" ca add esc >/dev/null
 	out=$(XDG_DATA_HOME="$weird" XDG_CONFIG_HOME="$SANDBOX/cfg-weird" ca status --json)
 	check "status --json échappe \" \\ et tabulation dans dir" \
-		jq -e --arg d "$weird/claude-accounts/esc" '.[0].dir == $d' <<<"$out"
+		jq -e --arg d "$weird/kindric-accounts/esc" '.[0].dir == $d' <<<"$out"
 }
 
 test_sessions() {
@@ -201,7 +201,7 @@ json_true() {
 }
 
 test_shared_mcp() {
-	local out shared="$HOME/.local/share/claude-accounts/.shared-mcp"
+	local out shared="$HOME/.local/share/kindric-accounts/.shared-mcp"
 	printf '{"mcpServers":{"alpha":{"type":"stdio","command":"a"},"both":{"type":"stdio","command":"other"}}}\n' \
 		>"$(data_dir pro2)/.claude.json"
 	printf '{"numStartups":1,"mcpServers":{"both":{"type":"stdio","command":"own"}},"projects":{"/p":{"mcpServers":{"proj":{"type":"stdio","command":"own"}}}}}\n' \
@@ -211,7 +211,7 @@ test_shared_mcp() {
 		>"$(data_dir pro4)/.claude.json"
 	out=$(ca run pro1 hello)
 	check "run passe les MCP des autres comptes avec --mcp-config=" grep -qxF \
-		"ARGS=--settings $HOME/.local/share/claude-accounts/.shared-settings/pro1.json --mcp-config=$shared/pro1.json hello" <<<"$out"
+		"ARGS=--settings $HOME/.local/share/kindric-accounts/.shared-settings/pro1.json --mcp-config=$shared/pro1.json hello" <<<"$out"
 	check "MCP d'un autre compte partagé, le premier compte gagne" \
 		json_true '.mcpServers.alpha.command == "a"' "$shared/pro1.json"
 	check "MCP déjà présent dans le compte lancé non transmis" \
@@ -239,7 +239,7 @@ test_shared_mcp() {
 }
 
 test_isolation() {
-	local out shared="$HOME/.local/share/claude-accounts/.shared-mcp"
+	local out shared="$HOME/.local/share/kindric-accounts/.shared-mcp"
 	ca add work >/dev/null
 	printf '{"mcpServers":{"secret":{"type":"stdio","command":"w"}}}\n' >"$(data_dir work)/.claude.json"
 	printf '{"mcpServers":{"perso":{"type":"stdio","command":"p"}}}\n' >"$(data_dir pro2)/.claude.json"
@@ -253,14 +253,14 @@ test_isolation() {
 	check "isolate deux fois : pas de doublon" bash -c \
 		'"$0" isolate work >/dev/null && test "$("$0" isolated)" = work' "$SCRIPT"
 	check "isolated --json" test "$(ca isolated --json)" = '["work"]'
-	check "liste des isolés en 600" test "$(perm_of "$HOME/.config/claude-accounts/isolated")" = 600
+	check "liste des isolés en 600" test "$(perm_of "$HOME/.config/kindric-accounts/isolated")" = 600
 	ca run pro1 >/dev/null
 	check "MCP d'un compte isolé jamais donné" json_true '.mcpServers | has("secret") | not' "$shared/pro1.json"
 	check "MCP des autres comptes toujours partagés" json_true '.mcpServers | has("perso")' "$shared/pro1.json"
 	out=$(ca run work)
 	check "compte isolé lancé avec un fichier MCP" grep -qF -- "--mcp-config=$shared/work.json" <<<"$out"
 	check "compte isolé ne reçoit aucun MCP" json_true '.mcpServers == {}' "$shared/work.json"
-	local isolated_settings="$HOME/.local/share/claude-accounts/.shared-settings/work.json"
+	local isolated_settings="$HOME/.local/share/kindric-accounts/.shared-settings/work.json"
 	check "compte isolé lancé avec ses règles de lecture" grep -qF -- "--settings $isolated_settings" <<<"$out"
 	check "règles : mémoire de kindric interdite" json_true \
 		"$(printf '.permissions.deny | index("Read(/%s/.kindric/memory/**)") != null' "$HOME")" "$isolated_settings"
@@ -279,7 +279,7 @@ test_isolation() {
 	check "compte isolé, sous-commande : réglages sans global/" bash -c \
 		'grep -qF -- "--settings $1" <<<"$0" && ! grep -qF -- --append-system-prompt-file <<<"$0"' "$out" "$isolated_settings"
 	check "setup/ non transmis" bash -c '! grep -qF NOTE-MACHINE "$0"' "$global_rules"
-	local pro1_settings="$HOME/.local/share/claude-accounts/.shared-settings/pro1.json"
+	local pro1_settings="$HOME/.local/share/kindric-accounts/.shared-settings/pro1.json"
 	check "compte non isolé hors zone : fichier hors zone, sans règles de lecture" bash -c \
 		'out=$("$0" run pro1); grep -qF -- startup-outside.md <<<"$out" && jq -e ".permissions.deny == null" "$1" >/dev/null' \
 		"$SCRIPT" "$pro1_settings"
@@ -307,14 +307,14 @@ test_isolation() {
 
 test_statusline() {
 	local input='{"rate_limits":{"five_hour":{"used_percentage":34,"resets_at":4102444800},"seven_day":{"used_percentage":16,"resets_at":4102444800}}}'
-	local usage_file="$HOME/.local/share/claude-accounts/.usage/pro1.json"
+	local usage_file="$HOME/.local/share/kindric-accounts/.usage/pro1.json"
 	printf '{"statusLine":{"type":"command","command":"cat >/dev/null; printf mine"}}\n' >"$HOME/.claude/settings.json"
 	local out
 	out=$(printf '%s' "$input" | CLAUDE_CONFIG_DIR="$(data_dir pro1)" ca statusline)
 	check "statusline affiche la ligne d'état de l'utilisateur" test "$out" = mine
 	check "statusline note l'usage du compte" json_true '.five_hour.used_percentage == 34 and .seven_day.used_percentage == 16' "$usage_file"
 	out=$(printf '%s' "$input" | CLAUDE_CONFIG_DIR="$SANDBOX/ailleurs/pro2" ca statusline)
-	check "statusline : dossier hors comptes, rien noté" test ! -e "$HOME/.local/share/claude-accounts/.usage/pro2.json"
+	check "statusline : dossier hors comptes, rien noté" test ! -e "$HOME/.local/share/kindric-accounts/.usage/pro2.json"
 	printf '{}\n' >"$HOME/.claude/settings.json"
 }
 

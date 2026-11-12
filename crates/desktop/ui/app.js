@@ -6,6 +6,7 @@ import { askTrust } from "./helper.js";
 import { checkItems, hasToDo } from "./welcome.js";
 import { ArtifactsWindow } from "./artifacts.js";
 import { ChangesWindow } from "./changes.js";
+import { WorktreesWindow } from "./worktrees.js";
 import { SettingsWindow } from "./settings.js";
 import { expiresWithin, inHowLong, shortly, timeLeft } from "./expiry.js";
 
@@ -64,17 +65,23 @@ function directoryField(formId) {
   return new DirectoryField(form.elements.directory, form.querySelector(".suggestions"));
 }
 
+// A session the bar shows: not hidden, and with a process. Stopped ones (dozens, from
+// `agents --json --all`) are found with Ctrl+P only.
+function inBar(session) {
+  return !session.hidden && session.state !== "paused";
+}
+
 // The sessions of the bar: those of the visible tab, its project's or, in "other", those of
 // no project. Rust sorts them, most urgent first.
 function barSessions() {
   if (panes.state === null) return [];
   const tab = panes.activeTab();
-  return lastView.sessions.filter((session) => !session.hidden && session.tab === tab.id);
+  return lastView.sessions.filter((session) => inBar(session) && session.tab === tab.id);
 }
 
 // The dot of a tab: its most urgent session, if that one needs you.
 function markOf(tabId) {
-  const session = lastView.sessions.find((row) => row.tab === tabId && !row.hidden);
+  const session = lastView.sessions.find((row) => row.tab === tabId && inBar(row));
   if (!session) return null;
   if (session.unread > 0) return "waiting";
   const state = chipState(session);
@@ -280,7 +287,8 @@ async function restoreTab() {
   restoring.add(tab.id);
   try {
     const session = rowOf(tab.restore);
-    if (session && session.short_id && !session.hidden && session.tab === tab.id) await openSession(session);
+    // A stopped one is not started again by a launch: only by choosing it in Ctrl+P.
+    if (session && session.short_id && inBar(session) && session.tab === tab.id) await openSession(session);
     else panes.render(await invoke("drop_restore"));
   } catch (error) {
     setStatus(`${error}`);
@@ -396,6 +404,12 @@ function openMessages(session) {
 function openArtifacts() {
   const project = panes.activeTab().project;
   return artifactsWindow.open(project ? project.directory : null, project ? project.name : "other");
+}
+
+// Ctrl+Shift+B: the worktrees of the project of the visible tab.
+function openWorktrees() {
+  const project = panes.activeTab().project;
+  return worktreesWindow.open(project ? project.directory : null, project ? project.name : "other");
 }
 
 // Ctrl+Shift+M: the messages of the session of the active pane.
@@ -841,6 +855,7 @@ const SHORTCUTS = [
   { group: "tabs", id: "next-tab", keys: "ctrl+shift+l", help: "next tab", run: () => panes.tabStep(1) },
   { group: "tabs", id: "tab-n", keys: "ctrl+shift+#", help: "tab n", run: (digit) => panes.goTab(digit) },
   { group: "app", id: "artifacts", keys: "ctrl+shift+a", help: "artifacts of this project", run: openArtifacts },
+  { group: "app", id: "worktrees", keys: "ctrl+shift+b", help: "worktrees of this project: merged or not, remove", run: openWorktrees },
   { group: "app", id: "settings", keys: "ctrl+comma", help: "settings: accounts, memory, shortcuts", run: openSettings },
   { group: "app", id: "next-theme", keys: "ctrl+shift+e", help: "next theme", run: cycleTheme },
   { group: "app", id: "help", keys: "f1", help: "what is left to set up, and these shortcuts", run: openHelp },
@@ -983,6 +998,7 @@ const panes = new Panes(document.getElementById("panes"), document.getElementByI
 
 const artifactsWindow = new ArtifactsWindow(document.getElementById("artifacts"), { onError: setStatus });
 const changesWindow = new ChangesWindow(document.getElementById("changes"));
+const worktreesWindow = new WorktreesWindow(document.getElementById("worktrees"));
 const settingsWindow = new SettingsWindow(document.getElementById("settings"), {
   shortcuts: shortcutSettings,
   onAccounts: (accounts) => (accountStatuses = accounts),
