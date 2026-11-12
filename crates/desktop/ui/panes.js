@@ -40,6 +40,8 @@ export function terminalOptions() {
   return {
     fontFamily: variable("--font"),
     fontSize: 13,
+    // `unicode`, which sets the width table (loadUnicode11), is a proposed API in xterm 6.
+    allowProposedApi: true,
     theme: {
       background: variable("--terminal"),
       foreground: variable("--terminal-text"),
@@ -58,6 +60,13 @@ export function imageType(path) {
 
 function fileName(path) {
   return path.split(/[\\/]/).pop();
+}
+
+// Emojis take two cells, as Claude Code counts them when it lines up its tables; xterm's own
+// table (Unicode 6) gives them one.
+export function loadUnicode11(terminal) {
+  terminal.loadAddon(new Unicode11Addon.Unicode11Addon());
+  terminal.unicode.activeVersion = "11";
 }
 
 export function loadWebgl(terminal) {
@@ -106,6 +115,7 @@ class PaneView {
     this.placeholder = element("p", "placeholder", "select a session");
     this.element.append(head, this.screen, this.placeholder);
     this.terminal = new Terminal(terminalOptions());
+    loadUnicode11(this.terminal);
     this.fit = new FitAddon.FitAddon();
     this.terminal.loadAddon(this.fit);
     this.terminal.attachCustomKeyEventHandler(keyFilter);

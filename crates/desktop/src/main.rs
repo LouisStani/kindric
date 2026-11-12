@@ -4,6 +4,8 @@ mod claim;
 mod layout;
 mod messages;
 mod pane;
+#[cfg(test)]
+mod page;
 mod prefs;
 mod projects;
 mod settings;

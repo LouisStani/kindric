@@ -2,7 +2,7 @@
 // folder is trusted (`claude --bg` refuses one the account has not trusted), or sign an account
 // in. Claude Code keeps the answer; this window only shows it and passes the keys.
 
-import { loadWebgl, terminalOptions } from "./panes.js";
+import { loadUnicode11, loadWebgl, terminalOptions } from "./panes.js";
 
 const { invoke, Channel } = window.__TAURI__.core;
 const { listen } = window.__TAURI__.event;
@@ -20,6 +20,7 @@ async function runHelper({ title, hint, subject }, open, onClosed) {
   message.textContent = "";
   screen.replaceChildren();
   const terminal = new Terminal(terminalOptions());
+  loadUnicode11(terminal);
   const fit = new FitAddon.FitAddon();
   terminal.loadAddon(fit);
   dialog.showModal();
