@@ -4,6 +4,7 @@ pub mod attach;
 pub mod away;
 pub mod changes;
 pub mod checks;
+pub mod claude_theme;
 mod git;
 pub mod images;
 pub mod launcher;

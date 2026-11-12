@@ -169,6 +169,7 @@ Each account gets its own `CLAUDE_CONFIG_DIR`.
 | Usage of the limits | `~/.local/share/kindric-accounts/.usage/<name>.json`, written by `kindric-accounts statusline` |
 | Unread messages of kindric | Hooks added to the same `.shared-settings/<name>.json`, see below |
 | The user away, in kindric | A Stop hook added to the same `.shared-settings/<name>.json`, see below |
+| Claude Code theme of the sessions kindric starts | A copy of that file with `"theme": "custom:<theme>"`, `.shared-settings/<name>.<theme>.json`; `run` never writes it |
 
 Links are checked on every launch. On Linux and macOS, account directories use `700` permissions and the account list uses `600`.
 

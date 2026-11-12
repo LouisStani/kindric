@@ -121,35 +121,55 @@ pub fn memory_zone(directory: &Path) -> Result<(Option<String>, Vec<String>), St
 }
 
 /// Starts a background session the way `kindric-accounts run <account> --bg` does: shared
-/// MCP servers (none for an isolated account), shared settings, billing variables removed.
-pub fn launch(request: &Request) -> Result<Launched, String> {
+/// MCP servers (none for an isolated account), shared settings, billing variables removed. With
+/// `theme`, the session draws with Claude Code's theme `custom:<theme>`.
+pub fn launch(request: &Request, theme: Option<&str>) -> Result<Launched, String> {
     let paths = Paths::from_env().map_err(library_error)?;
     if accounts::is_implicit(&paths, &request.account).map_err(|error| error.to_string())? {
-        return launch_default(&paths, request);
+        return launch_default(&paths, request, theme);
     }
     launch::require_account(&paths, &request.account).map_err(library_error)?;
     launch::require_claude().map_err(library_error)?;
     let shared = mcp::prepare(&paths, &request.account).map_err(library_error)?;
     let args = background_args(&request.name);
-    let prepared = launch::prepare(&paths, &request.account, shared.file.as_deref(), &args, Some(&request.directory))
+    let prepared = launch::prepare(&paths, &request.account, shared.file.as_deref(), &args, Some(&request.directory), theme)
         .map_err(library_error)?;
     let short_id = run_backgrounded(prepared.command, &request.directory)?;
     let warnings = shared.warnings.into_iter().chain(prepared.warnings).collect();
     Ok(Launched { short_id, warnings })
 }
 
-/// The options of the implicit `default`, when it is isolated. Claude Code adds these settings to
-/// the ones it reads there. A `--bg` launch opens a conversation, so its rules of `global/` come too.
-fn default_settings(paths: &Paths) -> Result<(Vec<OsString>, Vec<String>), String> {
-    let settings = isolation::prepare_settings(paths, registry::DEFAULT_ACCOUNT).map_err(library_error)?;
-    Ok(settings.map_or_else(Default::default, |settings| (settings.args(true), settings.warnings)))
+/// The options of the implicit `default`: its rules when it is isolated, the theme when one is
+/// given, in one `--settings` file. Claude Code adds these settings to the ones it reads there. A
+/// `--bg` launch opens a conversation, so its rules of `global/` come too.
+fn default_settings(paths: &Paths, theme: Option<&str>) -> Result<(Vec<OsString>, Vec<String>), String> {
+    let mut isolated = isolation::prepare_settings(paths, registry::DEFAULT_ACCOUNT).map_err(library_error)?;
+    let mut warnings = isolated.as_ref().map(|settings| settings.warnings.clone()).unwrap_or_default();
+    let mut themed = None;
+    if let Some(theme) = theme {
+        let source = isolated.as_ref().map(|settings| settings.file.clone());
+        match kindric_accounts::theme::write_themed_settings(paths, registry::DEFAULT_ACCOUNT, source.as_deref(), theme) {
+            Ok(file) => themed = Some(file),
+            Err(error) => warnings.push(format!("theme {theme} not given to the session: {error}")),
+        }
+    }
+    let args = match (isolated.as_mut(), themed) {
+        (Some(settings), Some(file)) => {
+            settings.file = file;
+            settings.args(true)
+        },
+        (Some(settings), None) => settings.args(true),
+        (None, Some(file)) => vec![OsString::from("--settings"), file.into_os_string()],
+        (None, None) => Vec::new(),
+    };
+    Ok((args, warnings))
 }
 
 /// `claude --bg` on the implicit `default`: Claude Code reads its own settings and MCP
 /// servers there, so only the environment is cleaned.
-fn launch_default(paths: &Paths, request: &Request) -> Result<Launched, String> {
+fn launch_default(paths: &Paths, request: &Request, theme: Option<&str>) -> Result<Launched, String> {
     let claude = launch::require_claude().map_err(library_error)?;
-    let (settings, settings_warnings) = default_settings(paths)?;
+    let (settings, settings_warnings) = default_settings(paths, theme)?;
     let mut command = Command::new(claude);
     for variable in accounts::default_removed_env() {
         command.env_remove(variable);
@@ -170,13 +190,37 @@ mod tests {
         let root = std::env::temp_dir().join(format!("kindric-default-settings-{}", std::process::id()));
         let _ = fs::remove_dir_all(&root);
         let paths = Paths::from_roots(root.join("config"), root.join("data"), root.clone());
-        assert_eq!(default_settings(&paths).unwrap(), (Vec::new(), Vec::new()));
+        assert_eq!(default_settings(&paths, None).unwrap(), (Vec::new(), Vec::new()));
         kindric_accounts::isolation::isolate(&paths, registry::DEFAULT_ACCOUNT).unwrap();
-        let (args, warnings) = default_settings(&paths).unwrap();
+        let (args, warnings) = default_settings(&paths, None).unwrap();
         let file = paths.shared_settings_file(registry::DEFAULT_ACCOUNT);
         assert_eq!(args, [OsString::from("--settings"), file.clone().into_os_string()]);
         assert!(warnings.is_empty());
         assert!(fs::read_to_string(file).unwrap().contains("deny"));
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    fn settings_of(args: &[OsString]) -> serde_json::Value {
+        assert_eq!(args[0], "--settings");
+        serde_json::from_str(&fs::read_to_string(&args[1]).unwrap()).unwrap()
+    }
+
+    #[test]
+    fn the_implicit_default_gets_the_theme_alone_or_with_its_rules() {
+        let root = std::env::temp_dir().join(format!("kindric-default-theme-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        let paths = Paths::from_roots(root.join("config"), root.join("data"), root.clone());
+        // Claude Code reads the user's settings there itself: only the theme is added.
+        let (args, warnings) = default_settings(&paths, Some("kindric")).unwrap();
+        assert_eq!(args.len(), 2);
+        assert_eq!(settings_of(&args), serde_json::json!({ "theme": "custom:kindric" }));
+        assert!(warnings.is_empty(), "{warnings:?}");
+        kindric_accounts::isolation::isolate(&paths, registry::DEFAULT_ACCOUNT).unwrap();
+        let (args, _) = default_settings(&paths, Some("kindric")).unwrap();
+        let settings = settings_of(&args);
+        assert_eq!(settings["theme"], "custom:kindric");
+        assert!(settings["permissions"]["deny"].as_array().is_some_and(|deny| !deny.is_empty()), "{settings}");
+        assert_eq!(args[1], kindric_accounts::theme::themed_settings_file(&paths, registry::DEFAULT_ACCOUNT, "kindric").into_os_string());
         fs::remove_dir_all(root).unwrap();
     }
 
