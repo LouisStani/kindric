@@ -654,32 +654,20 @@ async function setAway(event) {
     document.getElementById("away-message").textContent = "minutes: a whole number, 0 for back";
     return;
   }
-  let until;
+  let away;
   try {
-    until = await invoke("set_away", { sessionId: form.dataset.sessionId, minutes });
+    away = await invoke("set_away", { sessionId: form.dataset.sessionId, minutes });
   } catch (error) {
     document.getElementById("away-message").textContent = `${error}`;
     return;
   }
   document.getElementById("away").close();
-  const sessionId = form.dataset.sessionId;
+  // Typed in the user's name: the session takes it from them, not from the Stop hook (away.rs).
   const key = panes.activeSession();
   const shown = key && rowOf(key);
-  const said = shown?.session_id === sessionId && panes.active().say(awayWords(sessionId, until));
-  const state = until ? `away until ${clockOf(until)}` : "back: the session may stop again";
+  const said = shown?.session_id === form.dataset.sessionId && panes.active().say(away.words);
+  const state = away.until ? `away until ${clockOf(away.until)}` : "back: the session may stop again";
   setStatus(said ? state : `${state} · not told: the pane no longer shows it`);
-}
-
-// What the user says to the session when they leave until `until` (Unix seconds), or come back.
-// The session takes it from the user, not from the Stop hook (away.rs): a hook's text does not
-// override what the user asked.
-function awayWords(sessionId, until) {
-  if (!until) return "I am back: the usual rules apply again, ask before acting.";
-  return `I am away until ${clockOf(until)}. Keep working on the task without waiting for my approval: `
-    + "when a choice is needed, make it, write it down where the project keeps its decisions, and go on. "
-    + "Allowed: edit, test, commit in your own worktree, write notes in memory. "
-    + "Never: push, merge, delete what you did not create, install, use another account. "
-    + `When the whole task is done and verified, run \`kindric away done ${sessionId}\`, then stop.`;
 }
 
 async function renameSession(event) {

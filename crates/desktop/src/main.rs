@@ -928,10 +928,18 @@ fn mark_away(view: &mut view::ListView) {
     view::mark_away(view, |session| root.as_deref().and_then(|root| away::until(root, session)));
 }
 
+/// What `set_away` changed: the end, none when back, and what to tell the session in the user's
+/// name.
+#[derive(Serialize)]
+struct Away {
+    until: Option<i64>,
+    words: String,
+}
+
 /// The user is away from `session_id` for `minutes`, or back with none: the session keeps working
-/// until then (see `away`). Returns the end, shown at once in the list.
+/// until then (see `away`). The end shows at once in the list.
 #[tauri::command]
-fn set_away(app: AppHandle, shared: State<'_, Shared>, session_id: String, minutes: Option<u32>) -> Result<Option<i64>, String> {
+fn set_away(app: AppHandle, shared: State<'_, Shared>, session_id: String, minutes: Option<u32>) -> Result<Away, String> {
     let _span = shared.trace.span("set_away");
     let root = away::default_root().map_err(|error| format!("cannot find kindric's data: {error}"))?;
     let until = match minutes.filter(|minutes| *minutes > 0) {
@@ -951,7 +959,7 @@ fn set_away(app: AppHandle, shared: State<'_, Shared>, session_id: String, minut
         view.clone()
     };
     let _ = app.emit("sessions", &view);
-    Ok(until)
+    Ok(Away { until, words: away::user_words(&session_id, minutes) })
 }
 
 /// Counts the files the sessions of `to_count` changed, outside the lock of the list (git takes

@@ -60,6 +60,23 @@ fn instruction(session: &str, minutes: i64) -> String {
     )
 }
 
+/// What the app types into `session` in the user's name when they leave for `minutes`, or come
+/// back with none. The session takes it from the user; it does not take the Stop hook's text over
+/// what the user asked.
+pub fn user_words(session: &str, minutes: Option<u32>) -> String {
+    match minutes.filter(|minutes| *minutes > 0) {
+        Some(minutes) => format!(
+            "I am away for the next {minutes} minute{s}. Keep working on the task without waiting for my approval: \
+             when a choice is needed, make it, write it down where the project keeps its decisions, and go on. \
+             Allowed: edit, test, commit in your own worktree, write notes in memory. \
+             Never: push, merge, delete what you did not create, install, use another account. \
+             When the whole task is done and verified, run `kindric away done {session}`, then stop.",
+            s = if minutes == 1 { "" } else { "s" },
+        ),
+        None => "I am back: the usual rules apply again, ask before acting.".to_owned(),
+    }
+}
+
 /// What `kindric away-hook` prints for `input`, the JSON Claude Code gives a Stop hook: a refusal
 /// to stop while the user is away, else nothing. Once the time has passed, the file goes.
 pub fn stop_hook_answer(root: &Path, input: &str, now: i64) -> Option<String> {
@@ -164,5 +181,24 @@ mod tests {
     #[test]
     fn one_minute_left_is_said_in_the_singular() {
         assert!(instruction("aaaa-1111", 1).starts_with("The user is away for 1 more minute and"));
+    }
+
+    #[test]
+    fn leaving_tells_the_session_how_long_what_it_may_do_and_how_to_finish() {
+        let words = user_words("aaaa-1111", Some(60));
+        assert!(words.starts_with("I am away for the next 60 minutes."), "{words}");
+        assert!(words.contains("without waiting for my approval"), "{words}");
+        assert!(words.contains("Allowed: edit, test, commit in your own worktree"), "{words}");
+        assert!(words.contains("Never: push, merge, delete what you did not create, install"), "{words}");
+        assert!(words.contains("`kindric away done aaaa-1111`"), "{words}");
+        assert!(!words.contains('\n'), "one line, sent with one Enter");
+        assert!(user_words("aaaa-1111", Some(1)).starts_with("I am away for the next 1 minute."));
+    }
+
+    #[test]
+    fn coming_back_brings_the_usual_rules_back() {
+        let back = "I am back: the usual rules apply again, ask before acting.";
+        assert_eq!(user_words("aaaa-1111", None), back);
+        assert_eq!(user_words("aaaa-1111", Some(0)), back, "0 minutes is back");
     }
 }
