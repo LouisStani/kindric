@@ -630,6 +630,23 @@ ol, ul {
   opacity: 0.8;
 }
 
+/* Until when the user is away: kept whole, it says the session will not wait for them. */
+.head-away {
+  flex: none;
+  white-space: nowrap;
+  color: var(--waiting);
+}
+
+.pane.active .head-away {
+  color: var(--on-active);
+  font-weight: 700;
+}
+
+#away-note {
+  margin: 0;
+  font-size: 12px;
+}
+
 .progress {
   font-style: italic;
   color: var(--muted);
@@ -742,12 +759,12 @@ dialog::backdrop {
   background: rgb(0 0 0 / 55%);
 }
 
-#new-form, #project-form, #rename-form, #hide-form {
+#new-form, #project-form, #rename-form, #away-form, #hide-form {
   display: grid;
   gap: 10px;
 }
 
-#new-form label, #project-form label, #rename-form label {
+#new-form label, #project-form label, #rename-form label, #away-form label {
   display: grid;
   gap: 4px;
   font-size: 12px;
@@ -768,7 +785,7 @@ input:focus, select:focus {
   border-color: var(--active);
 }
 
-#new-form button, #project-form button, #rename-form button, #hide-form button[type="submit"] {
+#new-form button, #project-form button, #rename-form button, #away-form button, #hide-form button[type="submit"] {
   justify-self: end;
   font-weight: 700;
   color: var(--on-active);
@@ -777,20 +794,20 @@ input:focus, select:focus {
   cursor: pointer;
 }
 
-#new-form button:disabled, #project-form button:disabled, #rename-form button:disabled {
+#new-form button:disabled, #project-form button:disabled, #rename-form button:disabled, #away-form button:disabled {
   cursor: default;
   color: var(--faint);
   background: transparent;
   border-color: var(--line);
 }
 
-#new-message, #project-message, #rename-message {
+#new-message, #project-message, #rename-message, #away-message {
   margin: 0;
   font-size: 12px;
   color: var(--muted);
 }
 
-#new-message:empty, #project-message:empty, #rename-message:empty {
+#new-message:empty, #project-message:empty, #rename-message:empty, #away-message:empty {
   display: none;
 }
 

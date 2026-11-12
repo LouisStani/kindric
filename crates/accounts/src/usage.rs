@@ -205,12 +205,27 @@ fn version_of(output: &str) -> Option<(u32, u32, u32)> {
 /// `settings` (a `settings.json`) with its status line replaced by `command`; what else it holds
 /// is kept, its `padding` too. Settings that do not parse are left out: the second value says why.
 pub fn with_statusline(settings: Option<&str>, command: &str) -> (String, Option<String>) {
-    with_additions(settings, Some(command), None)
+    with_additions(settings, Some(command), &KindricHooks::default())
 }
 
-/// `settings` with the status line replaced by `statusline` and the hook `unread` added, each when
+/// The hooks of `kindric` set on a session, each when the `kindric` in `PATH` has it.
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub struct KindricHooks {
+    /// Tells a session of its unread messages.
+    pub unread: Option<String>,
+    /// Keeps a session working while the user is away.
+    pub away: Option<String>,
+}
+
+impl KindricHooks {
+    fn is_empty(&self) -> bool {
+        self.unread.is_none() && self.away.is_none()
+    }
+}
+
+/// `settings` with the status line replaced by `statusline` and kindric's `hooks` added, each when
 /// given. What else the settings hold is kept, the user's own hooks too.
-pub fn with_additions(settings: Option<&str>, statusline: Option<&str>, unread: Option<&str>) -> (String, Option<String>) {
+pub fn with_additions(settings: Option<&str>, statusline: Option<&str>, hooks: &KindricHooks) -> (String, Option<String>) {
     let (mut settings, problem) = match settings.map(serde_json::from_str::<Map<String, Value>>) {
         Some(Ok(settings)) => (settings, None),
         Some(Err(error)) => (Map::new(), Some(error.to_string())),
@@ -225,8 +240,11 @@ pub fn with_additions(settings: Option<&str>, statusline: Option<&str>, unread: 
         }
         settings.insert("statusLine".into(), Value::Object(line));
     }
-    if let Some(command) = unread {
-        add_unread_hook(&mut settings, command);
+    if let Some(command) = &hooks.unread {
+        add_hook(&mut settings, &UNREAD_EVENTS, command);
+    }
+    if let Some(command) = &hooks.away {
+        add_hook(&mut settings, &AWAY_EVENTS, command);
     }
     let text = serde_json::to_string_pretty(&Value::Object(settings)).unwrap_or_default();
     (text, problem)
@@ -235,14 +253,17 @@ pub fn with_additions(settings: Option<&str>, statusline: Option<&str>, unread: 
 /// The events the hook of kindric's messages runs on: before each prompt, after each tool.
 const UNREAD_EVENTS: [&str; 2] = ["UserPromptSubmit", "PostToolUse"];
 
-/// Adds `command` to the hooks of `UNREAD_EVENTS`, after the user's. Hooks that are not in Claude
-/// Code's form are left as they are, without this one.
-fn add_unread_hook(settings: &mut Map<String, Value>, command: &str) {
+/// The event the hook of the user being away runs on: when a session ends a turn.
+const AWAY_EVENTS: [&str; 1] = ["Stop"];
+
+/// Adds `command` to the hooks of `events`, after the user's. Hooks that are not in Claude Code's
+/// form are left as they are, without this one.
+fn add_hook(settings: &mut Map<String, Value>, events: &[&str], command: &str) {
     let hooks = settings.entry("hooks").or_insert_with(|| Value::Object(Map::new()));
     let Value::Object(hooks) = hooks else {
         return;
     };
-    for event in UNREAD_EVENTS {
+    for &event in events {
         let groups = hooks.entry(event).or_insert_with(|| Value::Array(Vec::new()));
         if let Value::Array(groups) = groups {
             groups.push(serde_json::json!({ "hooks": [{ "type": "command", "command": command }] }));
@@ -255,31 +276,36 @@ const KINDRIC_NAMES: [&str; 2] = ["kindric.exe", "kindric"];
 #[cfg(not(windows))]
 const KINDRIC_NAMES: [&str; 1] = ["kindric"];
 
-/// `"<kindric>" unread`, the hook that tells a session of its unread messages, when the `kindric`
-/// in `PATH` has it. An older one would answer with its usage and exit code 2, which Claude Code
-/// shows to Claude after every tool: it is tried once, with no input, and must exit 0.
-pub fn unread_hook_command() -> Option<String> {
+/// kindric's hooks for a session: `"<kindric>" unread` and `"<kindric>" away-hook`, each when
+/// the `kindric` in `PATH` has it. An older one would answer with its usage and exit code 2, which
+/// Claude Code shows to Claude after every tool: each is tried once, with no input, and must exit 0.
+pub fn kindric_hooks() -> KindricHooks {
     let path = std::env::var_os("PATH").unwrap_or_default();
-    let kindric = launch::find_in(&path, &KINDRIC_NAMES)?;
-    let mut probe = Command::new(&kindric);
-    probe.arg("unread").stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null());
-    let answers = probe.status().is_ok_and(|status| status.success());
-    answers.then(|| format!("\"{}\" unread", kindric.display()))
+    let Some(kindric) = launch::find_in(&path, &KINDRIC_NAMES) else {
+        return KindricHooks::default();
+    };
+    let answering = |subcommand: &str| {
+        let mut probe = Command::new(&kindric);
+        probe.arg(subcommand).stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null());
+        let answers = probe.status().is_ok_and(|status| status.success());
+        answers.then(|| format!("\"{}\" {subcommand}", kindric.display()))
+    };
+    KindricHooks { unread: answering("unread"), away: answering("away-hook") }
 }
 
 /// The settings file of a session of `name`, written to `.shared-settings/<name>.json`: `base`
 /// (an isolated account's file, already written there) or else `~/.claude/settings.json`, with
-/// the status line `wrapper` and the hook `unread`, each when given. `None` leaves the session as
+/// the status line `wrapper` and kindric's `hooks`, each when given. `None` leaves the session as
 /// before, with the reason in `warnings` when something went wrong.
 pub fn settings_file(
     paths: &Paths,
     name: &str,
     base: Option<&Path>,
     wrapper: Option<&str>,
-    unread: Option<&str>,
+    hooks: &KindricHooks,
     warnings: &mut Vec<String>,
 ) -> Option<PathBuf> {
-    if wrapper.is_none() && unread.is_none() {
+    if wrapper.is_none() && hooks.is_empty() {
         return None;
     }
     let source = base.map_or_else(|| paths.shared_root.join("settings.json"), Path::to_path_buf);
@@ -291,7 +317,7 @@ pub fn settings_file(
             return None;
         },
     };
-    let (content, problem) = with_additions(text.as_deref(), wrapper, unread);
+    let (content, problem) = with_additions(text.as_deref(), wrapper, hooks);
     if let Some(problem) = problem {
         warnings.push(format!("usage of {name} not followed: {}: {problem}", source.display()));
         return None;
@@ -375,15 +401,17 @@ mod tests {
     #[test]
     fn the_unread_hook_comes_after_the_users_own_hooks() {
         let settings = r#"{"hooks":{"PostToolUse":[{"matcher":"Bash","hooks":[{"type":"command","command":"mine"}]}],"Stop":[]}}"#;
-        let (text, problem) = with_additions(Some(settings), None, Some("\"/bin/kindric\" unread"));
+        let hooks = KindricHooks { unread: Some("\"/bin/kindric\" unread".into()), away: Some("\"/bin/kindric\" away-hook".into()) };
+        let (text, problem) = with_additions(Some(settings), None, &hooks);
         let value: Value = serde_json::from_str(&text).unwrap();
         assert_eq!(problem, None);
         assert_eq!(value["hooks"]["PostToolUse"][0]["hooks"][0]["command"], "mine");
         assert_eq!(value["hooks"]["PostToolUse"][1]["hooks"][0]["command"], "\"/bin/kindric\" unread");
         assert_eq!(value["hooks"]["UserPromptSubmit"][0]["hooks"][0]["command"], "\"/bin/kindric\" unread");
-        assert_eq!(value["hooks"]["Stop"], serde_json::json!([]));
+        assert_eq!(value["hooks"]["Stop"][0]["hooks"][0]["command"], "\"/bin/kindric\" away-hook");
+        assert_eq!(value["hooks"]["Stop"].as_array().map(Vec::len), Some(1));
         assert!(value.get("statusLine").is_none(), "no status line asked");
-        let (odd, _) = with_additions(Some(r#"{"hooks":"not hooks"}"#), None, Some("k unread"));
+        let (odd, _) = with_additions(Some(r#"{"hooks":"not hooks"}"#), None, &hooks);
         assert_eq!(serde_json::from_str::<Value>(&odd).unwrap()["hooks"], "not hooks", "left as it is");
     }
 
@@ -391,10 +419,12 @@ mod tests {
     fn the_hook_alone_is_enough_for_a_settings_file() {
         let (root, paths) = setup("hook-only", &["work"]);
         let mut warnings = Vec::new();
-        let file = settings_file(&paths, "work", None, None, Some("k unread"), &mut warnings).unwrap();
+        let hooks = KindricHooks { unread: Some("k unread".into()), away: None };
+        let file = settings_file(&paths, "work", None, None, &hooks, &mut warnings).unwrap();
         let value: Value = serde_json::from_str(&fs::read_to_string(file).unwrap()).unwrap();
         assert_eq!(value["hooks"]["UserPromptSubmit"][0]["hooks"][0]["command"], "k unread");
         assert!(value.get("statusLine").is_none());
+        assert!(value["hooks"].get("Stop").is_none(), "no away hook given");
         fs::remove_dir_all(root).unwrap();
     }
 
@@ -416,25 +446,25 @@ mod tests {
     fn a_session_gets_its_own_settings_file_with_the_wrapper() {
         let (root, paths) = setup("settings", &["work"]);
         let mut warnings = Vec::new();
-        assert_eq!(settings_file(&paths, "work", None, None, None, &mut warnings), None, "no wrapper, nothing written");
+        assert_eq!(settings_file(&paths, "work", None, None, &KindricHooks::default(), &mut warnings), None, "no wrapper, nothing written");
         assert!(!paths.shared_settings_file("work").exists());
 
         fs::create_dir_all(&paths.shared_root).unwrap();
         fs::write(paths.shared_root.join("settings.json"), r#"{"model":"opus"}"#).unwrap();
-        let file = settings_file(&paths, "work", None, Some("k statusline"), None, &mut warnings).unwrap();
+        let file = settings_file(&paths, "work", None, Some("k statusline"), &KindricHooks::default(), &mut warnings).unwrap();
         assert_eq!(file, paths.shared_settings_file("work"));
         let value: Value = serde_json::from_str(&fs::read_to_string(&file).unwrap()).unwrap();
         assert_eq!((value["model"].as_str(), value["statusLine"]["command"].as_str()), (Some("opus"), Some("k statusline")));
 
         // An isolated account's file keeps its rules.
         fs::write(&file, r#"{"permissions":{"deny":["Read(//x/**)"]}}"#).unwrap();
-        settings_file(&paths, "work", Some(&file), Some("k statusline"), None, &mut warnings).unwrap();
+        settings_file(&paths, "work", Some(&file), Some("k statusline"), &KindricHooks::default(), &mut warnings).unwrap();
         let value: Value = serde_json::from_str(&fs::read_to_string(&file).unwrap()).unwrap();
         assert_eq!(value["permissions"]["deny"][0], "Read(//x/**)");
         assert_eq!(value["statusLine"]["command"], "k statusline");
 
         fs::write(paths.shared_root.join("settings.json"), "{broken").unwrap();
-        assert_eq!(settings_file(&paths, "work", None, Some("k statusline"), None, &mut warnings), None);
+        assert_eq!(settings_file(&paths, "work", None, Some("k statusline"), &KindricHooks::default(), &mut warnings), None);
         assert_eq!(warnings.len(), 1, "{warnings:?}");
         fs::remove_dir_all(root).unwrap();
     }

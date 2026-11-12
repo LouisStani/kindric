@@ -24,7 +24,7 @@ use kindric_core::launcher::{self, Request, resolve_directory};
 use kindric_core::mailbox::Mailbox;
 use kindric_core::accounts::SessionInfo;
 use kindric_core::artifacts::{self, Kind};
-use kindric_core::{accounts, changes, checks, images, mailbox, refresher};
+use kindric_core::{accounts, away, changes, checks, images, mailbox, refresher};
 use serde::Serialize;
 use serde::de::DeserializeOwned;
 use tauri::ipc::{Channel, InvokeResponseBody, Response};
@@ -896,6 +896,7 @@ fn publish(app: &AppHandle, update: refresher::Update) -> bool {
         let to_count = view::to_count(&next, &current);
         view::carry_changed(&mut next, &current, &HashMap::new());
         view::assign(&mut next, &tabs, &prefs);
+        mark_away(&mut next);
         next.errors.splice(0..0, shared.startup_errors.iter().cloned());
         // The same list again (the 30-second refresh, mostly): the page has nothing to draw.
         if next == *current {
@@ -918,6 +919,39 @@ fn publish(app: &AppHandle, update: refresher::Update) -> bool {
     };
     count_changes(app, &to_count, implicit_default);
     emitted
+}
+
+/// Until when each session of `view` keeps working while the user is away; none when kindric's
+/// data cannot be found.
+fn mark_away(view: &mut view::ListView) {
+    let root = away::default_root().ok();
+    view::mark_away(view, |session| root.as_deref().and_then(|root| away::until(root, session)));
+}
+
+/// The user is away from `session_id` for `minutes`, or back with none: the session keeps working
+/// until then (see `away`). Returns the end, shown at once in the list.
+#[tauri::command]
+fn set_away(app: AppHandle, shared: State<'_, Shared>, session_id: String, minutes: Option<u32>) -> Result<Option<i64>, String> {
+    let _span = shared.trace.span("set_away");
+    let root = away::default_root().map_err(|error| format!("cannot find kindric's data: {error}"))?;
+    let until = match minutes.filter(|minutes| *minutes > 0) {
+        Some(minutes) => {
+            let until = away::now() + i64::from(minutes) * 60;
+            away::set(&root, &session_id, until).map_err(|error| format!("cannot write {}: {error}", root.display()))?;
+            Some(until)
+        },
+        None => {
+            away::clear(&root, &session_id).map_err(|error| format!("cannot clear {}: {error}", root.display()))?;
+            None
+        },
+    };
+    let view = {
+        let mut view = shared.view.lock().unwrap_or_else(PoisonError::into_inner);
+        mark_away(&mut view);
+        view.clone()
+    };
+    let _ = app.emit("sessions", &view);
+    Ok(until)
 }
 
 /// Counts the files the sessions of `to_count` changed, outside the lock of the list (git takes
@@ -1207,6 +1241,7 @@ fn main() -> ExitCode {
             account_usage,
             session_changes,
             file_diff,
+            set_away,
             add_account,
             forget_account,
             memory_warning,

@@ -145,6 +145,7 @@ Each account gets its own `CLAUDE_CONFIG_DIR`.
 | Read rules of an isolated account | Added to the same `.shared-settings/<name>.json` |
 | Usage of the limits | `~/.local/share/claude-accounts/.usage/<name>.json`, written by `kindric-accounts statusline` |
 | Unread messages of kindric | A hook added to the same `.shared-settings/<name>.json`, see below |
+| The user away, in kindric | A Stop hook added to the same `.shared-settings/<name>.json`, see below |
 
 Links are checked on every launch. On Linux and macOS, account directories use `700` permissions and the account list uses `600`.
 
@@ -185,6 +186,15 @@ When `kindric` is installed, sessions can send each other messages through its M
 - An isolated account gets no hook: it is kept out of the messages.
 - It is added only when the `kindric` in `PATH` knows `unread`. An older one is left out.
 - A session waiting for you sees the notice with your next prompt.
+
+## Away, in kindric
+
+In kindric, you can say you are away for a while from a session. kindric-accounts adds a Stop hook to the sessions it starts: until that time, `kindric away-hook` refuses the end of a turn and tells the session to keep working without waiting for your approval. That instruction says what it may do alone and what it must not do: no push, merge, deletion, installation or other account. A session that has finished runs `kindric away done <session id>` and stops.
+
+- The hook comes after your own Stop hooks, and does nothing for a session you are not away from.
+- An isolated account gets no hook.
+- It is added only when the `kindric` in `PATH` knows `away-hook`.
+- Claude Code reads the settings when a session starts: only sessions started after kindric is installed have it.
 
 ## Isolated accounts
 

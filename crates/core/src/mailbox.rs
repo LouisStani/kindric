@@ -80,7 +80,7 @@ pub fn now_secs() -> u64 {
 }
 
 /// Session ids become directory names: only UUID-like ids are accepted.
-fn is_valid_session_id(id: &str) -> bool {
+pub(crate) fn is_valid_session_id(id: &str) -> bool {
     !id.is_empty() && id.len() <= 64 && id.chars().all(|c| c.is_ascii_alphanumeric() || c == '-')
 }
 
