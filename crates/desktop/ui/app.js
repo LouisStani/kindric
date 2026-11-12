@@ -14,7 +14,8 @@ const { listen } = window.__TAURI__.event;
 let lastView = { loaded: false, accounts: [], sessions: [], errors: [] };
 let currentTheme = "ember";
 const picker = { rows: [], selected: 0, query: 0 };
-const status = { notice: "", timer: null };
+// `lasting`: a notice that stays until the settings are opened (a login to renew).
+const status = { notice: "", timer: null, lasting: "" };
 // The welcome list, null until checked; what it was checked for; one check at a time, and
 // one more after it when asked meanwhile.
 const welcome = { lines: null, checkedFor: "", running: false, again: false };
@@ -30,7 +31,8 @@ function elsewhere(session) {
   return `"${session.label}" runs in another terminal: it cannot be opened here`;
 }
 
-// A notice goes after 8 s. Errors of the list come first and stay as long as they last.
+// A notice goes after 8 s. Errors of the list come first and stay as long as they last; the
+// lasting notice shows again once both are gone.
 function setStatus(text) {
   clearTimeout(status.timer);
   status.notice = text;
@@ -42,7 +44,7 @@ function setStatus(text) {
 function renderStatus() {
   const node = document.getElementById("status");
   const errors = lastView.errors.join(" · ");
-  const text = errors || status.notice;
+  const text = errors || status.notice || status.lasting;
   node.className = errors ? "error" : text ? "notice" : "";
   node.title = text;
   if (text) node.replaceChildren(element("span", "status-text", text));
@@ -488,7 +490,8 @@ async function readAccountStatuses() {
   const soon = accountStatuses.filter((account) => expiresWithin(account, 3));
   if (soon.length === 0) return;
   const said = soon.map((account) => `${account.name}: login expires ${inHowLong(timeLeft(account))}`);
-  setStatus(`${said.join(" · ")} · ${keyText("settings")} to renew`);
+  status.lasting = `${said.join(" · ")} · ${keyText("settings")} to renew`;
+  renderStatus();
 }
 
 function ago(seconds) {
@@ -769,7 +772,7 @@ const SHORTCUTS = [
   { group: "tabs", id: "next-tab", keys: "ctrl+shift+l", help: "next tab", run: () => panes.tabStep(1) },
   { group: "tabs", id: "tab-n", keys: "ctrl+shift+#", help: "tab n", run: (digit) => panes.goTab(digit) },
   { group: "app", id: "artifacts", keys: "ctrl+shift+a", help: "artifacts of this project", run: openArtifacts },
-  { group: "app", id: "settings", keys: "ctrl+comma", help: "settings: accounts, memory, shortcuts", run: () => settingsWindow.open() },
+  { group: "app", id: "settings", keys: "ctrl+comma", help: "settings: accounts, memory, shortcuts", run: openSettings },
   { group: "app", id: "next-theme", keys: "ctrl+shift+e", help: "next theme", run: cycleTheme },
   { group: "app", id: "help", keys: "f1", help: "what is left to set up, and these shortcuts", run: openHelp },
 ];
@@ -909,6 +912,13 @@ const settingsWindow = new SettingsWindow(document.getElementById("settings"), {
   shortcuts: shortcutSettings,
   onAccounts: (accounts) => (accountStatuses = accounts),
 });
+
+// The settings show which logins to renew: the lasting notice has said what it had to.
+function openSettings() {
+  status.lasting = "";
+  renderStatus();
+  settingsWindow.open();
+}
 
 const sessionDirectory = directoryField("new-form");
 const projectDirectory = directoryField("project-form");
