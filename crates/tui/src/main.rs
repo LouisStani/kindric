@@ -77,7 +77,7 @@ fn run_loop(terminal: &mut DefaultTerminal, home: PathBuf, start_dir: PathBuf) -
     let (events, inbox) = mpsc::channel();
     spawn_input_reader(events.clone());
     let publisher = events.clone();
-    refresher::spawn(move |update| publisher.send(AppEvent::Snapshot(update)).is_ok());
+    refresher::spawn(false, move |update| publisher.send(AppEvent::Snapshot(update)).is_ok());
     let size = terminal.size()?;
     let mut app = App::new(events, Rect::new(0, 0, size.width, size.height), home, start_dir);
     loop {

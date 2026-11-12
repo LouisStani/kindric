@@ -282,12 +282,18 @@ pub fn default_logged_in() -> bool {
     command.output().is_ok_and(|output| parse_logged_in(&String::from_utf8_lossy(&output.stdout)))
 }
 
+/// The arguments of `claude agents`. Without `--all`, Claude Code 2.1.322 lists only the
+/// sessions that have a process: a stopped one (hidden, or ended) would be found nowhere.
+fn agents_args(include_stopped: bool) -> &'static [&'static str] {
+    if include_stopped { &["agents", "--json", "--all"] } else { &["agents", "--json"] }
+}
+
 /// `claude agents --json` on one account, with the environment rules of
 /// `kindric-accounts run`. The shared configuration is not linked again here: relinking
 /// removes then recreates the links, and this runs at every refresh. The implicit
 /// `default` runs without `CLAUDE_CONFIG_DIR`: setting it to `~/.claude` would make Claude
 /// Code read `~/.claude/.claude.json` instead of its real `~/.claude.json`.
-fn account_sessions(paths: &Paths, account: &str, implicit_default: bool) -> io::Result<Vec<SessionInfo>> {
+fn account_sessions(paths: &Paths, account: &str, implicit_default: bool, include_stopped: bool) -> io::Result<Vec<SessionInfo>> {
     let dir = if is_implicit_default(account, implicit_default) {
         paths.shared_root.clone()
     } else {
@@ -300,7 +306,7 @@ fn account_sessions(paths: &Paths, account: &str, implicit_default: bool) -> io:
     } else {
         command.env("CLAUDE_CONFIG_DIR", &dir);
     }
-    let output = command.args(["agents", "--json"]).output()?;
+    let output = command.args(agents_args(include_stopped)).output()?;
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
         return Err(io::Error::other(format!("claude agents --json: {}", stderr.trim())));
@@ -393,8 +399,8 @@ pub fn set_memory_warning_kb(paths: &Paths, kb: u64) -> io::Result<()> {
     memory::set_warning_kb(paths, kb)
 }
 
-/// Queries `accounts` in parallel.
-pub fn query_accounts(paths: &Paths, accounts: &[String], implicit_default: bool) -> Vec<Queried> {
+/// Queries `accounts` in parallel; `include_stopped` adds the sessions that have no process.
+pub fn query_accounts(paths: &Paths, accounts: &[String], implicit_default: bool, include_stopped: bool) -> Vec<Queried> {
     let handles: Vec<_> = accounts
         .iter()
         .cloned()
@@ -402,7 +408,8 @@ pub fn query_accounts(paths: &Paths, accounts: &[String], implicit_default: bool
             let paths = paths.clone();
             thread::spawn(move || {
                 let start = Instant::now();
-                let found = account_sessions(&paths, &account, implicit_default).map_err(|error| error.to_string());
+                let found =
+                    account_sessions(&paths, &account, implicit_default, include_stopped).map_err(|error| error.to_string());
                 (start.elapsed(), found)
             })
         })
@@ -439,12 +446,13 @@ pub fn assemble(
     Snapshot { accounts, isolated, sessions, errors, timings, implicit_default: false }
 }
 
-/// Sessions of every account, `default` included when logged in, accounts queried in parallel.
+/// Sessions of every account that have a process, `default` included when logged in, accounts
+/// queried in parallel.
 pub fn snapshot() -> io::Result<Snapshot> {
     let paths = paths()?;
     let (registry, isolated) = registered(&paths)?;
     let (accounts, implicit_default) = with_default(registry, default_logged_in());
-    let queried = query_accounts(&paths, &accounts, implicit_default);
+    let queried = query_accounts(&paths, &accounts, implicit_default, false);
     let timings = queried.iter().map(|query| (query.account.clone(), query.took)).collect();
     let found = queried.into_iter().map(|query| (query.account, query.found)).collect();
     let mut snapshot = assemble(accounts, isolated, &found, timings);
@@ -513,6 +521,19 @@ mod tests {
         assert!(sessions.iter().all(|s| s.account == "louis"));
         assert_eq!(sessions[0].short_id.as_deref(), Some("a40b6e33"));
         assert!(!sessions[3].can_attach());
+    }
+
+    /// What `claude agents --json --all` gave on 2026-11-12 (Claude Code 2.1.322) for a stopped
+    /// session: no pid, no status. It must come out paused, the state Ctrl+P finds.
+    #[test]
+    fn stopped_sessions_are_asked_for_and_come_out_paused() {
+        assert_eq!(agents_args(true), ["agents", "--json", "--all"]);
+        assert_eq!(agents_args(false), ["agents", "--json"]);
+        let stopped = r#"[{"cwd":"/home/u/p","id":"61f9b7da","kind":"background","name":"e2e-c",
+            "sessionId":"61f9b7da-1390","startedAt":1794487000000,"state":"stopped"}]"#;
+        let sessions = parse_agents("lystriq", stopped).unwrap();
+        assert_eq!(sessions[0].state, SessionState::Paused);
+        assert_eq!(sessions[0].short_id.as_deref(), Some("61f9b7da"));
     }
 
     /// A turn that ended with a server left running in the background: `busy` in `agents --json`.
