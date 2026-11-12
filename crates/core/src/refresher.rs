@@ -63,7 +63,6 @@ fn to_query(change: &Change, accounts: &[String], known: &BTreeMap<String, Found
 struct Refresher {
     watcher: Result<ChangeWatcher, String>,
     mailbox: Result<Mailbox, String>,
-    watched_accounts: Vec<String>,
     /// What each account gave when it was last queried.
     known: BTreeMap<String, Found>,
     account_dirs: Vec<(String, PathBuf)>,
@@ -80,24 +79,21 @@ impl Refresher {
         Self {
             watcher: ChangeWatcher::new().map_err(|error| format!("file watching unavailable: {error}")),
             mailbox: mailbox.map_err(|error| format!("messages: {error}")),
-            watched_accounts: Vec::new(),
             known: BTreeMap::new(),
             account_dirs: Vec::new(),
             default_logged_in: false,
         }
     }
 
-    /// New directories to watch appear only when the account list changes.
-    fn watch_accounts(&mut self, snapshot: &mut Snapshot, registry_dir: &Path) {
+    /// Watches what appeared since the last call: an account, or a job directory, whose
+    /// creation wakes the list up through its account's `jobs/`. Called before the accounts
+    /// are queried, so that a state written meanwhile is not missed.
+    fn watch(&mut self, registry_dir: &Path) -> Vec<String> {
         let (Ok(watcher), Ok(mailbox)) = (&mut self.watcher, &self.mailbox) else {
-            return;
+            return Vec::new();
         };
-        if snapshot.accounts == self.watched_accounts {
-            return;
-        }
         let dirs: Vec<PathBuf> = self.account_dirs.iter().map(|(_, dir)| dir.clone()).collect();
-        snapshot.errors.extend(watcher.ensure(&watcher::targets(&dirs, mailbox.root(), registry_dir)));
-        self.watched_accounts = snapshot.accounts.clone();
+        watcher.ensure(&watcher::targets(&dirs, mailbox.root(), registry_dir))
     }
 
     fn unread_counts(&self, snapshot: &mut Snapshot) -> HashMap<String, usize> {
@@ -126,6 +122,11 @@ impl Refresher {
         }
         let (registry, isolated) = accounts::registered(&paths).map_err(|error| error.to_string())?;
         let (registered, implicit_default) = accounts::with_default(registry, self.default_logged_in);
+        self.account_dirs = registered
+            .iter()
+            .map(|account| (account.clone(), accounts::dir_of(&paths, account, implicit_default)))
+            .collect();
+        let watch_errors = self.watch(&paths.config_dir);
         let asked = to_query(change, &registered, &self.known);
         let queried = accounts::query_accounts(&paths, &asked, implicit_default);
         self.known.retain(|account, _| registered.contains(account));
@@ -134,16 +135,12 @@ impl Refresher {
             timings.push((query.account.clone(), query.took));
             self.known.insert(query.account, query.found);
         }
-        self.account_dirs = registered
-            .iter()
-            .map(|account| (account.clone(), accounts::dir_of(&paths, account, implicit_default)))
-            .collect();
         let mut snapshot = accounts::assemble(registered, isolated, &self.known, timings);
         snapshot.implicit_default = implicit_default;
         if let Err(error) = &self.watcher {
             snapshot.errors.push(error.clone());
         }
-        self.watch_accounts(&mut snapshot, &paths.config_dir);
+        snapshot.errors.extend(watch_errors);
         let unread = self.unread_counts(&mut snapshot);
         Ok((snapshot, unread))
     }
