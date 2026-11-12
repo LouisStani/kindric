@@ -1543,3 +1543,20 @@ input:focus, select:focus {
 .level-system .atlas-again { display: none; }
 .level-system .atlas-warning { display: none; }
 .level-system .atlas-system:not(.focused) text, .level-system .atlas-core:not(.focused) text { display: none; }
+
+/* The atlas's search: what holds every word lights up, the rest dims. */
+.atlas-search {
+  position: absolute;
+  top: 3vh;
+  left: 50%;
+  transform: translateX(-50%);
+  width: min(420px, 60vw);
+  background: var(--raised);
+}
+.atlas-search[hidden] { display: none; }
+.searching .atlas-planet:not(.found), .searching .atlas-sun:not(.found) { opacity: 0.18; }
+.searching .atlas-planet.found, .searching .atlas-sun.found { stroke: var(--waiting); stroke-width: 2; }
+.searching .atlas-note-dot:not(.found) { opacity: 0.15; }
+.searching .atlas-note-dot.found { fill: var(--waiting); }
+.atlas-found-count { fill: var(--waiting); font-weight: 700; }
+.searching .atlas-legend circle { opacity: 1; stroke: none; }
