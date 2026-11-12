@@ -5,6 +5,7 @@ import { mark, note, startTrace, traced } from "./trace.js";
 import { askTrust } from "./helper.js";
 import { checkItems, hasToDo } from "./welcome.js";
 import { ArtifactsWindow } from "./artifacts.js";
+import { ChangesWindow } from "./changes.js";
 import { SettingsWindow } from "./settings.js";
 import { expiresWithin, inHowLong, shortly, timeLeft } from "./expiry.js";
 
@@ -401,6 +402,15 @@ function openActiveMessages() {
   return openMessages(session);
 }
 
+// Ctrl+Shift+G, or a click on "N files" in a pane's head: the files the session changed.
+function openChanges(key) {
+  if (!key) {
+    setStatus("no session in this pane");
+    return;
+  }
+  return changesWindow.open(key.account, key.short_id, titleOf(key));
+}
+
 // The colors of theme `name`; custom ones are read from theme.json each time.
 async function themeColors(name) {
   if (name !== "custom") return THEMES[name] ?? THEMES.ember;
@@ -760,6 +770,7 @@ const SHORTCUTS = [
   { group: "sessions", id: "rename", keys: "f2", help: "give a short name", run: openRenameForm },
   { group: "sessions", id: "hide", keys: "ctrl+shift+k", help: () => `stop and hide (${keyText("find-session")} brings it back)`, run: confirmHide },
   { group: "sessions", id: "messages", keys: "ctrl+shift+m", help: "read its messages", run: openActiveMessages },
+  { group: "sessions", id: "changes", keys: "ctrl+shift+g", help: "files it changed", run: () => openChanges(panes.activeSession()) },
   { group: "panes", id: "split", keys: "ctrl+shift+d", help: "split the pane", run: () => panes.split() },
   { group: "panes", id: "close-pane", keys: "ctrl+shift+w", help: "close the pane (the session keeps running)", run: () => panes.close() },
   { group: "panes", id: "previous-pane", keys: "ctrl+h", mac: "ctrl+bracketleft", help: "previous pane", run: () => panes.step(-1) },
@@ -904,10 +915,12 @@ const panes = new Panes(document.getElementById("panes"), document.getElementByI
   markOf,
   progressOf: (key) => rowOf(key)?.progress ?? null,
   changedOf: (key) => rowOf(key)?.changed ?? null,
+  onChangedClick: openChanges,
   imagesOf: (key) => rowOf(key)?.images ?? [],
 });
 
 const artifactsWindow = new ArtifactsWindow(document.getElementById("artifacts"), { onError: setStatus });
+const changesWindow = new ChangesWindow(document.getElementById("changes"));
 const settingsWindow = new SettingsWindow(document.getElementById("settings"), {
   shortcuts: shortcutSettings,
   onAccounts: (accounts) => (accountStatuses = accounts),

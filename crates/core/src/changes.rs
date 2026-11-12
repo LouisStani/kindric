@@ -17,7 +17,8 @@ const LARGEST_COUNTED: u64 = 1024 * 1024;
 /// Git calls a file binary when its first 8000 bytes hold a NUL; kindric does the same.
 const BINARY_PROBE: usize = 8000;
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(tag = "type", rename_all = "kebab-case")]
 pub enum ChangeKind {
     Added,
     Modified,
@@ -25,7 +26,7 @@ pub enum ChangeKind {
     Renamed { from: String },
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct FileChange {
     /// Relative to the copy, with `/` as git writes it.
     pub path: String,
@@ -36,7 +37,8 @@ pub struct FileChange {
 }
 
 /// Where the comparison of a copy starts.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "kebab-case")]
 pub enum Start {
     /// The state kindric wrote down when it launched the session.
     Recorded,
@@ -47,7 +49,8 @@ pub enum Start {
     Estimated,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(tag = "type", rename_all = "kebab-case")]
 pub enum Block {
     Changes { copy: PathBuf, branch: Option<String>, start: Start, files: Vec<FileChange> },
     /// A copy that no longer exists, such as a worktree removed since.
@@ -940,6 +943,34 @@ mod tests {
         let account = std::env::temp_dir().join(format!("kindric-changes-none-{}", std::process::id()));
         assert_eq!(session_changes(&account, "abc-123", None), Ok(Vec::new()));
         assert_eq!(session_changes(&account, "../escape", None), Ok(Vec::new()));
+    }
+
+    #[test]
+    fn blocks_read_as_json_by_the_window() {
+        let renamed = FileChange {
+            path: "b.rs".into(),
+            kind: ChangeKind::Renamed { from: "a.rs".into() },
+            added: Some(2),
+            removed: None,
+        };
+        let blocks = vec![
+            Block::Changes { copy: PathBuf::from("/repo"), branch: Some("main".into()), start: Start::BranchCreated, files: vec![renamed] },
+            Block::Removed { copy: PathBuf::from("/gone") },
+            Block::Failed { copy: PathBuf::from("/odd"), error: "no git".into() },
+        ];
+        let json = serde_json::to_value(&blocks).expect("blocks serialize");
+        assert_eq!(
+            json,
+            serde_json::json!([
+                {"type": "changes", "copy": "/repo", "branch": "main", "start": "branch-created", "files": [
+                    {"path": "b.rs", "kind": {"type": "renamed", "from": "a.rs"}, "added": 2, "removed": null}
+                ]},
+                {"type": "removed", "copy": "/gone"},
+                {"type": "failed", "copy": "/odd", "error": "no git"},
+            ])
+        );
+        let added = serde_json::to_value(ChangeKind::Added).expect("kind serializes");
+        assert_eq!(added, serde_json::json!({"type": "added"}));
     }
 
     /// The blocks of a real session, printed: `KINDRIC_CHANGES_ACCOUNT=<account dir>
