@@ -252,6 +252,7 @@ pub fn with_additions(settings: Option<&str>, statusline: Option<&str>, hooks: &
         // In the background: Claude Code wakes the session when it exits with code 2.
         let hook = serde_json::json!({ "type": "command", "command": command, "asyncRewake": true, "timeout": WAIT_SECONDS });
         add_hook(&mut settings, &WAKE_EVENTS, &hook);
+        allow_tool(&mut settings, READ_MESSAGES_TOOL);
     }
     let text = serde_json::to_string_pretty(&Value::Object(settings)).unwrap_or_default();
     (text, problem)
@@ -269,6 +270,27 @@ const WAKE_EVENTS: [&str; 1] = ["Stop"];
 /// How long a session at rest waits for such a message, in seconds: a day. Claude Code stops the
 /// wait after it; the next turn starts a new one.
 const WAIT_SECONDS: u32 = 24 * 60 * 60;
+
+/// The tool a session woken by a message calls first. Allowed, so that it reads without the user,
+/// who is not there (264); sending a message stays asked.
+const READ_MESSAGES_TOOL: &str = "mcp__kindric__read_messages";
+
+/// Allows `tool` without asking, after the user's own rules. Permissions that are not in Claude
+/// Code's form are left as they are.
+fn allow_tool(settings: &mut Map<String, Value>, tool: &str) {
+    let permissions = settings.entry("permissions").or_insert_with(|| Value::Object(Map::new()));
+    let Value::Object(permissions) = permissions else {
+        return;
+    };
+    let allow = permissions.entry("allow").or_insert_with(|| Value::Array(Vec::new()));
+    let Value::Array(allow) = allow else {
+        return;
+    };
+    let tool = Value::from(tool);
+    if !allow.contains(&tool) {
+        allow.push(tool);
+    }
+}
 
 /// Adds `hook` to the hooks of `events`, after the user's. Hooks that are not in Claude Code's
 /// form are left as they are, without this one.
@@ -436,6 +458,31 @@ mod tests {
         assert!(value.get("statusLine").is_none(), "no status line asked");
         let (odd, _) = with_additions(Some(r#"{"hooks":"not hooks"}"#), None, &hooks);
         assert_eq!(serde_json::from_str::<Value>(&odd).unwrap()["hooks"], "not hooks", "left as it is");
+    }
+
+    #[test]
+    fn a_session_that_can_be_woken_reads_its_messages_without_asking() {
+        let wake = KindricHooks { unread: None, away: None, wake: Some("k wait-message".into()) };
+        let settings = r#"{"permissions":{"allow":["Bash(ls)"],"deny":["Read(//secret/**)"],"defaultMode":"acceptEdits"}}"#;
+        let (text, _) = with_additions(Some(settings), None, &wake);
+        let permissions = &serde_json::from_str::<Value>(&text).unwrap()["permissions"];
+        assert_eq!(permissions["allow"], serde_json::json!(["Bash(ls)", "mcp__kindric__read_messages"]), "after the user's rules");
+        assert_eq!(permissions["deny"][0], "Read(//secret/**)");
+        assert_eq!(permissions["defaultMode"], "acceptEdits");
+        let (again, _) = with_additions(Some(&text), None, &wake);
+        assert_eq!(serde_json::from_str::<Value>(&again).unwrap()["permissions"]["allow"].as_array().map(Vec::len), Some(2), "once");
+        let (none, _) = with_additions(None, None, &wake);
+        assert_eq!(serde_json::from_str::<Value>(&none).unwrap()["permissions"]["allow"][0], "mcp__kindric__read_messages");
+    }
+
+    #[test]
+    fn without_the_wake_nothing_is_allowed() {
+        let hooks = KindricHooks { unread: Some("k unread".into()), away: Some("k away-hook".into()), wake: None };
+        let (text, _) = with_additions(None, None, &hooks);
+        assert!(serde_json::from_str::<Value>(&text).unwrap().get("permissions").is_none(), "an isolated account gets no wake either");
+        let wake = KindricHooks { wake: Some("k wait-message".into()), ..hooks };
+        let (odd, _) = with_additions(Some(r#"{"permissions":{"allow":"all"}}"#), None, &wake);
+        assert_eq!(serde_json::from_str::<Value>(&odd).unwrap()["permissions"]["allow"], "all", "left as it is");
     }
 
     #[test]
