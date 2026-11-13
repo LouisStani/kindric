@@ -251,22 +251,28 @@ pub fn with_additions(settings: Option<&str>, statusline: Option<&str>, hooks: &
 }
 
 /// The events the hook of kindric's messages runs on: before each prompt, after each tool.
-const UNREAD_EVENTS: [&str; 2] = ["UserPromptSubmit", "PostToolUse"];
+const UNREAD_EVENTS: [(&str, Option<&str>); 2] = [("UserPromptSubmit", None), ("PostToolUse", None)];
 
-/// The event the hook of the user being away runs on: when a session ends a turn.
-const AWAY_EVENTS: [&str; 1] = ["Stop"];
+/// The events the hook of the user being away runs on, with the tools they are limited to: the end
+/// of a turn; each shell command, whatever the permission mode, to refuse what waits for the user;
+/// each question Claude Code would ask, to answer it in their place.
+const AWAY_EVENTS: [(&str, Option<&str>); 3] = [("Stop", None), ("PreToolUse", Some("Bash")), ("PermissionRequest", None)];
 
-/// Adds `command` to the hooks of `events`, after the user's. Hooks that are not in Claude Code's
-/// form are left as they are, without this one.
-fn add_hook(settings: &mut Map<String, Value>, events: &[&str], command: &str) {
+/// Adds `command` to the hooks of `events`, after the user's, limited to a tool when one is
+/// given. Hooks that are not in Claude Code's form are left as they are, without this one.
+fn add_hook(settings: &mut Map<String, Value>, events: &[(&str, Option<&str>)], command: &str) {
     let hooks = settings.entry("hooks").or_insert_with(|| Value::Object(Map::new()));
     let Value::Object(hooks) = hooks else {
         return;
     };
-    for &event in events {
+    for &(event, tool) in events {
         let groups = hooks.entry(event).or_insert_with(|| Value::Array(Vec::new()));
         if let Value::Array(groups) = groups {
-            groups.push(serde_json::json!({ "hooks": [{ "type": "command", "command": command }] }));
+            let mut group = serde_json::json!({ "hooks": [{ "type": "command", "command": command }] });
+            if let (Some(tool), Value::Object(fields)) = (tool, &mut group) {
+                fields.insert("matcher".into(), Value::from(tool));
+            }
+            groups.push(group);
         }
     }
 }
@@ -410,6 +416,11 @@ mod tests {
         assert_eq!(value["hooks"]["UserPromptSubmit"][0]["hooks"][0]["command"], "\"/bin/kindric\" unread");
         assert_eq!(value["hooks"]["Stop"][0]["hooks"][0]["command"], "\"/bin/kindric\" away-hook");
         assert_eq!(value["hooks"]["Stop"].as_array().map(Vec::len), Some(1));
+        assert_eq!(value["hooks"]["PreToolUse"][0]["matcher"], "Bash", "only shell commands are looked at");
+        assert_eq!(value["hooks"]["PreToolUse"][0]["hooks"][0]["command"], "\"/bin/kindric\" away-hook");
+        assert_eq!(value["hooks"]["PermissionRequest"][0]["hooks"][0]["command"], "\"/bin/kindric\" away-hook");
+        assert!(value["hooks"]["PermissionRequest"][0].get("matcher").is_none(), "every question");
+        assert!(value["hooks"]["UserPromptSubmit"][0].get("matcher").is_none());
         assert!(value.get("statusLine").is_none(), "no status line asked");
         let (odd, _) = with_additions(Some(r#"{"hooks":"not hooks"}"#), None, &hooks);
         assert_eq!(serde_json::from_str::<Value>(&odd).unwrap()["hooks"], "not hooks", "left as it is");

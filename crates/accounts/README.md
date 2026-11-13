@@ -212,9 +212,15 @@ When `kindric` is installed, sessions can send each other messages through its M
 
 ## Away, in kindric
 
-In kindric, you can say you are away for a while from a session. kindric-accounts adds a Stop hook to the sessions it starts: until that time, `kindric away-hook` refuses the end of a turn and tells the session to keep working without waiting for your approval. That instruction says what it may do alone and what it must not do: no push, merge, deletion, installation or other account. A session that has finished runs `kindric away done <session id>` and stops.
+In kindric, you can say you are away for a while from a session. kindric-accounts adds `kindric away-hook` to the sessions it starts, on three events. Until that time:
 
-- The hook comes after your own Stop hooks, and does nothing for a session you are not away from.
+- Stop: it refuses the end of a turn and tells the session to keep working without waiting for your approval. That instruction says what it may do alone and what it must not do: no push, merge, deletion, installation or other account.
+- PreToolUse, shell commands only: it refuses a command that pushes, merges, deletes, installs or uses another account, and tells the session why, so that it goes on with the rest. Claude Code runs this hook in every permission mode. The command is read word by word, not run in a shell: one hidden in `$(…)` or `sh -c "…"` is not seen.
+- PermissionRequest: it answers yes to the questions Claude Code would ask you, and no to those same commands.
+
+A session that has finished runs `kindric away done <session id>` and stops.
+
+- The hook comes after your own hooks, and does nothing for a session you are not away from: Claude Code decides and asks as usual.
 - An isolated account gets no hook.
 - It is added only when the `kindric` in `PATH` knows `away-hook`.
 - Claude Code reads the settings when a session starts: only sessions started after kindric is installed have it.
