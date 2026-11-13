@@ -155,14 +155,14 @@
     <ol id="messages-list"></ol>
   </dialog>
   <dialog id="atlas" tabindex="-1">
-    <svg class="atlas-map" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1600 900" preserveAspectRatio="xMidYMid meet"></svg>
+    <canvas class="atlas-map"></canvas>
     <p class="atlas-cartouche"><strong>~ $ memory atlas</strong><span class="atlas-cartouche-count"></span></p>
     <p class="atlas-legend">
       <span class="sun">sun: the project's status</span>
-      <span class="pale">pale sun, red ring: status older than the last decision</span>
+      <span class="pale">pale sun: status older than the last decision</span>
       <span class="planet">planet: one file, its size its length, its color its project</span>
-      <span class="again">red planet: a lesson given again</span>
-      <span class="rock">grey rock: a file INDEX.md does not name</span>
+      <span class="again">red planet, pulsing ring: a lesson given again</span>
+      <span class="rock">grey lumpy rock: a file INDEX.md does not name</span>
     </p>
     <input class="atlas-search" placeholder="search the memory" spellcheck="false" autocomplete="off" hidden>
     <p class="atlas-caption"></p>
