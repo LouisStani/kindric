@@ -1,53 +1,41 @@
-// The memory atlas (Settings › memory, decisions 270-281): the whole memory as a cluster of stars,
-// every file a planet. A small project is one system around its sun, its status; a big one is a
-// galaxy of systems: its knowledge, its lessons, its decisions in runs (atlas.rs). The core holds
-// what belongs to no project. A pale sun ringed in red is a status older than the last decision,
-// a red planet holds a lesson given more than once, a grey rock is a note INDEX.md does not name.
-// A pinch or ctrl+wheel zooms, two fingers move, a click dives in, Escape comes back, "/" searches.
-// Rust reads the files; this module only draws.
+// The memory atlas (Settings › memory, decisions 270-303): the whole memory in 3D, every file a
+// planet. A small project is one system around its sun, its status; a big one is a galaxy of
+// systems (its knowledge, its lessons, its decisions in runs, atlas.rs) whose places draw its form.
+// The core holds what belongs to no project. A pale sun is a status older than the last decision,
+// a red planet with a pulsing ring holds a lesson given again, a grey lumpy rock is a file
+// INDEX.md does not name. Nothing is drawn that is not a file, apart from the sky behind.
+// Dragging turns the view and it keeps turning a little once let go; a pinch or the wheel goes in
+// toward the pointer or out, and the view settles on a state: everything, a project, a system, a
+// file. Typing searches. Rust reads the files; this module only draws.
 
 const { invoke } = window.__TAURI__.core;
 
-const SVG = "http://www.w3.org/2000/svg";
 const TAU = Math.PI * 2;
-const CENTER = { x: 800, y: 450 };
-// The ellipse the projects sit on, around the core.
-const RING = { x: 640, y: 360 };
-const ZOOM_MS = 500;
 const SEARCH_MS = 200;
-// Planets this far apart along an orbit, orbits this far apart, in the map's units.
-const PLANET_GAP = 4.6;
-const ORBIT_GAP = 4.4;
-// A galaxy's runs of decisions go out along two arms from its sun.
-const ARM_START = 30;
-const ARM_STEP = 7;
-const ARM_TURN = 0.95;
-// Seconds for the innermost orbit to go round once; outer ones are slower (Kepler).
-const INNER_PERIOD = 24;
-const HINTS = {
-  root: "click a project · pinch or ctrl+wheel zoom · two fingers move · / search · esc close",
-  zone: "click a system or a planet · esc back · / search",
-  part: "click a planet to read it · esc back · / search",
-  note: "esc back",
-};
+const FLIGHT_MS = 1600;
+// A zoom gesture is over once no event came for this long.
+const GESTURE_END_MS = 180;
+// Planets are drawn this much bigger than their orbits need, so they can be seen and clicked.
+const PLANET_SCALE = 1.6;
+// Room left between two projects, and between a project and the core.
+const PROJECT_GAP = 50;
+const SPIN_MAX = 10;
+const START = { yaw: 0.6, pitch: 0.55 };
+const TYPES = ["gas", "rock", "ice", "lava", "ocean"];
+const FORMS = ["spiral3", "barred", "ring", "spiral2", "elliptical", "irregular", "spiral4"];
+const CORE_KINDS = ["global", "setup", "perso", "skills"];
+const HINTS = [
+  "type to search · drag or two fingers sideways to turn · pinch or wheel in and out · click a project · esc closes",
+  "click a system · pinch out or esc to come back · type to search",
+  "click a planet to read it · pinch out or esc to come back · type to search",
+  "esc comes back",
+];
 
-function node(tag, attributes = {}, text) {
-  const element = document.createElementNS(SVG, tag);
-  for (const [name, value] of Object.entries(attributes)) element.setAttribute(name, value);
-  if (text !== undefined) element.textContent = text;
-  return element;
-}
+// ----- Small pure helpers -----
 
-function html(tag, className, text) {
-  const element = document.createElement(tag);
-  if (className) element.className = className;
-  if (text !== undefined) element.textContent = text;
-  return element;
-}
-
-// The same sky at every opening.
+// The same sky and the same places at every opening.
 function seeded(seed) {
-  let state = seed;
+  let state = seed | 0;
   return () => {
     state = (state + 0x6d2b79f5) | 0;
     let value = Math.imul(state ^ (state >>> 15), 1 | state);
@@ -56,8 +44,19 @@ function seeded(seed) {
   };
 }
 
-function around(center, radius, angle) {
-  return { x: center.x + radius * Math.cos(angle), y: center.y + radius * Math.sin(angle) };
+// FNV-1a: a file keeps its look from one opening to the next.
+function hashOf(text) {
+  let hash = 0x811c9dc5;
+  for (let index = 0; index < text.length; index += 1) hash = Math.imul(hash ^ text.charCodeAt(index), 0x01000193);
+  return hash >>> 0;
+}
+
+function gauss(random) {
+  return Math.sqrt(-2 * Math.log(random() + 1e-9)) * Math.cos(TAU * random());
+}
+
+function ease(t) {
+  return t < 0.5 ? 4 * t * t * t : 1 - (-2 * t + 2) ** 3 / 2;
 }
 
 // `2026-11-06` → `06/11`.
@@ -65,106 +64,554 @@ function day(date) {
   return date ? `${date.slice(8, 10)}/${date.slice(5, 7)}` : "none";
 }
 
-function planetRadius(bytes) {
-  return Math.min(3.2, 0.75 + Math.sqrt(bytes) / 45);
+function newest(notes) {
+  return [...notes].sort((one, other) => (other.date ?? "").localeCompare(one.date ?? ""))[0];
 }
 
-function ease(t) {
-  return t < 0.5 ? 4 * t * t * t : 1 - (-2 * t + 2) ** 3 / 2;
+function hslToRgb(hue, saturation, lightness) {
+  const h = (((hue % 360) + 360) % 360) / 360;
+  const s = saturation / 100;
+  const l = lightness / 100;
+  const channel = (n) => {
+    const k = (n + h * 12) % 12;
+    const a = s * Math.min(l, 1 - l);
+    return l - a * Math.max(-1, Math.min(k - 3, 9 - k, 1));
+  };
+  return [channel(0), channel(8), channel(4)];
 }
 
-// Notes on orbits around a star: each orbit holds as many as fit, the first notes closest.
-function orbits(notes, from) {
-  const rings = [];
-  let radius = from;
-  for (let index = 0; index < notes.length; ) {
-    const room = Math.max(4, Math.floor((TAU * radius) / PLANET_GAP));
-    rings.push({ radius, notes: notes.slice(index, index + room) });
-    index += room;
-    radius += ORBIT_GAP;
+// The color tables of an feComponentTransfer: noise in grey becomes the ramp of `stops`.
+function tables(stops) {
+  const colors = stops.map(([hue, saturation, lightness]) => hslToRgb(hue, saturation, lightness));
+  return [0, 1, 2].map((channel) => colors.map((color) => color[channel].toFixed(3)).join(" "));
+}
+
+// The surfaces of the five kinds of planet (the models drawn on Claude Design, decision 291).
+const MODELS = {
+  gas: { noise: ["fractalNoise", "0.0025 0.05", 4, 7], stops: (h) => [[h + 20, 40, 22], [h, 70, 46], [h + 15, 85, 72], [h - 12, 65, 38], [h + 30, 55, 86], [h + 5, 70, 58]] },
+  rock: { noise: ["turbulence", "0.018", 5, 3], stops: (h) => [[h, 12, 10], [h + 10, 18, 26], [h, 22, 40], [h + 25, 20, 55], [h, 12, 72]] },
+  ice: { noise: ["fractalNoise", "0.01 0.025", 4, 11], stops: (h) => [[h, 45, 40], [h + 10, 45, 62], [h, 35, 80], [0, 0, 96], [h - 10, 55, 72], [h, 40, 55]] },
+  lava: { noise: ["turbulence", "0.022", 4, 5], stops: (h) => [[h, 20, 3], [h, 22, 7], [h, 25, 11], [h, 25, 13], [18, 100, 48], [42, 100, 68]] },
+  ocean: { noise: ["fractalNoise", "0.011", 5, 21], stops: (h) => [[h, 85, 12], [h, 80, 22], [h, 75, 32], [h - 8, 70, 40], [115, 40, 30], [85, 35, 42], [40, 30, 60]] },
+};
+
+// An SVG drawn once into a canvas: its filters make the noise of the textures and the clouds.
+function svgCanvas(svg, width, height, done) {
+  const image = new Image();
+  image.onload = () => {
+    const canvas = document.createElement("canvas");
+    canvas.width = width;
+    canvas.height = height;
+    canvas.getContext("2d").drawImage(image, 0, 0, width, height);
+    URL.revokeObjectURL(image.src);
+    done(canvas);
+  };
+  image.onerror = () => URL.revokeObjectURL(image.src);
+  image.src = URL.createObjectURL(new Blob([svg], { type: "image/svg+xml" }));
+}
+
+function radialSprite(size, stops) {
+  const canvas = document.createElement("canvas");
+  canvas.width = canvas.height = size;
+  const context = canvas.getContext("2d");
+  const gradient = context.createRadialGradient(size / 2, size / 2, 0, size / 2, size / 2, size / 2);
+  for (const [offset, color] of stops) gradient.addColorStop(offset, color);
+  context.fillStyle = gradient;
+  context.fillRect(0, 0, size, size);
+  return canvas;
+}
+
+// Six long branches and two short ones, as on space telescope photographs.
+function spikeSprite() {
+  const size = 256;
+  const canvas = document.createElement("canvas");
+  canvas.width = canvas.height = size;
+  const context = canvas.getContext("2d");
+  context.translate(size / 2, size / 2);
+  context.globalCompositeOperation = "lighter";
+  const branch = (angle, length, width, alpha) => {
+    context.save();
+    context.rotate(angle);
+    const gradient = context.createLinearGradient(0, 0, length, 0);
+    gradient.addColorStop(0, `rgba(255,255,255,${alpha})`);
+    gradient.addColorStop(0.25, `rgba(255,255,255,${alpha * 0.28})`);
+    gradient.addColorStop(1, "rgba(255,255,255,0)");
+    context.fillStyle = gradient;
+    context.beginPath();
+    context.moveTo(0, -width);
+    context.lineTo(length, 0);
+    context.lineTo(0, width);
+    context.fill();
+    context.restore();
+  };
+  for (let index = 0; index < 6; index += 1) branch((index * Math.PI) / 3 + Math.PI / 6, size / 2, 1.4, 0.9);
+  branch(0, size * 0.3, 0.8, 0.5);
+  branch(Math.PI, size * 0.3, 0.8, 0.5);
+  const core = context.createRadialGradient(0, 0, 0, 0, 0, 14);
+  core.addColorStop(0, "rgba(255,255,255,1)");
+  core.addColorStop(1, "rgba(255,255,255,0)");
+  context.fillStyle = core;
+  context.fillRect(-14, -14, 28, 28);
+  return canvas;
+}
+
+// Where the k-th of n systems of a galaxy sits, so that its real systems draw its form.
+function placeInForm(form, k, n, random) {
+  if (k === 0) return { radius: 0, angle: 0, height: 0 };
+  const i = k - 1;
+  const m = Math.max(1, n - 1);
+  if (form === "ring") return { radius: 230 + (random() - 0.5) * 30, angle: (i / m) * TAU, height: (random() - 0.5) * 30 };
+  if (form === "elliptical") {
+    const radius = 70 + Math.sqrt(i / m) * 210;
+    return { radius, angle: i * 2.39996, height: (random() - 0.5) * 140 * (1 - radius / 320) };
   }
-  return rings;
+  if (form === "irregular") {
+    const [angle, radius] = [[0.4, 170], [2.6, 250], [4.4, 120]][i % 3];
+    return { radius: radius + (random() - 0.5) * 110, angle: angle + (random() - 0.5) * 0.9, height: (random() - 0.5) * 70 };
+  }
+  if (form === "barred") {
+    if (i < 4) return { radius: 85 + Math.floor(i / 2) * 85, angle: i % 2 ? Math.PI : 0, height: (random() - 0.5) * 20 };
+    const j = i - 4;
+    const step = Math.floor(j / 2) + 1;
+    return { radius: 210 + step * 32, angle: (j % 2) * Math.PI + step * 0.55, height: (random() - 0.5) * 25 };
+  }
+  const arms = form === "spiral2" ? 2 : form === "spiral4" ? 4 : 3;
+  const step = Math.floor(i / arms) + 1;
+  return { radius: 60 + step * (arms === 2 ? 52 : 70), angle: ((i % arms) * TAU) / arms + step * (arms === 2 ? 0.62 : 0.55), height: (random() - 0.5) * 25 };
 }
 
-// A star and its notes: the size it takes, and its orbits.
-function systemOf(notes, starRadius) {
-  const rings = orbits(notes, starRadius + 4);
-  const reach = rings.length === 0 ? starRadius + 3 : rings[rings.length - 1].radius + 3;
-  return { rings, reach };
+// A galaxy lies in its own plane: tipped by `inc`, turned by `node`.
+function tilt(project, v) {
+  if (!project.inc) return v;
+  const ci = Math.cos(project.inc);
+  const si = Math.sin(project.inc);
+  const cn = Math.cos(project.node);
+  const sn = Math.sin(project.node);
+  const y = v.y * ci - v.z * si;
+  const z = v.y * si + v.z * ci;
+  return { x: v.x * cn - z * sn, y, z: v.x * sn + z * cn };
 }
+
+// A point of a system's orbit plane, at `radius` and `angle` from its sun.
+function orbitPoint(system, radius, angle) {
+  const lx = Math.cos(angle) * radius;
+  const lz = Math.sin(angle) * radius;
+  const y = -lz * Math.sin(system.inc);
+  const z = lz * Math.cos(system.inc);
+  const cn = Math.cos(system.node);
+  const sn = Math.sin(system.node);
+  return { x: system.center.x + lx * cn - z * sn, y: system.center.y + y, z: system.center.z + lx * sn + z * cn };
+}
+
+function planetPosition(planet, clock) {
+  return orbitPoint(planet.system, planet.orbit, planet.theta0 + planet.omega * clock);
+}
+
+// The outline of a planet: a note INDEX.md does not name is a lumpy rock, a gas giant is flattened.
+function shapePath(context, x, y, radius, planet) {
+  context.beginPath();
+  if (planet.type === "gas") {
+    context.ellipse(x, y, radius, radius * 0.88, 0, 0, TAU);
+    return;
+  }
+  if (planet.lost) {
+    for (let index = 0; index <= 28; index += 1) {
+      const angle = (index / 28) * TAU;
+      const k = 1 + 0.16 * Math.sin(angle * 2 + planet.phase) + 0.09 * Math.sin(angle * 3 + planet.phase * 2.3) + 0.05 * Math.sin(angle * 7 + planet.phase * 5.1);
+      const px = x + Math.cos(angle) * radius * k * 0.9;
+      const py = y + Math.sin(angle) * radius * k * 0.9;
+      if (index === 0) context.moveTo(px, py);
+      else context.lineTo(px, py);
+    }
+    context.closePath();
+    return;
+  }
+  context.arc(x, y, radius, 0, TAU);
+}
+
+// Night on the side away from the sun, darker edges, a soft highlight, a lit rim of air.
+function shade(context, x, y, radius, ux, uy, planet) {
+  context.save();
+  shapePath(context, x, y, radius, planet);
+  context.clip();
+  const night = context.createLinearGradient(x + ux * radius, y + uy * radius, x - ux * radius, y - uy * radius);
+  night.addColorStop(0, "rgba(0,0,0,0)");
+  night.addColorStop(0.42, "rgba(0,0,0,0.05)");
+  night.addColorStop(0.62, "rgba(2,1,6,0.8)");
+  night.addColorStop(1, "rgba(2,1,6,0.97)");
+  context.fillStyle = night;
+  context.fillRect(x - radius, y - radius, radius * 2, radius * 2);
+  const limb = context.createRadialGradient(x, y, radius * 0.6, x, y, radius);
+  limb.addColorStop(0, "rgba(0,0,0,0)");
+  limb.addColorStop(1, "rgba(0,0,0,0.5)");
+  context.fillStyle = limb;
+  context.fillRect(x - radius, y - radius, radius * 2, radius * 2);
+  const hx = x + ux * radius * 0.55;
+  const hy = y + uy * radius * 0.55;
+  const spec = context.createRadialGradient(hx, hy, 0, hx, hy, radius * 0.5);
+  spec.addColorStop(0, `rgba(255,250,240,${planet.type === "ocean" || planet.type === "ice" ? 0.4 : 0.22})`);
+  spec.addColorStop(1, "rgba(255,250,240,0)");
+  context.fillStyle = spec;
+  context.fillRect(x - radius, y - radius, radius * 2, radius * 2);
+  context.restore();
+  const air = { gas: 0.4, rock: 0.12, ice: 0.5, lava: 0.25, ocean: 0.7 }[planet.type];
+  const angle = Math.atan2(uy, ux);
+  context.strokeStyle = `hsla(${planet.hue + 20},100%,80%,${air})`;
+  context.lineWidth = Math.max(0.6, radius * 0.05);
+  context.beginPath();
+  context.arc(x, y, radius * 1.02, angle - 1.3, angle + 1.3);
+  context.stroke();
+}
+
+// ----- The scene: projects, systems, planets, out of what atlas.rs read -----
+
+function planetOf(note, kind, repeated, system, project, random) {
+  const look = hashOf(note.path);
+  const pick = seeded(look);
+  const type = TYPES[look % TYPES.length];
+  const scale = { gas: 1.35, rock: 0.8, ice: 1, lava: 0.9, ocean: 1.05 }[type];
+  const size = Math.max(0.7, Math.min(6, (0.8 + 1.4 * Math.log10(Math.max(note.bytes, 120) / 120)) * scale));
+  return {
+    note,
+    kind,
+    repeated: kind === "lessons" && repeated > 0,
+    lost: note.lost,
+    system,
+    project,
+    type: note.lost ? "rock" : type,
+    hue: (system.hue + (pick() - 0.5) * 50 + 360) % 360,
+    variant: Math.floor(pick() * 3),
+    ring: !note.lost && pick() < (type === "gas" ? 0.45 : 0.1),
+    ringTilt: (pick() - 0.5) * 0.8,
+    size,
+    orbit: 0,
+    theta0: random() * TAU,
+    omega: 0,
+    spin: (0.4 + pick() * 0.8) * (pick() < 0.5 ? -1 : 1),
+    phase: pick() * 10,
+  };
+}
+
+function hueOf(projectHue, kind) {
+  if (kind === "knowledge") return projectHue + 55;
+  if (kind === "lessons") return projectHue - 55;
+  if (kind === "others") return projectHue + 180;
+  if (CORE_KINDS.includes(kind)) return projectHue + CORE_KINDS.indexOf(kind) * 70;
+  return projectHue;
+}
+
+// A sun and the notes around it, each on its own orbit, the first ones closest; orbits go either way.
+function systemOf(project, label, hue, sunRadius, entries, random, extra = {}) {
+  const star = extra.main ? "main" : ["main", "main", "giant", "dwarf", "main"][Math.floor(random() * 5)];
+  const system = {
+    project,
+    label,
+    hue: (hue + 360) % 360,
+    center: { x: 0, y: 0, z: 0 },
+    sunRadius: sunRadius * (star === "giant" ? 1.7 : star === "dwarf" ? 0.55 : 1),
+    star,
+    inc: (random() - 0.5) * 1.2,
+    node: random() * TAU,
+    planets: [],
+    radius: 0,
+    ...extra,
+  };
+  let orbit = system.sunRadius * 3 + 6;
+  for (const { note, kind, repeated } of entries) {
+    const planet = planetOf(note, kind, repeated, system, project, random);
+    orbit += 2.2 + planet.size * PLANET_SCALE * 0.95 + (planet.ring ? planet.size * 1.4 : 0) + random() * 0.8;
+    planet.orbit = orbit;
+    planet.omega = (TAU / (7 * (orbit / 30) ** 1.5)) * (random() < 0.5 ? -1 : 1);
+    system.planets.push(planet);
+  }
+  system.radius = orbit + 8;
+  return system;
+}
+
+function buildScene(atlas) {
+  const projects = [];
+  const center = { name: "memory", isCore: true, hue: 42, center: { x: 0, y: 0, z: 0 }, systems: [], galaxy: false, sun: null, total: 0 };
+  const coreEntries = atlas.center.parts.flatMap((part) => part.notes.map((note) => ({ note, kind: part.kind, repeated: part.repeated })));
+  const core = systemOf(center, "memory", 42, 14, coreEntries, seeded(42), { main: true });
+  core.status = [];
+  center.systems.push(core);
+  center.radius = core.radius;
+  center.total = coreEntries.length;
+  projects.push(center);
+  let galaxies = 0;
+  atlas.systems.forEach((source, index) => {
+    const random = seeded(hashOf(source.name));
+    // The golden angle: two projects side by side never get close colors.
+    const hue = (index * 137.508 + 20) % 360;
+    const status = source.sun?.notes ?? [];
+    const project = {
+      name: source.name,
+      hue,
+      sun: source.sun,
+      galaxy: source.galaxy,
+      systems: [],
+      radius: 0,
+      total: status.length + source.parts.reduce((sum, part) => sum + part.notes.length, 0),
+      turn: random() < 0.5 ? -1 : 1,
+      inc: 0,
+      node: 0,
+      center: { x: 0, y: 0, z: 0 },
+    };
+    const entries = (part) => part.notes.map((note) => ({ note, kind: part.kind, repeated: part.repeated }));
+    if (!source.galaxy) {
+      const system = systemOf(project, source.name, hue, 9, source.parts.flatMap(entries), random, { main: true, status, stale: source.sun?.stale ?? false });
+      project.systems.push(system);
+      project.radius = system.radius;
+    } else {
+      project.inc = (0.35 + random() * 0.85) * (random() < 0.5 ? -1 : 1);
+      project.node = random() * TAU;
+      project.form = FORMS[galaxies % FORMS.length];
+      galaxies += 1;
+      const parts = [{ label: "status", kind: "status", notes: [], repeated: 0 }, ...source.parts];
+      parts.forEach((part, k) => {
+        const place = placeInForm(project.form, k, parts.length, random);
+        const extra = k === 0 ? { main: true, status, stale: source.sun?.stale ?? false } : { kind: part.kind, repeated: part.repeated };
+        const system = systemOf(project, part.label, hueOf(hue, part.kind), k === 0 ? 11 : 7, entries(part), random, extra);
+        system.home = { ...place, thick: (random() - 0.5) * 200 * Math.max(0.35, 1 - place.radius / 550) };
+        project.systems.push(system);
+        project.radius = Math.max(project.radius, place.radius + system.radius);
+      });
+    }
+    projects.push(project);
+  });
+  spread(projects);
+  return { projects, systems: projects.flatMap((project) => project.systems), core: center };
+}
+
+// Each project as close to the core as its size allows, then pushed apart in 3D until none touch.
+function spread(projects) {
+  const core = projects.find((project) => project.isCore);
+  const around = projects.filter((project) => !project.isCore);
+  around.forEach((project, index) => {
+    project.dist = core.radius + PROJECT_GAP + project.radius;
+    const y = (1 - (2 * (index + 0.5)) / around.length) * 0.55;
+    const angle = index * 2.39996;
+    const k = Math.sqrt(1 - y * y);
+    project.dir = { x: Math.cos(angle) * k, y, z: Math.sin(angle) * k };
+  });
+  const at = (project) => ({ x: project.dir.x * project.dist, y: project.dir.y * project.dist, z: project.dir.z * project.dist });
+  for (let round = 0; round < 600; round += 1) {
+    let moved = false;
+    for (let i = 0; i < around.length; i += 1) {
+      for (let j = i + 1; j < around.length; j += 1) {
+        const a = around[i];
+        const b = around[j];
+        const pa = at(a);
+        const pb = at(b);
+        const dx = pa.x - pb.x;
+        const dy = pa.y - pb.y;
+        const dz = pa.z - pb.z;
+        const distance = Math.hypot(dx, dy, dz) || 1;
+        const need = a.radius + b.radius + PROJECT_GAP;
+        if (distance >= need) continue;
+        moved = true;
+        const push = ((need - distance) * 0.5) / distance;
+        for (const [project, position, sign] of [[a, pa, 1], [b, pb, -1]]) {
+          const q = { x: position.x + dx * push * sign, y: position.y + dy * push * sign * 0.6, z: position.z + dz * push * sign };
+          const n = Math.hypot(q.x, q.y, q.z);
+          // Too crowded at this distance: step outward a little.
+          if (round > 200) project.dist += 2;
+          const dir = { x: q.x / n, y: Math.max(-0.7, Math.min(0.7, q.y / n)), z: q.z / n };
+          const m = Math.hypot(dir.x, dir.y, dir.z);
+          project.dir = { x: dir.x / m, y: dir.y / m, z: dir.z / m };
+        }
+      }
+    }
+    if (!moved) break;
+  }
+  for (const project of around) project.center = at(project);
+}
+
+// ----- The sky behind: stars, a band of the Milky Way, a few clouds; it moves with the view only -----
+
+function buildSky(random) {
+  const randomDirection = () => {
+    const u = random() * 2 - 1;
+    const angle = random() * TAU;
+    const s = Math.sqrt(1 - u * u);
+    return { x: Math.cos(angle) * s, y: u, z: Math.sin(angle) * s };
+  };
+  // The band crosses the first view on a diagonal: its plane holds the view direction and a slanted line.
+  const cy = Math.cos(START.yaw);
+  const sy = Math.sin(START.yaw);
+  const cp = Math.cos(START.pitch);
+  const sp = Math.sin(START.pitch);
+  const forward = { x: cp * sy, y: -sp, z: cp * cy };
+  const slant = { x: cy + 0.55 * sp * sy, y: 0.55 * cp, z: -sy + 0.55 * sp * cy };
+  const n = { x: forward.y * slant.z - forward.z * slant.y, y: forward.z * slant.x - forward.x * slant.z, z: forward.x * slant.y - forward.y * slant.x };
+  const length = Math.hypot(n.x, n.y, n.z);
+  const band = { x: n.x / length, y: n.y / length, z: n.z / length };
+  const nearBand = (spread) => {
+    const d = randomDirection();
+    const k = d.x * band.x + d.y * band.y + d.z * band.z - gauss(random) * spread;
+    const v = { x: d.x - band.x * k, y: d.y - band.y * k, z: d.z - band.z * k };
+    const m = Math.hypot(v.x, v.y, v.z);
+    return { x: v.x / m, y: v.y / m, z: v.z / m };
+  };
+  const colors = ["#fff4e6", "#e9efff", "#ffe2c4", "#cfe0ff", "#ffd6e8", "#fffbe9"];
+  // Stars in a few batches of one color and one brightness: thousands of them stay cheap.
+  const batches = [];
+  for (const color of colors) for (const [alpha, size] of [[0.22, 0.6], [0.45, 0.8], [0.7, 1.1], [0.95, 1.6]]) batches.push({ color, alpha, size, stars: [] });
+  for (let index = 0; index < 9000; index += 1) {
+    const star = index % 10 < 7 ? nearBand(index % 10 < 4 ? 0.035 : 0.09) : randomDirection();
+    const b = random() ** 3;
+    const level = b < 0.15 ? 0 : b < 0.4 ? 1 : b < 0.75 ? 2 : 3;
+    batches[Math.floor(random() * colors.length) * 4 + level].stars.push(star);
+  }
+  return {
+    batches,
+    glow: Array.from({ length: 130 }, () => ({ dir: nearBand(0.03), size: 0.07 + random() * 0.1, alpha: 0.08 + random() * 0.08, hue: 25 + random() * 30 })),
+    dust: Array.from({ length: 110 }, () => ({ dir: nearBand(0.02), size: 0.02 + random() * 0.05, alpha: 0.35 + random() * 0.35 })),
+    bright: Array.from({ length: 14 }, () => ({ dir: randomDirection(), hue: [210, 40, 0, 190, 280][Math.floor(random() * 5)], size: 14 + random() * 30 })),
+    cloudPlaces: [200, 330, 270].map((hue, index) => ({ hue, seed: 3 + index * 17, dir: nearBand(0.35), size: 0.18 + random() * 0.14 })),
+    clouds: [],
+  };
+}
+
+function cloudSvg(hue, seed) {
+  const [r, g, b] = hslToRgb(hue, 90, 58);
+  const [r2, g2, b2] = hslToRgb(hue + 40, 85, 45);
+  return `<svg xmlns="http://www.w3.org/2000/svg" width="512" height="512"><defs>
+<filter id="n" x="0" y="0" width="100%" height="100%"><feTurbulence type="fractalNoise" baseFrequency="0.006" numOctaves="6" seed="${seed}"/><feColorMatrix type="matrix" values="0 0 0 0 ${r}  0 0 0 0 ${g}  0 0 0 0 ${b}  2.2 0 0 0 -0.85"/></filter>
+<filter id="m" x="0" y="0" width="100%" height="100%"><feTurbulence type="turbulence" baseFrequency="0.012" numOctaves="5" seed="${seed + 9}"/><feColorMatrix type="matrix" values="0 0 0 0 ${r2}  0 0 0 0 ${g2}  0 0 0 0 ${b2}  0 2.4 0 0 -0.9"/></filter>
+<radialGradient id="fade"><stop offset="0.2" stop-color="#fff"/><stop offset="1" stop-color="#000"/></radialGradient>
+<mask id="k"><rect width="512" height="512" fill="url(#fade)"/></mask></defs>
+<g mask="url(#k)"><rect width="512" height="512" filter="url(#n)"/><rect width="512" height="512" filter="url(#m)" opacity="0.7"/></g></svg>`;
+}
+
+function textureSvg(type, hue) {
+  const model = MODELS[type];
+  const [kind, frequency, octaves, seed] = model.noise;
+  const [r, g, b] = tables(model.stops(hue));
+  const clouds = type === "ocean"
+    ? `<filter id="c" x="0" y="0" width="100%" height="100%"><feTurbulence type="fractalNoise" baseFrequency="0.008 0.03" numOctaves="4" seed="4" stitchTiles="stitch"/><feColorMatrix type="matrix" values="0 0 0 0 1  0 0 0 0 1  0 0 0 0 1  0 0 0 2.6 -1.35"/></filter>`
+    : "";
+  const cloudLayer = type === "ocean" ? `<rect width="400" height="300" filter="url(#c)" opacity="0.8"/>` : "";
+  return `<svg xmlns="http://www.w3.org/2000/svg" width="400" height="300"><defs><filter id="f" x="0" y="0" width="100%" height="100%"><feTurbulence type="${kind}" baseFrequency="${frequency}" numOctaves="${octaves}" seed="${seed}" stitchTiles="stitch"/><feColorMatrix type="saturate" values="0"/><feComponentTransfer><feFuncR type="table" tableValues="${r}"/><feFuncG type="table" tableValues="${g}"/><feFuncB type="table" tableValues="${b}"/><feFuncA type="table" tableValues="1 1"/></feComponentTransfer></filter>${clouds}</defs><rect width="400" height="300" filter="url(#f)"/>${cloudLayer}</svg>`;
+}
+
+function lavaGlowSvg() {
+  const [kind, frequency, octaves, seed] = MODELS.lava.noise;
+  return `<svg xmlns="http://www.w3.org/2000/svg" width="400" height="300"><defs><filter id="g" x="0" y="0" width="100%" height="100%"><feTurbulence type="${kind}" baseFrequency="${frequency}" numOctaves="${octaves}" seed="${seed}" stitchTiles="stitch"/><feColorMatrix type="matrix" values="0 0 0 0 1  0 0 0 0 0.45  0 0 0 0 0.1  0 0 0 -9 2.4"/><feGaussianBlur stdDeviation="1.2"/></filter></defs><rect width="400" height="300" filter="url(#g)"/></svg>`;
+}
+
+// ----- The window -----
 
 export class AtlasWindow {
   constructor(dialog, { onError }) {
     this.dialog = dialog;
-    this.svg = dialog.querySelector(".atlas-map");
+    this.canvas = dialog.querySelector(".atlas-map");
+    this.context = this.canvas.getContext("2d");
     this.caption = dialog.querySelector(".atlas-caption");
     this.reader = dialog.querySelector(".atlas-note");
     this.title = dialog.querySelector(".atlas-cartouche-count");
     this.search = dialog.querySelector(".atlas-search");
     this.onError = onError;
-    this.layout = null;
-    this.focus = { zone: null, part: null };
-    this.reading = false;
-    this.found = null;
-    this.searchTimer = null;
-    this.searchRequest = 0;
-    this.frame = 0;
-    this.spinning = 0;
-    this.selected = -1;
     this.still = matchMedia("(prefers-reduced-motion: reduce)").matches;
+    this.scene = null;
+    this.loop = 0;
+    this.textures = new Map();
+    this.sprites = new Map();
+    this.glows = new Map();
+    this.halos = new Map();
+    this.spikes = spikeSprite();
+    this.dustSprite = radialSprite(64, [[0, "rgba(2,1,5,1)"], [1, "rgba(2,1,5,0)"]]);
+    this.grain = this.makeGrain();
+    this.sky = buildSky(seeded(1107));
+    for (const place of this.sky.cloudPlaces) svgCanvas(cloudSvg(place.hue, place.seed), 512, 512, (canvas) => this.sky.clouds.push({ ...place, canvas }));
+    this.resetState();
+    this.listen();
+  }
+
+  resetState() {
+    this.camera = { target: { x: 0, y: 0, z: 0 }, dist: 3000, yaw: START.yaw, pitch: START.pitch };
+    this.focus = { project: null, system: null, planet: null };
+    this.flight = null;
+    this.clock = 0;
+    this.spin = { yaw: 0, pitch: 0, last: 0, wheelAt: 0 };
+    this.pointer = { down: false, moved: false, x: 0, y: 0, touches: new Map(), pinch: 0 };
+    this.gesture = { active: false, startDist: 0, x: 0, y: 0, timer: 0 };
+    this.found = null;
+    this.searchRequest = 0;
+    this.drawn = [];
+    this.hovered = null;
+    this.selected = -1;
+    this.idleSince = performance.now();
+  }
+
+  listen() {
+    const { dialog, canvas, search } = this;
     dialog.addEventListener("cancel", (event) => {
-      if (!this.atHome()) event.preventDefault();
+      if (this.level() > 0 || this.found) event.preventDefault();
     });
-    dialog.addEventListener("close", () => cancelAnimationFrame(this.spinning));
+    dialog.addEventListener("close", () => {
+      cancelAnimationFrame(this.loop);
+      this.loop = 0;
+      this.resizer?.disconnect();
+    });
     dialog.addEventListener("keydown", (event) => {
       if (this.onKey(event)) {
         event.preventDefault();
         event.stopPropagation();
       }
     });
-    this.svg.addEventListener("click", (event) => {
-      if (!event.target.closest(".atlas-hit")) this.back();
-    });
-    this.svg.addEventListener("wheel", (event) => this.onWheel(event), { passive: false });
+    canvas.addEventListener("contextmenu", (event) => event.preventDefault());
+    canvas.addEventListener("pointerdown", (event) => this.onPointerDown(event));
+    canvas.addEventListener("pointermove", (event) => this.onPointerMove(event));
+    canvas.addEventListener("pointerup", (event) => this.onPointerUp(event));
+    canvas.addEventListener("pointercancel", (event) => this.onPointerUp(event));
+    canvas.addEventListener("wheel", (event) => this.onWheel(event), { passive: false });
     // WebKit's own pinch events, where the system gives them.
     let lastScale = 1;
-    this.svg.addEventListener("gesturestart", (event) => {
+    canvas.addEventListener("gesturestart", (event) => {
       event.preventDefault();
       lastScale = 1;
     });
-    this.svg.addEventListener("gesturechange", (event) => {
+    canvas.addEventListener("gesturechange", (event) => {
       event.preventDefault();
-      this.zoomAt(this.pointOf(event), event.scale / lastScale);
+      const box = canvas.getBoundingClientRect();
+      this.zoom(lastScale / event.scale, event.clientX - box.left, event.clientY - box.top);
       lastScale = event.scale;
     });
-    this.search.addEventListener("input", () => {
-      clearTimeout(this.searchTimer);
-      this.searchTimer = setTimeout(() => this.runSearch(), SEARCH_MS);
+    canvas.addEventListener("gestureend", (event) => {
+      event.preventDefault();
+      this.settle();
     });
-    this.search.addEventListener("keydown", (event) => {
+    let timer = 0;
+    search.addEventListener("input", () => {
+      clearTimeout(timer);
+      timer = setTimeout(() => this.runSearch(), SEARCH_MS);
+    });
+    search.addEventListener("keydown", (event) => {
       event.stopPropagation();
       if (event.key === "Escape") {
         event.preventDefault();
         this.clearSearch();
       } else if (event.key === "Enter") {
         event.preventDefault();
-        this.dialog.focus();
+        this.goToFirstFound();
       }
     });
   }
 
   async open() {
-    this.focus = { zone: null, part: null };
-    this.reading = false;
+    this.resetState();
+    this.scene = null;
     this.reader.hidden = true;
     this.search.value = "";
     this.search.hidden = true;
-    this.found = null;
-    this.layout = null;
-    this.svg.replaceChildren(node("text", { x: CENTER.x, y: CENTER.y, class: "atlas-hint", "text-anchor": "middle" }, "reading the memory…"));
-    this.setView({ x: 0, y: 0, width: 1600, height: 900 });
+    this.title.textContent = "";
     this.dialog.showModal();
     this.dialog.focus();
+    this.fitCanvas();
+    this.resizer = new ResizeObserver(() => this.fitCanvas());
+    this.resizer.observe(this.canvas);
+    this.say("reading the memory…");
     let atlas;
     try {
       atlas = await invoke("memory_atlas");
@@ -173,465 +620,394 @@ export class AtlasWindow {
       this.onError(`${error}`);
       return;
     }
-    this.layout = this.place(atlas);
-    this.draw(atlas);
-    this.setView(this.home());
+    if (!this.dialog.open) return;
+    this.scene = buildScene(atlas);
+    const files = this.scene.systems.reduce((sum, system) => sum + system.planets.length + (system.status?.length ?? 0), 0);
+    this.title.textContent = `${files} files · ${atlas.systems.length} projects${atlas.warnings.length > 0 ? ` · not read: ${atlas.warnings.join(" · ")}` : ""}`;
     this.say();
-    if (!this.still) this.spin();
-  }
-
-  // ----- Where everything is -----
-
-  place(atlas) {
-    const zones = atlas.systems.map((system, index) => this.placeZone(system, index));
-    // Each project gets a share of the ellipse in proportion to its size.
-    const total = zones.reduce((sum, zone) => sum + zone.reach * 2 + 40, 0);
-    let along = 0;
-    for (const zone of zones) {
-      const share = zone.reach * 2 + 40;
-      const angle = ((along + share / 2) / total) * TAU - Math.PI / 2;
-      along += share;
-      zone.center = { x: CENTER.x + RING.x * Math.cos(angle), y: CENTER.y + RING.y * Math.sin(angle) };
-    }
-    const coreNotes = atlas.center.parts.flatMap((part) => part.notes.map((note) => ({ ...note, kind: part.kind })));
-    const core = { name: "core", hue: 45, center: CENTER, galaxy: false, sun: null, notes: coreNotes, parts: [], ...systemOf(coreNotes, 5) };
-    core.system = core;
-    return { zones, core, all: [...zones, core] };
-  }
-
-  placeZone(system, index) {
-    // The golden angle: two projects side by side never get close colors.
-    const hue = (index * 137.508 + 10) % 360;
-    const zone = { name: system.name, hue, sun: system.sun, galaxy: system.galaxy, parts: [], notes: [] };
-    if (!system.galaxy) {
-      zone.notes = system.parts.flatMap((part) => part.notes.map((note) => ({ ...note, kind: part.kind, repeated: part.repeated })));
-      Object.assign(zone, systemOf(zone.notes, 5));
-      zone.system = zone;
-      return zone;
-    }
-    // A galaxy: its parts on two arms, the first ones closest to the sun.
-    let reach = 0;
-    zone.parts = system.parts.map((part, order) => {
-      const notes = part.notes.map((note) => ({ ...note, kind: part.kind, repeated: part.repeated }));
-      const placed = { label: part.label, kind: part.kind, repeated: part.repeated, notes, zone, ...systemOf(notes, 2.6) };
-      placed.system = placed;
-      const distance = ARM_START + order * ARM_STEP;
-      placed.offset = around({ x: 0, y: 0 }, distance, order * ARM_TURN + (order % 2) * Math.PI);
-      reach = Math.max(reach, distance + placed.reach);
-      return placed;
-    });
-    zone.reach = reach + 6;
-    return zone;
-  }
-
-  // ----- Drawing -----
-
-  draw(atlas) {
-    const defs = node("defs");
-    this.gradients = new Map();
-    this.defs = defs;
-    const sky = node("g", { class: "atlas-sky" });
-    sky.append(this.stars());
-    const nebulae = node("g");
-    const bodies = node("g");
-    this.rings = [];
-    this.notes = [];
-    for (const zone of this.layout.all) {
-      nebulae.append(this.nebula(zone));
-      bodies.append(this.drawZone(zone));
-    }
-    this.detail = node("g", { class: "atlas-labels" });
-    for (const zone of this.layout.all) this.detail.append(...this.labels(zone));
-    this.searchLayer = node("g", { class: "atlas-labels" });
-    this.cursorHome = node("g");
-    this.svg.replaceChildren(defs, sky, nebulae, bodies, this.detail, this.searchLayer, this.cursorHome);
-    const total = this.layout.all.reduce((sum, zone) => sum + this.notesIn(zone).length + (zone.sun?.notes.length ?? 0), 0);
-    this.title.textContent = `${total} files · ${atlas.systems.length} projects${atlas.warnings.length > 0 ? ` · not read: ${atlas.warnings.join(" · ")}` : ""}`;
-  }
-
-  notesIn(zone) {
-    return zone.galaxy ? zone.parts.flatMap((part) => part.notes) : zone.notes;
-  }
-
-  // A sphere's shading in one hue, made once and shared.
-  gradient(hue, light = 58) {
-    const key = `${Math.round(hue)}-${light}`;
-    if (!this.gradients.has(key)) {
-      const id = `atlas-g-${this.gradients.size}`;
-      const gradient = node("radialGradient", { id, cx: "0.35", cy: "0.32", r: "0.75" });
-      gradient.append(
-        node("stop", { offset: "0", "stop-color": `hsl(${hue} 95% ${Math.min(light + 30, 95)}%)` }),
-        node("stop", { offset: "0.55", "stop-color": `hsl(${hue} 88% ${light}%)` }),
-        node("stop", { offset: "1", "stop-color": `hsl(${hue} 80% ${Math.max(light - 32, 12)}%)` }),
-      );
-      this.defs.append(gradient);
-      this.gradients.set(key, id);
-    }
-    return `url(#${this.gradients.get(key)})`;
-  }
-
-  glow(hue, id) {
-    const gradient = node("radialGradient", { id });
-    gradient.append(
-      node("stop", { offset: "0", "stop-color": `hsl(${hue} 90% 60%)`, "stop-opacity": "0.34" }),
-      node("stop", { offset: "0.5", "stop-color": `hsl(${hue + 30} 85% 45%)`, "stop-opacity": "0.12" }),
-      node("stop", { offset: "1", "stop-color": `hsl(${hue + 60} 80% 30%)`, "stop-opacity": "0" }),
-    );
-    this.defs.append(gradient);
-    return `url(#${id})`;
-  }
-
-  stars() {
-    const random = seeded(1107);
-    const stars = node("g", { class: "atlas-stars" });
-    for (let index = 0; index < 700; index += 1) {
-      const hue = random() < 0.3 ? 200 + random() * 120 : 30 + random() * 30;
-      stars.append(
-        node("circle", {
-          cx: (-300 + random() * 2200).toFixed(1),
-          cy: (-250 + random() * 1400).toFixed(1),
-          r: (0.25 + random() ** 4 * 1.6).toFixed(2),
-          fill: `hsl(${hue.toFixed(0)} 80% 85%)`,
-          opacity: (0.2 + random() * 0.6).toFixed(2),
-        }),
-      );
-    }
-    return stars;
-  }
-
-  nebula(zone) {
-    const group = node("g");
-    const fill = this.glow(zone.hue, `atlas-n-${zone.name || "core"}`.replace(/[^\w-]/g, "_"));
-    group.append(node("ellipse", { cx: zone.center.x, cy: zone.center.y, rx: zone.reach * 1.6, ry: zone.reach * 1.25, fill }));
-    if (zone.galaxy) {
-      // Dust along the arms.
-      const random = seeded(zone.name.length * 131 + Math.round(zone.hue));
-      for (let index = 0; index < zone.parts.length * 26; index += 1) {
-        const order = random() * zone.parts.length;
-        const arm = Math.floor(random() * 2);
-        const spot = around(zone.center, ARM_START + order * ARM_STEP + (random() - 0.5) * 14, order * ARM_TURN + arm * Math.PI + (random() - 0.5) * 0.5);
-        group.append(node("circle", { cx: spot.x.toFixed(1), cy: spot.y.toFixed(1), r: (0.3 + random() * 0.8).toFixed(2), fill: `hsl(${zone.hue + random() * 60 - 30} 90% 75%)`, opacity: (0.25 + random() * 0.45).toFixed(2), class: "atlas-dust" }));
-      }
-    }
-    return group;
-  }
-
-  drawZone(zone) {
-    const group = node("g", { class: "atlas-zone" });
-    // The whole project, under everything else: a click anywhere on it dives in.
-    group.append(this.hit(zone.center, zone.reach, () => this.zoomToZone(zone)));
-    if (zone.galaxy) {
-      group.append(this.sun(zone, zone.center, 6));
-      for (const part of zone.parts) {
-        part.center = { x: zone.center.x + part.offset.x, y: zone.center.y + part.offset.y };
-        group.append(this.hit(part.center, part.reach, () => this.zoomToPart(part)));
-        const hue = this.partHue(zone, part);
-        const star = node("circle", { cx: part.center.x, cy: part.center.y, r: 2.6, fill: this.gradient(hue, 70), class: part.repeated > 0 ? "atlas-star repeated" : "atlas-star" });
-        group.append(star, this.systemBodies(part, part.center, hue));
-      }
-    } else {
-      group.append(this.sun(zone, zone.center, 5));
-      group.append(this.systemBodies(zone, zone.center, zone.hue));
-    }
-    return group;
-  }
-
-  partHue(zone, part) {
-    if (part.kind === "knowledge") return zone.hue + 55;
-    if (part.kind === "lessons") return part.repeated > 0 ? 0 : zone.hue - 55;
-    if (part.kind === "others") return zone.hue + 180;
-    // Runs of decisions shift a little in hue, oldest to newest.
-    return zone.hue + (zone.parts.indexOf(part) % 6) * 7 - 18;
-  }
-
-  noteHue(base, note) {
-    if (note.kind === "lessons" && note.repeated > 0) return 0;
-    if (note.kind === "knowledge") return base + 55;
-    if (note.kind === "lessons") return base - 55;
-    if (note.kind === "others") return base + 180;
-    if (["global", "setup", "perso", "skills"].includes(note.kind)) return base + ["global", "setup", "perso", "skills"].indexOf(note.kind) * 70;
-    return base;
-  }
-
-  // The status: bright, or pale and ringed in red when older than the last decision.
-  sun(zone, center, radius) {
-    const group = node("g");
-    const stale = zone.sun?.stale;
-    group.append(node("circle", { cx: center.x, cy: center.y, r: radius * 2.6, fill: this.glow(stale ? 30 : 48, `atlas-s-${zone.name || "core"}`.replace(/[^\w-]/g, "_")), class: "atlas-corona" }));
-    const fill = stale ? "hsl(30 25% 55%)" : this.gradient(48, 72);
-    const body = node("circle", { cx: center.x, cy: center.y, r: radius, fill, class: "atlas-sun" });
-    group.append(body);
-    if (stale) group.append(node("circle", { cx: center.x, cy: center.y, r: radius + 2.4, class: "atlas-stale-ring" }));
-    const status = zone.sun?.notes ?? [];
-    if (status.length > 0) {
-      // The status notes ride on the sun itself, a click on it reads the newest.
-      const newest = [...status].sort((one, other) => (other.date ?? "").localeCompare(one.date ?? ""))[0];
-      group.append(this.hit(center, radius + 1, (event) => this.noteClick(event, newest, zone)));
-    }
-    return group;
-  }
-
-  systemBodies(owner, center, hue) {
-    const group = node("g");
-    owner.ringNodes = [];
-    for (const ring of owner.rings) {
-      group.append(node("circle", { cx: center.x, cy: center.y, r: ring.radius, class: "atlas-orbit" }));
-      const spinner = node("g");
-      const speed = TAU / (INNER_PERIOD * (ring.radius / 9) ** 1.5);
-      const state = { node: spinner, center, angle: ring.radius * 1.7, speed };
-      ring.notes.forEach((note, index) => {
-        const at = around(center, ring.radius, (index / ring.notes.length) * TAU);
-        const radius = planetRadius(note.bytes);
-        const color = this.noteHue(hue, note) + ((index * 47) % 25) - 12;
-        const body = note.lost ? this.rock(at, radius) : node("circle", { cx: at.x.toFixed(2), cy: at.y.toFixed(2), r: radius.toFixed(2), fill: this.gradient(color), class: "atlas-p" });
-        spinner.append(body);
-        const entry = { note, body, owner, at, radius, ring: state };
-        this.notes.push(entry);
-        const hit = this.hit(at, radius + 1.4, (event) => this.noteClick(event, note, owner));
-        hit.addEventListener("mouseenter", () => this.say(`${owner.label ?? owner.name} · ${day(note.date)} · ${note.description}`));
-        hit.addEventListener("mouseleave", () => this.say());
-        spinner.append(hit);
-      });
-      group.append(spinner);
-      this.rings.push(state);
-      owner.ringNodes.push(state);
-    }
-    return group;
-  }
-
-  // A note INDEX.md does not name: a grey rock.
-  rock(at, radius) {
-    const random = seeded(Math.round(at.x * 31 + at.y * 17));
-    const points = [0, 1, 2, 3, 4, 5].map((corner) => {
-      const angle = (corner / 6) * TAU;
-      const reach = radius * (0.75 + random() * 0.5);
-      return `${(at.x + reach * Math.cos(angle)).toFixed(2)},${(at.y + reach * Math.sin(angle)).toFixed(2)}`;
-    });
-    return node("polygon", { points: points.join(" "), class: "atlas-p atlas-rock" });
-  }
-
-  // A target bigger than what it covers, invisible.
-  hit(center, radius, onClick) {
-    const target = node("circle", { cx: center.x, cy: center.y, r: radius, class: "atlas-hit" });
-    target.addEventListener("click", (event) => {
-      event.stopPropagation();
-      onClick(event);
-    });
-    return target;
-  }
-
-  // Names drawn at the same size whatever the zoom (CSS: calc(… * var(--inv))).
-  labels(zone) {
-    const labels = [];
-    const name = zone.name === "core" ? "CORE" : zone.name.toUpperCase();
-    labels.push(node("text", { x: zone.center.x, y: zone.center.y + zone.reach + 4, class: "atlas-name", "text-anchor": "middle" }, name));
-    if (zone.sun?.stale) {
-      const told = zone.sun.notes.length === 0 ? "no status" : `status of ${day(zone.sun.updated)}`;
-      labels.push(node("text", { x: zone.center.x, y: zone.center.y + zone.reach + 4, class: "atlas-name-under atlas-warning", "text-anchor": "middle" }, `stale: ${told} · decision ${day(zone.sun.last_decision)}`));
-    }
-    const repeated = zone.galaxy ? zone.parts.find((part) => part.repeated > 0)?.repeated : zone.notes.find((note) => note.repeated > 0)?.repeated;
-    if (repeated) {
-      const line = zone.sun?.stale ? "atlas-name-under2" : "atlas-name-under";
-      labels.push(node("text", { x: zone.center.x, y: zone.center.y + zone.reach + 4, class: `${line} atlas-warning`, "text-anchor": "middle" }, `a lesson given again ×${repeated}`));
-    }
-    for (const part of zone.parts) {
-      labels.push(node("text", { x: part.center.x, y: part.center.y + part.reach + 1, class: "atlas-part", "text-anchor": "middle" }, part.label));
-    }
-    return labels;
-  }
-
-  // ----- Moving -----
-
-  spin() {
     let last = performance.now();
     const step = (now) => {
-      const seconds = Math.min((now - last) / 1000, 0.1);
+      const seconds = Math.min(0.05, (now - last) / 1000);
       last = now;
-      for (const ring of this.rings) {
-        ring.angle += ring.speed * seconds * 57.29578;
-        ring.node.setAttribute("transform", `rotate(${ring.angle.toFixed(2)} ${ring.center.x} ${ring.center.y})`);
+      this.frame(now, seconds);
+      this.loop = requestAnimationFrame(step);
+    };
+    this.loop = requestAnimationFrame(step);
+  }
+
+  fitCanvas() {
+    const box = this.canvas.getBoundingClientRect();
+    this.ratio = window.devicePixelRatio || 1;
+    this.width = box.width;
+    this.height = box.height;
+    this.lens = Math.min(box.width, box.height) * 1.1;
+    this.canvas.width = Math.max(1, Math.round(box.width * this.ratio));
+    this.canvas.height = Math.max(1, Math.round(box.height * this.ratio));
+  }
+
+  makeGrain() {
+    const canvas = document.createElement("canvas");
+    canvas.width = canvas.height = 160;
+    const context = canvas.getContext("2d");
+    const image = context.createImageData(160, 160);
+    const random = seeded(77);
+    for (let index = 0; index < image.data.length; index += 4) {
+      const value = random() * 255;
+      image.data[index] = image.data[index + 1] = image.data[index + 2] = value;
+      image.data[index + 3] = 8;
+    }
+    context.putImageData(image, 0, 0);
+    return canvas;
+  }
+
+  // ----- Camera -----
+
+  setAngles() {
+    this.cy = Math.cos(this.camera.yaw);
+    this.sy = Math.sin(this.camera.yaw);
+    this.cp = Math.cos(this.camera.pitch);
+    this.sp = Math.sin(this.camera.pitch);
+  }
+
+  project(point) {
+    const { target, dist } = this.camera;
+    const rx = point.x - target.x;
+    const ry = point.y - target.y;
+    const rz = point.z - target.z;
+    const x1 = rx * this.cy - rz * this.sy;
+    const z1 = rx * this.sy + rz * this.cy;
+    const y2 = ry * this.cp + z1 * this.sp;
+    const z2 = -ry * this.sp + z1 * this.cp + dist;
+    if (z2 < 0.5) return null;
+    return { x: this.width / 2 + (this.lens * x1) / z2, y: this.height / 2 - (this.lens * y2) / z2, z: z2 };
+  }
+
+  projectDirection(d) {
+    const x1 = d.x * this.cy - d.z * this.sy;
+    const z1 = d.x * this.sy + d.z * this.cy;
+    const y2 = d.y * this.cp + z1 * this.sp;
+    const z2 = -d.y * this.sp + z1 * this.cp;
+    if (z2 < 0.05) return null;
+    return { x: this.width / 2 + (this.lens * x1) / z2, y: this.height / 2 - (this.lens * y2) / z2, z: z2 };
+  }
+
+  // The point of the target's level plane under the screen point: zooming keeps it in place.
+  groundUnder(sx, sy) {
+    const { yaw, pitch, dist, target } = this.camera;
+    const dx = (sx - this.width / 2) / this.lens;
+    const dy = -(sy - this.height / 2) / this.lens;
+    const cy = Math.cos(yaw);
+    const syaw = Math.sin(yaw);
+    const cp = Math.cos(pitch);
+    const sp = Math.sin(pitch);
+    const down = sp - dy * cp;
+    const t = down > 0.02 ? Math.min((dist * sp) / down, dist * 4) : dist;
+    const x1 = t * dx;
+    const y2 = t * dy;
+    const zr = -dist + t;
+    const ry = y2 * cp - zr * sp;
+    const z1 = y2 * sp + zr * cp;
+    return { x: target.x + x1 * cy + z1 * syaw, y: target.y + ry, z: target.z - x1 * syaw + z1 * cy };
+  }
+
+  // Galaxies turn as one piece, each its own way; every project turns slowly around the core.
+  moveCenters() {
+    const angle = this.clock * 0.012;
+    const c = Math.cos(angle);
+    const s = Math.sin(angle);
+    for (const project of this.scene.projects) {
+      if (project.isCore) continue;
+      project.center = { x: (project.dir.x * c - project.dir.z * s) * project.dist, y: project.dir.y * project.dist, z: (project.dir.x * s + project.dir.z * c) * project.dist };
+      for (const system of project.systems) {
+        if (!system.home) {
+          system.center = project.center;
+          continue;
+        }
+        const a = system.home.angle + project.turn * this.clock * 0.05;
+        const local = tilt(project, { x: Math.cos(a) * system.home.radius, y: system.home.height * 3 + system.home.thick, z: Math.sin(a) * system.home.radius });
+        system.center = { x: project.center.x + local.x, y: project.center.y + local.y, z: project.center.z + local.z };
       }
-      this.spinning = requestAnimationFrame(step);
-    };
-    this.spinning = requestAnimationFrame(step);
+    }
   }
 
-  home() {
-    const reaches = this.layout.all.map((zone) => ({ left: zone.center.x - zone.reach, right: zone.center.x + zone.reach, top: zone.center.y - zone.reach, bottom: zone.center.y + zone.reach + 30 }));
-    // Room around for the title, the legend and the line of help, which stay on screen.
-    const box = {
-      left: Math.min(...reaches.map((reach) => reach.left)) - 30,
-      right: Math.max(...reaches.map((reach) => reach.right)) + 30,
-      top: Math.min(...reaches.map((reach) => reach.top)) - 70,
-      bottom: Math.max(...reaches.map((reach) => reach.bottom)) + 90,
-    };
-    return this.fit({ x: (box.left + box.right) / 2, y: (box.top + box.bottom) / 2 }, box.right - box.left, box.bottom - box.top);
+  level() {
+    return this.focus.planet ? 3 : this.focus.system ? 2 : this.focus.project ? 1 : 0;
   }
 
-  // The view on `center` showing at least `width` × `height`, in the screen's proportions.
-  fit(center, width, height) {
-    const ratio = this.svg.clientHeight > 0 ? this.svg.clientWidth / this.svg.clientHeight : 16 / 9;
-    const w = Math.max(width, height * ratio);
-    const h = w / ratio;
-    return { x: center.x - w / 2, y: center.y - h / 2, width: w, height: h };
+  // Where the camera looks and how far it stands, for the state in focus.
+  goal() {
+    const { project, system, planet } = this.focus;
+    if (planet) return { at: () => planetPosition(planet, this.clock), dist: planet.size * PLANET_SCALE * 12 + 10 };
+    if (system) return { at: () => system.center, dist: Math.max(60, system.radius * 3.2) };
+    if (project) return { at: () => project.center, dist: project.radius * 2.8 };
+    return { at: () => ({ x: 0, y: 0, z: 0 }), dist: 3000 };
   }
 
-  setView(view) {
-    this.view = view;
-    this.svg.setAttribute("viewBox", `${view.x} ${view.y} ${view.width} ${view.height}`);
-    const pixels = this.svg.clientWidth || 1600;
-    // Map units per screen pixel: what keeps names and lines the same size on screen.
-    this.svg.style.setProperty("--inv", (view.width / pixels).toFixed(5));
-    const close = this.layout ? this.home().width / view.width : 1;
-    this.svg.classList.toggle("atlas-mid", close >= 2.2);
-    this.svg.classList.toggle("atlas-near", close >= 7);
+  setFocus(project, system, planet) {
+    this.focus = { project, system: system ?? (project && !project.galaxy ? project.systems[0] : null), planet };
+    this.selected = -1;
+    this.flight = { from: { target: { ...this.camera.target }, dist: this.camera.dist }, goal: this.goal(), start: performance.now() };
+    if (planet) this.showNote(planet.note);
+    else this.reader.hidden = true;
+    this.say();
   }
 
-  zoomTo(target) {
-    const start = this.view;
-    const begun = performance.now();
-    const frame = ++this.frame;
-    const step = (now) => {
-      if (frame !== this.frame) return;
-      const t = ease(Math.min((now - begun) / ZOOM_MS, 1));
-      const mix = (from, to) => from + (to - from) * t;
-      this.setView({ x: mix(start.x, target.x), y: mix(start.y, target.y), width: mix(start.width, target.width), height: mix(start.height, target.height) });
-      if (t < 1) requestAnimationFrame(step);
-    };
-    requestAnimationFrame(step);
+  back() {
+    const { project, system, planet } = this.focus;
+    if (planet) this.setFocus(project, system, null);
+    else if (system && project.galaxy) this.setFocus(project, null, null);
+    else if (project) this.setFocus(null, null, null);
   }
 
-  // The point of the map under the pointer.
-  pointOf(event) {
-    const box = this.svg.getBoundingClientRect();
-    const scale = Math.max(this.view.width / box.width, this.view.height / box.height);
-    const shownWidth = this.view.width / scale;
-    const shownHeight = this.view.height / scale;
-    const x = event.clientX - box.left - (box.width - shownWidth) / 2;
-    const y = event.clientY - box.top - (box.height - shownHeight) / 2;
-    return { x: this.view.x + x * scale, y: this.view.y + y * scale };
+  // One level down, toward what was clicked.
+  enter(body) {
+    const { project, system } = body;
+    if (this.focus.project !== project) return this.setFocus(project, null, null);
+    if (this.focus.system !== system) return this.setFocus(project, system, null);
+    if (body.planet) return this.setFocus(project, system, body.planet);
+    // The sun of the system in view: its newest status.
+    if (body.kind === "sun" && system.status?.length > 0) this.showNote(newest(system.status));
   }
 
-  // Zooms by `factor` (above 1 closer) keeping `point` where it is on screen.
-  zoomAt(point, factor) {
-    if (!this.layout || !Number.isFinite(factor) || factor <= 0) return;
-    this.frame += 1;
-    const homeWidth = this.home().width;
-    const width = Math.min(Math.max(this.view.width / factor, homeWidth / 400), homeWidth * 1.6);
-    const applied = this.view.width / width;
-    this.setView({
-      x: point.x - (point.x - this.view.x) / applied,
-      y: point.y - (point.y - this.view.y) / applied,
-      width,
-      height: this.view.height / applied,
-    });
+  // ----- Zooming: the camera moves while the gesture lasts, then settles on a state -----
+
+  zoom(factor, sx = this.width / 2, sy = this.height / 2) {
+    if (!this.scene || !Number.isFinite(factor) || factor <= 0) return;
+    if (!this.gesture.active) Object.assign(this.gesture, { active: true, startDist: this.camera.dist });
+    this.gesture.x = sx;
+    this.gesture.y = sy;
+    const next = Math.min(30000, Math.max(4, this.camera.dist * factor));
+    const applied = next / this.camera.dist;
+    if (!this.focus.planet) {
+      const p = this.groundUnder(sx, sy);
+      const t = this.camera.target;
+      this.camera.target = { x: p.x + (t.x - p.x) * applied, y: p.y + (t.y - p.y) * applied, z: p.z + (t.z - p.z) * applied };
+    }
+    this.camera.dist = next;
+    this.flight = null;
+    clearTimeout(this.gesture.timer);
+    this.gesture.timer = setTimeout(() => this.settle(), GESTURE_END_MS);
+  }
+
+  nearest(items, place, x, y) {
+    let best = null;
+    let bestDistance = Infinity;
+    for (const item of items) {
+      const q = this.project(place(item));
+      if (!q) continue;
+      const distance = Math.hypot(q.x - x, q.y - y);
+      if (distance < bestDistance) {
+        bestDistance = distance;
+        best = item;
+      }
+    }
+    return best;
+  }
+
+  // The state below, toward a point of the screen.
+  enterToward(x, y) {
+    const { project, system, planet } = this.focus;
+    if (planet) return this.setFocus(project, system, planet);
+    if (system) {
+      const near = this.nearest(system.planets, (each) => planetPosition(each, this.clock), x, y);
+      return this.setFocus(project, system, near);
+    }
+    if (project) return this.setFocus(project, this.nearest(project.systems, (each) => each.center, x, y), null);
+    return this.setFocus(this.nearest(this.scene.projects, (each) => each.center, x, y), null, null);
+  }
+
+  settle() {
+    clearTimeout(this.gesture.timer);
+    if (!this.gesture.active) return;
+    this.gesture.active = false;
+    const ratio = this.camera.dist / this.gesture.startDist;
+    if (ratio < 0.75) this.enterToward(this.gesture.x, this.gesture.y);
+    else if (ratio > 1.33 && this.level() > 0) this.back();
+    else this.setFocus(this.focus.project, this.focus.system, this.focus.planet);
+  }
+
+  // ----- Pointer and wheel -----
+
+  // What the last drag or swipe gave: kept once let go, and slowly lost.
+  push(yaw, pitch) {
+    const now = performance.now();
+    const seconds = Math.max(8, now - this.spin.last) / 1000;
+    this.spin.yaw = Math.max(-SPIN_MAX, Math.min(SPIN_MAX, this.spin.yaw * 0.6 + (yaw / seconds) * 0.4));
+    this.spin.pitch = this.spin.pitch * 0.6 + (pitch / seconds) * 0.4;
+    this.spin.last = now;
+  }
+
+  turn(dx, dy) {
+    this.camera.yaw -= dx * 0.0022;
+    this.camera.pitch = Math.min(1.5, Math.max(0.06, this.camera.pitch + dy * 0.0018));
+    this.push(-dx * 0.0022, dy * 0.0018);
+  }
+
+  onPointerDown(event) {
+    this.canvas.setPointerCapture(event.pointerId);
+    this.pointer.touches.set(event.pointerId, { x: event.clientX, y: event.clientY });
+    if (this.pointer.touches.size === 2) {
+      const [a, b] = [...this.pointer.touches.values()];
+      this.pointer.pinch = Math.hypot(a.x - b.x, a.y - b.y);
+    }
+    Object.assign(this.pointer, { down: true, moved: false, x: event.clientX, y: event.clientY });
+    this.spin = { ...this.spin, yaw: 0, pitch: 0, last: performance.now() };
+    this.idleSince = performance.now();
+  }
+
+  onPointerMove(event) {
+    const { pointer } = this;
+    if (pointer.touches.has(event.pointerId)) pointer.touches.set(event.pointerId, { x: event.clientX, y: event.clientY });
+    if (pointer.touches.size === 2) {
+      const [a, b] = [...pointer.touches.values()];
+      const distance = Math.hypot(a.x - b.x, a.y - b.y);
+      const box = this.canvas.getBoundingClientRect();
+      if (pointer.pinch) this.zoom(pointer.pinch / distance, (a.x + b.x) / 2 - box.left, (a.y + b.y) / 2 - box.top);
+      pointer.pinch = distance;
+      pointer.moved = true;
+      return;
+    }
+    if (!pointer.down) {
+      this.hover(this.hitTest(event.clientX, event.clientY));
+      return;
+    }
+    const dx = event.clientX - pointer.x;
+    const dy = event.clientY - pointer.y;
+    if (Math.abs(dx) + Math.abs(dy) > 3) {
+      pointer.moved = true;
+      this.canvas.classList.add("dragging");
+    }
+    if (!pointer.moved) return;
+    this.turn(dx, dy);
+    pointer.x = event.clientX;
+    pointer.y = event.clientY;
+    this.idleSince = performance.now();
+  }
+
+  onPointerUp(event) {
+    const { pointer } = this;
+    pointer.touches.delete(event.pointerId);
+    if (pointer.touches.size < 2 && pointer.pinch) {
+      pointer.pinch = 0;
+      this.settle();
+    }
+    if (pointer.touches.size > 0) return;
+    this.canvas.classList.remove("dragging");
+    // Held still before letting go: no momentum.
+    if (performance.now() - this.spin.last > 90) this.spin = { ...this.spin, yaw: 0, pitch: 0 };
+    if (pointer.down && !pointer.moved && this.scene) {
+      const hit = this.hitTest(event.clientX, event.clientY);
+      if (hit) this.enter(hit);
+      else if (this.level() > 0) this.back();
+    }
+    pointer.down = false;
   }
 
   onWheel(event) {
     event.preventDefault();
-    if (!this.layout) return;
+    if (!this.scene) return;
     const lines = event.deltaMode === 1 ? 16 : 1;
-    if (event.ctrlKey) {
-      // A touchpad pinch comes as a wheel with ctrl held.
-      this.zoomAt(this.pointOf(event), Math.exp((-event.deltaY * lines) / 120));
-      return;
-    }
-    this.frame += 1;
-    const perPixel = this.view.width / (this.svg.clientWidth || 1600);
-    this.setView({ ...this.view, x: this.view.x + event.deltaX * lines * perPixel, y: this.view.y + event.deltaY * lines * perPixel });
-  }
-
-  atHome() {
-    return !this.reading && this.focus.zone === null;
-  }
-
-  zoomToZone(zone) {
-    this.focus = { zone, part: null };
-    this.selected = -1;
-    this.cursorHome.replaceChildren();
-    this.zoomTo(this.fit(zone.center, zone.reach * 2.4, zone.reach * 2.4 + 20));
-    this.say();
-  }
-
-  zoomToPart(part) {
-    this.focus = { zone: part.zone, part };
-    this.selected = -1;
-    this.cursorHome.replaceChildren();
-    this.zoomTo(this.fit(part.center, part.reach * 5, part.reach * 5));
-    this.say();
-  }
-
-  // A planet far away takes the click to its system; close enough, it opens.
-  noteClick(event, note, owner) {
-    const zone = owner.zone ?? owner;
-    const inside = owner === this.focus.part || (!zone.galaxy && this.focus.zone === zone);
-    const pixels = planetRadius(note.bytes) / (this.view.width / (this.svg.clientWidth || 1600));
-    if (inside || pixels >= 7) {
-      this.showNote(note);
-    } else if (zone.galaxy && this.focus.zone === zone && owner !== zone) {
-      this.zoomToPart(owner);
+    // Two fingers sideways turn the view; a pinch (ctrl) or up and down zoom.
+    if (!event.ctrlKey && Math.abs(event.deltaX) > Math.abs(event.deltaY)) {
+      this.camera.yaw += event.deltaX * lines * 0.0018;
+      this.push(event.deltaX * lines * 0.0018, 0);
+      this.spin.wheelAt = performance.now();
     } else {
-      this.zoomToZone(zone);
+      const box = this.canvas.getBoundingClientRect();
+      this.zoom(Math.exp(event.deltaY * lines * (event.ctrlKey ? 0.012 : 0.0016)), event.clientX - box.left, event.clientY - box.top);
     }
+    this.idleSince = performance.now();
   }
 
-  back() {
-    if (this.reading) {
-      this.reading = false;
-      this.reader.hidden = true;
-      this.say();
-    } else if (this.focus.part) {
-      this.zoomToZone(this.focus.zone);
-    } else if (this.focus.zone) {
-      this.focus = { zone: null, part: null };
-      this.selected = -1;
-      this.cursorHome.replaceChildren();
-      this.zoomTo(this.home());
-      this.say();
+  hitTest(clientX, clientY) {
+    const box = this.canvas.getBoundingClientRect();
+    const x = clientX - box.left;
+    const y = clientY - box.top;
+    let best = null;
+    for (const body of this.drawn) {
+      if (Math.hypot(body.sx - x, body.sy - y) <= body.hit && (!best || body.z < best.z)) best = body;
     }
+    if (best) return best;
+    // Inside a system, a click near a planet is meant for it.
+    if (this.level() >= 2) {
+      let near = null;
+      let nearDistance = 44;
+      for (const body of this.drawn) {
+        if (body.kind !== "planet" || body.system !== this.focus.system) continue;
+        const distance = Math.hypot(body.sx - x, body.sy - y);
+        if (distance < nearDistance) {
+          nearDistance = distance;
+          near = body;
+        }
+      }
+      return near;
+    }
+    if (this.level() > 0) return null;
+    for (const project of this.scene.projects) {
+      const p = this.project(project.center);
+      if (p && Math.hypot(p.x - x, p.y - y) < (this.lens * project.radius) / p.z) return { project, system: project.galaxy ? null : project.systems[0] };
+    }
+    return null;
+  }
+
+  hover(body) {
+    if (body === this.hovered || (body && this.hovered && body.planet && body.planet === this.hovered.planet)) return;
+    this.hovered = body;
+    this.canvas.classList.toggle("pointing", body !== null);
+    if (body?.planet) this.say(`${body.system.label} · ${day(body.planet.note.date)} · ${body.planet.note.description}`);
+    else if (body?.kind === "sun") this.say(body.system.label);
+    else this.say();
   }
 
   // ----- Keys -----
 
-  // What the arrows go through: the projects, then a galaxy's systems, then a system's planets.
+  // What the arrows go through: the projects, a galaxy's systems, a system's planets.
   targets() {
-    if (!this.layout) return [];
-    const { zone, part } = this.focus;
-    if (zone === null) return this.layout.all.map((each) => ({ label: each.name, at: () => each.center, radius: each.reach, open: () => this.zoomToZone(each) }));
-    if (zone.galaxy && part === null) return zone.parts.map((each) => ({ label: `${zone.name} · ${each.label}`, at: () => each.center, radius: each.reach, open: () => this.zoomToPart(each) }));
-    const owner = part ?? zone;
-    const notes = this.notes.filter((entry) => entry.owner === owner && (this.found === null || this.found.has(entry.note.path)));
-    return notes.map((entry) => ({
-      label: `${day(entry.note.date)} · ${entry.note.description}`,
-      entry,
-      radius: entry.radius + 1.2,
-      open: () => this.showNote(entry.note),
-    }));
+    if (!this.scene) return [];
+    const { project, system } = this.focus;
+    if (!project) return this.scene.projects.map((each) => ({ label: each.name, at: () => each.center, open: () => this.setFocus(each, null, null) }));
+    if (!system) return project.systems.map((each) => ({ label: `${project.name} · ${each.label}`, at: () => each.center, open: () => this.setFocus(project, each, null) }));
+    return system.planets
+      .filter((each) => !this.found || this.found.has(each.note.path))
+      .map((each) => ({ label: `${day(each.note.date)} · ${each.note.description}`, at: () => planetPosition(each, this.clock), open: () => this.setFocus(project, system, each) }));
   }
 
   onKey(event) {
-    const key = event.key;
+    const { key } = event;
     if (key === "Escape") {
-      if (this.atHome()) return false;
+      if (this.found) {
+        this.clearSearch();
+        return true;
+      }
+      if (this.level() === 0) return false;
       this.back();
       return true;
     }
-    if (key === "/" && this.layout && !this.reading) {
+    if (!this.scene) return false;
+    // Any letter or digit starts a search.
+    if (key.length === 1 && /[\p{L}\p{N}]/u.test(key) && !event.ctrlKey && !event.metaKey && !event.altKey) {
       this.search.hidden = false;
+      this.search.value += key;
       this.search.focus();
-      this.search.select();
+      this.search.dispatchEvent(new Event("input"));
       return true;
     }
-    if (key === "+" || key === "=" || key === "-") {
-      const center = { x: this.view.x + this.view.width / 2, y: this.view.y + this.view.height / 2 };
-      this.zoomAt(center, key === "-" ? 1 / 1.4 : 1.4);
+    if (key === "+" || key === "=") {
+      this.enterToward(this.width / 2, this.height / 2);
+      return true;
+    }
+    if (key === "-") {
+      this.back();
+      return true;
+    }
+    if (event.shiftKey && ["ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown"].includes(key)) {
+      this.turn(key === "ArrowLeft" ? -36 : key === "ArrowRight" ? 36 : 0, key === "ArrowUp" ? 33 : key === "ArrowDown" ? -33 : 0);
       return true;
     }
     const targets = this.targets();
     if (["ArrowRight", "ArrowDown", "ArrowLeft", "ArrowUp"].includes(key) && targets.length > 0) {
       const step = key === "ArrowRight" || key === "ArrowDown" ? 1 : -1;
       this.selected = this.selected < 0 ? (step > 0 ? 0 : targets.length - 1) : (this.selected + step + targets.length) % targets.length;
-      this.mark(targets[this.selected]);
       this.say(targets[this.selected].label);
       return true;
     }
@@ -642,30 +1018,20 @@ export class AtlasWindow {
     return false;
   }
 
-  // A ring around what the arrows chose; on a planet, it goes round with it.
-  mark(target) {
-    this.cursorHome.replaceChildren();
-    for (const entry of this.notes) entry.cursor?.remove();
-    if (target.entry) {
-      const { at } = target.entry;
-      target.entry.cursor = node("circle", { cx: at.x, cy: at.y, r: target.radius, class: "atlas-cursor" });
-      target.entry.ring.node.append(target.entry.cursor);
-      return;
-    }
-    const at = target.at();
-    this.cursorHome.append(node("circle", { cx: at.x, cy: at.y, r: target.radius, class: "atlas-cursor" }));
-  }
-
   // ----- Reading -----
 
   async showNote(note) {
-    this.reading = true;
-    const head = html("header");
-    head.append(html("h2", "", note.description), html("p", "muted", `${note.date ?? ""} · ${note.path}`));
-    const body = html("pre", "", "reading…");
+    const head = document.createElement("header");
+    const title = document.createElement("h2");
+    title.textContent = note.description;
+    const where = document.createElement("p");
+    where.className = "muted";
+    where.textContent = `${note.date ?? ""} · ${note.path}`;
+    head.append(title, where);
+    const body = document.createElement("pre");
+    body.textContent = "reading…";
     this.reader.replaceChildren(head, body);
     this.reader.hidden = false;
-    this.say();
     try {
       const text = await invoke("memory_note", { path: note.path });
       body.textContent = text.replace(/^---\r?\n[\s\S]*?\r?\n---\r?\n/, "").trim();
@@ -674,56 +1040,52 @@ export class AtlasWindow {
     }
   }
 
-  // ----- Searching -----
+  // ----- Searching: what is found stays lit, the rest goes dark -----
 
   async runSearch() {
     const query = this.search.value.trim();
     const request = ++this.searchRequest;
     if (query === "") {
       this.found = null;
-    } else {
-      let paths;
-      try {
-        paths = await invoke("memory_search", { query });
-      } catch (error) {
-        this.say(`${error}`);
-        return;
-      }
-      if (request !== this.searchRequest) return;
-      this.found = new Set(paths);
+      this.say();
+      return;
     }
-    this.paintSearch();
+    let paths;
+    try {
+      paths = await invoke("memory_search", { query });
+    } catch (error) {
+      this.say(`${error}`);
+      return;
+    }
+    if (request !== this.searchRequest) return;
+    this.found = new Set(paths);
     this.say();
   }
 
   clearSearch() {
-    clearTimeout(this.searchTimer);
     this.searchRequest += 1;
     this.search.value = "";
     this.search.hidden = true;
     this.found = null;
-    this.paintSearch();
     this.say();
     this.dialog.focus();
   }
 
-  // Lights the planets found, dims the rest, and says how many each project and system holds.
-  paintSearch() {
-    const found = this.found;
-    this.svg.classList.toggle("searching", found !== null);
-    const counts = [];
-    for (const entry of this.notes) entry.body.classList.toggle("found", found !== null && found.has(entry.note.path));
-    if (found !== null) {
-      for (const zone of this.layout.all) {
-        const hits = this.notesIn(zone).filter((note) => found.has(note.path)).length + (zone.sun?.notes ?? []).filter((note) => found.has(note.path)).length;
-        if (hits > 0) counts.push(node("text", { x: zone.center.x, y: zone.center.y - zone.reach - 2, class: "atlas-found", "text-anchor": "middle" }, `${hits} found`));
-        for (const part of zone.parts) {
-          const inPart = part.notes.filter((note) => found.has(note.path)).length;
-          if (inPart > 0) counts.push(node("text", { x: part.center.x, y: part.center.y - part.reach, class: "atlas-found atlas-part-found", "text-anchor": "middle" }, `${inPart}`));
-        }
+  goToFirstFound() {
+    if (!this.found || this.found.size === 0 || !this.scene) return;
+    for (const system of this.scene.systems) {
+      const planet = system.planets.find((each) => this.found.has(each.note.path));
+      if (planet) {
+        this.setFocus(planet.project, system, planet);
+        this.dialog.focus();
+        return;
       }
     }
-    this.searchLayer.replaceChildren(...counts);
+  }
+
+  foundIn(system) {
+    if (!this.found) return 0;
+    return system.planets.filter((planet) => this.found.has(planet.note.path)).length + (system.status ?? []).filter((note) => this.found.has(note.path)).length;
   }
 
   say(text) {
@@ -731,8 +1093,483 @@ export class AtlasWindow {
       this.caption.textContent = text;
       return;
     }
-    const level = this.reading ? "note" : this.focus.part ? "part" : this.focus.zone ? "zone" : "root";
-    const searched = this.found === null || level === "note" ? "" : ` · ${this.found.size} files hold “${this.search.value.trim()}”`;
-    this.caption.textContent = `${HINTS[level]}${searched}`;
+    const searched = this.found === null ? "" : ` · ${this.found.size} files hold “${this.search.value.trim()}”`;
+    this.caption.textContent = `${HINTS[this.level()]}${searched}`;
+  }
+
+  // ----- Drawing -----
+
+  frame(now, seconds) {
+    if (!this.still) this.clock += seconds;
+    const { camera, spin } = this;
+    if (!this.still && !this.pointer.down && now - this.idleSince > 4000 && this.level() === 0) camera.yaw += seconds * 0.012;
+    if (!this.pointer.down && now - spin.wheelAt > 60 && (Math.abs(spin.yaw) > 0.002 || Math.abs(spin.pitch) > 0.002)) {
+      camera.yaw += spin.yaw * seconds;
+      camera.pitch = Math.min(1.5, Math.max(0.06, camera.pitch + spin.pitch * seconds));
+      spin.yaw *= Math.exp(-seconds * 0.9);
+      spin.pitch *= Math.exp(-seconds * 2.5);
+      this.idleSince = now;
+    }
+    this.moveCenters();
+    if (this.flight) {
+      const k = Math.min(1, (now - this.flight.start) / (this.still ? 1 : FLIGHT_MS));
+      const e = ease(k);
+      const to = this.flight.goal.at();
+      const from = this.flight.from;
+      camera.target = { x: from.target.x + (to.x - from.target.x) * e, y: from.target.y + (to.y - from.target.y) * e, z: from.target.z + (to.z - from.target.z) * e };
+      camera.dist = Math.exp(Math.log(from.dist) + (Math.log(this.flight.goal.dist) - Math.log(from.dist)) * e);
+      if (k >= 1) this.flight = null;
+    } else if (!this.gesture.active && this.level() > 0) {
+      camera.target = this.goal().at();
+    }
+    this.setAngles();
+    const context = this.context;
+    context.setTransform(this.ratio, 0, 0, this.ratio, 0, 0);
+    this.drawSky();
+    this.drawHalos();
+    this.drawBodies(this.collect());
+    this.drawLabels();
+    this.drawSelection();
+    const vignette = context.createRadialGradient(this.width / 2, this.height / 2, Math.min(this.width, this.height) * 0.35, this.width / 2, this.height / 2, Math.max(this.width, this.height) * 0.75);
+    vignette.addColorStop(0, "rgba(0,0,0,0)");
+    vignette.addColorStop(1, "rgba(0,0,0,0.55)");
+    context.fillStyle = vignette;
+    context.fillRect(0, 0, this.width, this.height);
+    context.fillStyle = context.createPattern(this.grain, "repeat");
+    context.fillRect(0, 0, this.width, this.height);
+  }
+
+  glow(hue, saturation = 100) {
+    const key = `${Math.round(hue)}-${saturation}`;
+    if (!this.glows.has(key)) {
+      this.glows.set(key, radialSprite(160, [
+        [0, "rgba(255,255,255,1)"],
+        [0.12, `hsla(${hue},${saturation}%,82%,0.95)`],
+        [0.3, `hsla(${hue},${saturation}%,60%,0.35)`],
+        [0.6, `hsla(${hue},${saturation}%,50%,0.08)`],
+        [1, `hsla(${hue},${saturation}%,50%,0)`],
+      ]));
+    }
+    return this.glows.get(key);
+  }
+
+  drawSky() {
+    const context = this.context;
+    const background = context.createRadialGradient(this.width * 0.5, this.height * 0.55, 0, this.width * 0.5, this.height * 0.55, Math.max(this.width, this.height) * 0.8);
+    background.addColorStop(0, "#070812");
+    background.addColorStop(1, "#010103");
+    context.fillStyle = background;
+    context.fillRect(0, 0, this.width, this.height);
+    const onScreen = (p, r) => p && p.x > -r && p.y > -r && p.x < this.width + r && p.y < this.height + r;
+    context.globalCompositeOperation = "lighter";
+    for (const glow of this.sky.glow) {
+      const p = this.projectDirection(glow.dir);
+      const r = p ? (this.lens * glow.size) / p.z : 0;
+      if (!onScreen(p, r)) continue;
+      context.globalAlpha = glow.alpha;
+      context.drawImage(this.glow(glow.hue, 35), p.x - r, p.y - r, r * 2, r * 2);
+    }
+    context.globalCompositeOperation = "source-over";
+    for (const dust of this.sky.dust) {
+      const p = this.projectDirection(dust.dir);
+      const r = p ? (this.lens * dust.size) / p.z : 0;
+      if (!onScreen(p, r)) continue;
+      context.globalAlpha = dust.alpha;
+      context.drawImage(this.dustSprite, p.x - r, p.y - r, r * 2, r * 2);
+    }
+    context.globalCompositeOperation = "lighter";
+    for (const cloud of this.sky.clouds) {
+      const p = this.projectDirection(cloud.dir);
+      if (!p) continue;
+      const s = (this.lens * cloud.size) / p.z;
+      context.globalAlpha = 0.35;
+      context.drawImage(cloud.canvas, p.x - s, p.y - s * 0.75, s * 2, s * 1.5);
+    }
+    for (const batch of this.sky.batches) {
+      context.globalAlpha = batch.alpha;
+      context.fillStyle = batch.color;
+      context.beginPath();
+      for (const star of batch.stars) {
+        const p = this.projectDirection(star);
+        if (!p || p.x < 0 || p.y < 0 || p.x > this.width || p.y > this.height) continue;
+        context.rect(p.x, p.y, batch.size, batch.size);
+      }
+      context.fill();
+    }
+    for (const star of this.sky.bright) {
+      const p = this.projectDirection(star.dir);
+      if (!onScreen(p, 60)) continue;
+      const twinkle = 0.75 + 0.25 * Math.sin(this.clock * 1.7 + star.size);
+      const r = star.size * 0.35;
+      context.globalAlpha = 0.55 * twinkle;
+      context.drawImage(this.glow(star.hue, 70), p.x - r, p.y - r, r * 2, r * 2);
+      context.globalAlpha = 0.7 * twinkle;
+      context.drawImage(this.spikes, p.x - star.size, p.y - star.size, star.size * 2, star.size * 2);
+    }
+    context.globalAlpha = 1;
+    context.globalCompositeOperation = "source-over";
+  }
+
+  // A faint glow under each galaxy, in its plane; its form comes from where its systems are.
+  drawHalos() {
+    const context = this.context;
+    context.globalCompositeOperation = "lighter";
+    for (const project of this.scene.projects) {
+      const p = this.project(project.center);
+      if (!p) continue;
+      const reach = project.radius * 1.25;
+      const r = (this.lens * reach) / p.z;
+      if (r < 3) continue;
+      const fade = Math.min(1, Math.max(0, 1.5 - r / (this.width * 0.45)));
+      if (fade <= 0) continue;
+      if (!this.halos.has(project)) {
+        const flat = project.form === "barred" || project.form === "elliptical";
+        this.halos.set(project, radialSprite(512, [[0, `hsla(${project.hue + 25},90%,80%,${flat ? 0.3 : 0.35})`], [0.25, `hsla(${project.hue},90%,55%,0.12)`], [1, `hsla(${project.hue},90%,40%,0)`]]));
+      }
+      const turn = project.isCore ? this.clock * 0.05 : project.turn * this.clock * 0.05;
+      const u = tilt(project, { x: Math.cos(turn) * reach, y: 0, z: Math.sin(turn) * reach });
+      const w = tilt(project, { x: -Math.sin(turn) * reach, y: 0, z: Math.cos(turn) * reach });
+      const ex = this.project({ x: project.center.x + u.x, y: project.center.y + u.y, z: project.center.z + u.z });
+      const ez = this.project({ x: project.center.x + w.x, y: project.center.y + w.y, z: project.center.z + w.z });
+      if (!ex || !ez) continue;
+      context.globalAlpha = (project.sun?.stale ? 0.35 : 0.85) * fade * (this.focus.project === project ? 0.3 : 1);
+      context.setTransform(
+        (this.ratio * (ex.x - p.x)) / 256,
+        (this.ratio * (ex.y - p.y)) / 256,
+        (this.ratio * (ez.x - p.x)) / 256,
+        (this.ratio * (ez.y - p.y)) / 256,
+        this.ratio * p.x,
+        this.ratio * p.y,
+      );
+      context.drawImage(this.halos.get(project), -256, -256);
+      context.setTransform(this.ratio, 0, 0, this.ratio, 0, 0);
+    }
+    context.globalAlpha = 1;
+    context.globalCompositeOperation = "source-over";
+  }
+
+  collect() {
+    const bodies = [];
+    for (const system of this.scene.systems) {
+      const c = this.project(system.center);
+      if (c) bodies.push({ kind: "sun", sx: c.x, sy: c.y, z: c.z, pr: (this.lens * system.sunRadius) / c.z, system, project: system.project });
+      for (const planet of system.planets) {
+        const q = this.project(planetPosition(planet, this.clock));
+        if (!q || q.x < -60 || q.y < -60 || q.x > this.width + 60 || q.y > this.height + 60) continue;
+        bodies.push({ kind: "planet", sx: q.x, sy: q.y, z: q.z, pr: (this.lens * planet.size * PLANET_SCALE) / q.z, planet, system, project: system.project, sun: c });
+      }
+    }
+    return bodies.sort((a, b) => b.z - a.z);
+  }
+
+  fog(z) {
+    return Math.max(0.35, Math.min(1, 1.5 - z / (this.camera.dist * 2.5)));
+  }
+
+  lit(body) {
+    if (!this.found) return true;
+    if (body.kind === "planet") return this.found.has(body.planet.note.path);
+    return this.foundIn(body.system) > 0;
+  }
+
+  drawBodies(bodies) {
+    const context = this.context;
+    this.drawn = [];
+    for (const body of bodies) {
+      const lit = this.lit(body);
+      const fog = this.fog(body.z) * (lit ? 1 : 0.12);
+      if (body.kind === "sun") {
+        this.drawSun(body, fog);
+        this.drawn.push({ ...body, hit: Math.max(10, body.pr * 1.5) });
+        continue;
+      }
+      const { planet } = body;
+      if (planet.ring && body.pr >= 2) this.drawRing(body, "back", fog);
+      if (body.pr < 0.9) {
+        context.globalCompositeOperation = "lighter";
+        context.globalAlpha = Math.min(1, Math.max(0.4, body.pr * 1.5)) * fog;
+        context.fillStyle = planet.lost ? "#9a9a9a" : `hsl(${planet.repeated ? 0 : planet.hue},95%,65%)`;
+        context.fillRect(body.sx, body.sy, 1.2, 1.2);
+        context.globalCompositeOperation = "source-over";
+      } else if (body.pr < 9) {
+        const sprite = this.planetSprite(planet);
+        const r = body.pr * sprite.scale;
+        context.globalAlpha = fog;
+        if (body.pr < 3) {
+          context.drawImage(sprite.small, body.sx - r, body.sy - r, r * 2, r * 2);
+        } else {
+          // Big enough to see which side is lit: turn the lit side to the sun.
+          const angle = body.sun ? Math.atan2(body.sun.y - body.sy, body.sun.x - body.sx) : 0;
+          context.save();
+          context.translate(body.sx, body.sy);
+          context.rotate(angle);
+          context.drawImage(sprite.canvas, -r, -r, r * 2, r * 2);
+          context.restore();
+        }
+      } else {
+        context.globalAlpha = fog;
+        this.drawClose(body);
+      }
+      context.globalAlpha = 1;
+      if (planet.ring && body.pr >= 2) this.drawRing(body, "front", fog);
+      if (planet.repeated && body.pr > 0.5) {
+        const pulse = 0.5 + 0.5 * Math.sin(this.clock * 3);
+        context.strokeStyle = `rgba(255,70,60,${(0.4 + 0.5 * pulse) * fog})`;
+        context.lineWidth = 1.5;
+        context.beginPath();
+        context.arc(body.sx, body.sy, Math.max(5, body.pr * 1.8) + pulse * 3, 0, TAU);
+        context.stroke();
+      }
+      if (this.found && lit && body.pr > 0.3) {
+        context.strokeStyle = "rgba(232,163,60,0.95)";
+        context.lineWidth = 1.2;
+        context.beginPath();
+        context.arc(body.sx, body.sy, Math.max(5, body.pr * 1.5), 0, TAU);
+        context.stroke();
+      }
+      if (this.focus.planet === planet) {
+        context.strokeStyle = "rgba(232,163,60,0.9)";
+        context.lineWidth = 1.5;
+        context.beginPath();
+        context.arc(body.sx, body.sy, Math.max(6, body.pr * 1.35), 0, TAU);
+        context.stroke();
+      }
+      this.drawn.push({ ...body, hit: Math.max(14, body.pr * 1.4 + 4) });
+    }
+  }
+
+  drawSun(body, fog) {
+    const context = this.context;
+    const { system } = body;
+    const pale = system.stale;
+    const hue = system.star === "giant" ? (system.hue * 0.15 + 12) % 360 : system.star === "dwarf" ? 210 : system.hue;
+    const glow = this.glow(hue, pale ? 15 : system.star === "dwarf" ? 40 : 100);
+    const r = Math.min(this.height * 0.45, Math.max(3, body.pr * 4.5));
+    context.globalCompositeOperation = "lighter";
+    context.globalAlpha = fog * (pale ? 0.5 : 0.95);
+    context.drawImage(glow, body.sx - r, body.sy - r, r * 2, r * 2);
+    if (body.pr > 0.8) {
+      const k = Math.min(this.height * 0.6, Math.max(14, body.pr * 9));
+      context.globalAlpha = fog * (pale ? 0.25 : 0.6);
+      context.drawImage(this.spikes, body.sx - k, body.sy - k, k * 2, k * 2);
+    }
+    context.globalCompositeOperation = "source-over";
+    if (body.pr > 6) {
+      const disc = context.createRadialGradient(body.sx, body.sy, 0, body.sx, body.sy, body.pr);
+      disc.addColorStop(0, "rgba(255,255,250,1)");
+      disc.addColorStop(0.85, `hsla(${hue},100%,85%,1)`);
+      disc.addColorStop(1, `hsla(${hue},100%,70%,0.8)`);
+      context.globalAlpha = fog;
+      context.fillStyle = disc;
+      context.beginPath();
+      context.arc(body.sx, body.sy, body.pr, 0, TAU);
+      context.fill();
+    }
+    context.globalAlpha = 1;
+  }
+
+  drawRing(body, half, fog) {
+    const context = this.context;
+    const { planet } = body;
+    const rx = body.pr * 2.2;
+    const ry = rx * (0.18 + 0.4 * Math.sin(this.camera.pitch));
+    const [from, to] = half === "back" ? [Math.PI, TAU] : [0, Math.PI];
+    context.globalAlpha = fog;
+    context.lineWidth = Math.max(0.6, body.pr * 0.32);
+    context.strokeStyle = `hsla(${planet.hue + 35},45%,78%,0.55)`;
+    context.beginPath();
+    context.ellipse(body.sx, body.sy, rx, ry, planet.ringTilt, from, to);
+    context.stroke();
+    context.lineWidth = Math.max(0.4, body.pr * 0.1);
+    context.strokeStyle = `hsla(${planet.hue + 15},40%,88%,0.4)`;
+    context.beginPath();
+    context.ellipse(body.sx, body.sy, rx * 1.22, ry * 1.22, planet.ringTilt, from, to);
+    context.stroke();
+    context.globalAlpha = 1;
+  }
+
+  // The texture of a kind of planet in a hue, made once; null until its SVG is drawn.
+  texture(type, hue) {
+    const bucket = (Math.round(hue / 30) * 30) % 360;
+    const key = `${type}-${bucket}`;
+    if (this.textures.has(key)) return this.textures.get(key);
+    this.textures.set(key, null);
+    svgCanvas(textureSvg(type, bucket), 400, 300, (canvas) => {
+      const texture = { canvas, glow: null };
+      this.textures.set(key, texture);
+      // The sprites drawn without it are made again.
+      for (const name of [...this.sprites.keys()]) if (name.startsWith(`${type}-${bucket}-`)) this.sprites.delete(name);
+      if (type === "lava") svgCanvas(lavaGlowSvg(), 400, 300, (glow) => (texture.glow = glow));
+    });
+    return null;
+  }
+
+  look(planet) {
+    if (planet.lost) return { ...planet, hue: 0 };
+    return planet.repeated ? { ...planet, hue: 0 } : planet;
+  }
+
+  planetSprite(planet) {
+    const look = this.look(planet);
+    const hue = (Math.round(look.hue / 30) * 30) % 360;
+    // A lumpy rock has its own outline; the others share their sprite.
+    const key = `${look.type}-${hue}-${look.variant}${look.lost ? `-lost-${look.phase.toFixed(0)}` : ""}`;
+    const known = this.sprites.get(key);
+    if (known) return known;
+    const size = 96;
+    const radius = 40;
+    const canvas = document.createElement("canvas");
+    canvas.width = canvas.height = size;
+    const context = canvas.getContext("2d");
+    const texture = this.texture(look.type, hue);
+    context.save();
+    shapePath(context, size / 2, size / 2, radius, look);
+    context.clip();
+    if (texture) {
+      context.drawImage(texture.canvas, look.variant * 50, 0, 300, 300, size / 2 - radius, size / 2 - radius, radius * 2, radius * 2);
+      if (texture.glow) {
+        context.globalCompositeOperation = "lighter";
+        context.drawImage(texture.glow, look.variant * 50, 0, 300, 300, size / 2 - radius, size / 2 - radius, radius * 2, radius * 2);
+      }
+    } else {
+      context.fillStyle = `hsl(${hue},50%,45%)`;
+      context.fillRect(0, 0, size, size);
+    }
+    if (look.lost) {
+      // Grey: a file INDEX.md does not name.
+      context.globalCompositeOperation = "saturation";
+      context.fillStyle = "#808080";
+      context.fillRect(0, 0, size, size);
+    }
+    context.restore();
+    shade(context, size / 2, size / 2, radius, 1, 0, look);
+    // A small copy for far planets: scaling 96 px down to 4 px a thousand times a frame is slow.
+    const small = document.createElement("canvas");
+    small.width = small.height = 16;
+    small.getContext("2d").drawImage(canvas, 0, 0, 16, 16);
+    const sprite = { canvas, small, scale: size / 2 / radius };
+    // Drawn without its texture: kept only until the texture comes.
+    if (texture) this.sprites.set(key, sprite);
+    return sprite;
+  }
+
+  // A planet seen close: its texture slides as it turns on itself.
+  drawClose(body) {
+    const context = this.context;
+    const look = this.look(body.planet);
+    const r = body.pr;
+    const angle = body.sun ? Math.atan2(body.sun.y - body.sy, body.sun.x - body.sx) : -0.6;
+    const texture = this.texture(look.type, (Math.round(look.hue / 30) * 30) % 360);
+    const turn = this.clock * look.spin * 0.9 + look.phase;
+    context.save();
+    shapePath(context, body.sx, body.sy, r, look);
+    context.clip();
+    if (texture) {
+      const scale = (r * 2) / 300;
+      const width = 400 * scale;
+      const shift = ((((turn * 60) % 400) + 400) % 400) * scale;
+      for (let k = -1; k <= 1; k += 1) context.drawImage(texture.canvas, body.sx - r - shift + k * width, body.sy - r, width, r * 2);
+      if (look.lost) {
+        context.globalCompositeOperation = "saturation";
+        context.fillStyle = "#808080";
+        context.fillRect(body.sx - r, body.sy - r, r * 2, r * 2);
+        context.globalCompositeOperation = "source-over";
+      }
+    } else {
+      context.fillStyle = `hsl(${look.hue},50%,45%)`;
+      context.fillRect(body.sx - r, body.sy - r, r * 2, r * 2);
+    }
+    context.restore();
+    shade(context, body.sx, body.sy, r, Math.cos(angle), Math.sin(angle), look.type === "lava" ? { ...look, type: "rock" } : look);
+    if (texture?.glow) {
+      const scale = (r * 2) / 300;
+      const width = 400 * scale;
+      const shift = ((((turn * 60) % 400) + 400) % 400) * scale;
+      context.save();
+      shapePath(context, body.sx, body.sy, r, look);
+      context.clip();
+      context.globalCompositeOperation = "lighter";
+      context.globalAlpha *= 0.8;
+      for (let k = -1; k <= 1; k += 1) context.drawImage(texture.glow, body.sx - r - shift + k * width, body.sy - r, width, r * 2);
+      context.restore();
+    }
+  }
+
+  label(placed, text, x, y, color, size, under) {
+    const context = this.context;
+    context.font = `${size}px ${this.font()}`;
+    const width = context.measureText(text).width + 8;
+    const height = size + 5 + under.length * size;
+    const box = { x: x - width / 2 - 6, y: y - size - 4, w: width + 12, h: height + 8 };
+    if (placed.some((o) => box.x < o.x + o.w && o.x < box.x + box.w && box.y < o.y + o.h && o.y < box.y + box.h)) return;
+    placed.push(box);
+    context.textAlign = "center";
+    context.shadowColor = "rgba(0,0,0,0.95)";
+    context.shadowBlur = 6;
+    context.fillStyle = color;
+    context.fillText(text, x, y);
+    context.font = `${size - 2}px ${this.font()}`;
+    under.forEach(([line, tone], index) => {
+      context.fillStyle = tone;
+      context.fillText(line, x, y + (size + 1) * (index + 1));
+    });
+    context.shadowBlur = 0;
+  }
+
+  font() {
+    this.fontFamily ??= getComputedStyle(this.dialog).getPropertyValue("--font").trim() || "monospace";
+    return this.fontFamily;
+  }
+
+  drawLabels() {
+    const placed = [];
+    const level = this.level();
+    if (level === 0) {
+      // The biggest projects get their names first when two would overlap.
+      const bySize = [...this.scene.projects].sort((a, b) => b.total - a.total);
+      for (const project of bySize) {
+        const p = this.project(project.center);
+        if (!p) continue;
+        const r = (this.lens * project.radius) / p.z;
+        const under = [];
+        if (this.found) {
+          const hits = project.systems.reduce((sum, system) => sum + this.foundIn(system), 0);
+          if (hits > 0) under.push([`${hits} found`, "#e8a33c"]);
+        } else {
+          if (project.sun?.stale) {
+            const told = project.sun.notes.length === 0 ? "no status" : `status of ${day(project.sun.updated)}`;
+            under.push([`stale: ${told} · decision ${day(project.sun.last_decision)}`, "#ff7a6b"]);
+          }
+          const again = project.systems.flatMap((system) => system.planets).filter((planet) => planet.repeated).length;
+          if (again > 0) under.push([`a lesson given again`, "#ff6a5a"]);
+        }
+        const name = project.isCore ? "MEMORY" : `${project.name.toUpperCase()}  ${project.total}`;
+        this.label(placed, name, p.x, p.y + Math.max(18, r * 0.3), `hsl(${project.hue},70%,86%)`, 11, under);
+      }
+    } else if (this.focus.project?.galaxy) {
+      const systems = [...this.focus.project.systems].sort((a, b) => (this.project(a.center)?.z ?? 1e9) - (this.project(b.center)?.z ?? 1e9));
+      for (const system of systems) {
+        if (level >= 2 && system !== this.focus.system) continue;
+        const p = this.project(system.center);
+        if (!p) continue;
+        const under = this.found ? (this.foundIn(system) > 0 ? [[`${this.foundIn(system)} found`, "#e8a33c"]] : []) : system.stale ? [["stale", "#ff7a6b"]] : system.repeated > 0 ? [["a lesson given again", "#ff6a5a"]] : [];
+        this.label(placed, `${system.label} · ${system.planets.length || system.status?.length || 0}`, p.x, p.y + Math.max(16, (this.lens * system.sunRadius * 2.2) / p.z), `hsl(${system.hue},90%,78%)`, 11, under);
+      }
+    }
+    if (this.still) this.label(placed, "motion reduced by the system: orbits stopped", this.width / 2, this.height - 40, "#e07a3c", 11, []);
+  }
+
+  // A ring around what the arrows chose.
+  drawSelection() {
+    const target = this.targets()[this.selected];
+    if (!target) return;
+    const p = this.project(target.at());
+    if (!p) return;
+    const context = this.context;
+    context.strokeStyle = "#fff6c8";
+    context.lineWidth = 2;
+    context.beginPath();
+    context.arc(p.x, p.y, 16, 0, TAU);
+    context.stroke();
   }
 }
