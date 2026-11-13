@@ -7,7 +7,8 @@ and writes the files kindric reads, in the shapes Claude Code 2.1.323 gives, wit
     claude agents --json [--all]          the sessions of the account, stopped ones with --all
     claude [options] --bg [-n name] TASK  a background session; TASK may hold "work:N": it works N
                                           seconds (2 by default), then waits for the user
-    claude attach ID                      a terminal on the session: each line typed is a new turn
+    claude attach ID                      a terminal on the session: each line typed is a new turn;
+                                          a stopped session is started again, waiting
     claude stop ID / claude rm ID
 
 Options kindric-accounts adds (--settings, --mcp-config=…, --append-system-prompt-file …) are
@@ -115,11 +116,25 @@ def turn(session_id, task):
 
 
 def worker(session_id, task):
-    """The session's process: it lives until stopped, like a background session of Claude Code."""
+    """The session's process: it lives until stopped, like a background session of Claude Code.
+    Without a task, it was stopped and is started again: it waits for the user."""
     signal.signal(signal.SIGTERM, lambda *_: sys.exit(0))
-    turn(session_id, task)
+    if task is None:
+        set_state(session_id, "idle", "blocked", "waiting for you")
+    else:
+        turn(session_id, task)
     while True:
         time.sleep(3600)
+
+
+def spawn(session_id, task):
+    """Starts the session's process and records its pid; task None starts a stopped session again."""
+    mode = ["--fake-resume", session_id] if task is None else ["--fake-worker", session_id, task]
+    process = subprocess.Popen([sys.executable, os.path.abspath(__file__), *mode],
+                               stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True)
+    sessions = load()
+    find(sessions, session_id).update(pid=process.pid, status="idle" if task is None else "busy")
+    save(sessions)
 
 
 def background(args, task):
@@ -132,11 +147,7 @@ def background(args, task):
                "startedAt": now_ms(), "pid": None, "status": "busy", "state": "working", "detail": ""}
     sessions.append(session)
     save(sessions)
-    process = subprocess.Popen([sys.executable, os.path.abspath(__file__), "--fake-worker", session["sessionId"], task or ""],
-                               stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True)
-    sessions = load()
-    find(sessions, session["sessionId"])["pid"] = process.pid
-    save(sessions)
+    spawn(session["sessionId"], task or "")
     print(f"backgrounded · {session['id']}" + (f" · {name}" if name else ""))
     return 0
 
@@ -163,9 +174,12 @@ def agents(args):
 
 def attach(wanted):
     session = find(load(), wanted)
-    if session is None or not alive(session.get("pid")):
+    if session is None:
         print(f"No job matching {wanted}", file=sys.stderr)
         return 1
+    # Like Claude Code: attaching to a stopped session starts it again.
+    if not alive(session.get("pid")):
+        spawn(session["sessionId"], None)
     print(f"fake claude · {session.get('name') or session['id']} · {session['cwd']}")
     print("❯ ", end="", flush=True)
     for line in sys.stdin:
@@ -205,6 +219,9 @@ def stop(wanted, remove):
 def main(argv):
     if argv[:1] == ["--fake-worker"]:
         worker(argv[1], argv[2])
+        return 0
+    if argv[:1] == ["--fake-resume"]:
+        worker(argv[1], None)
         return 0
     if argv[:1] == ["--fake-turn"]:
         turn(argv[1], argv[2])

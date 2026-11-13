@@ -13,7 +13,7 @@ import subprocess
 import unittest
 from typing import Any
 
-from driver import CONTROL, ENTER, Driver, wait_until
+from driver import CONTROL, ELEMENT_KEY, ENTER, SHIFT, Driver, wait_until
 
 HOME = os.path.expanduser("~")
 ACCOUNT = "work"
@@ -62,6 +62,11 @@ def fake_detail(name: str) -> str | None:
     return next((str(session.get("detail", "")) for session in fake_sessions() if session.get("name") == name), None)
 
 
+def fake_running(name: str) -> bool:
+    """Whether the fake claude has a process for the session with this name."""
+    return any(session.get("name") == name and session.get("pid") for session in fake_sessions())
+
+
 def stop_every_session() -> None:
     """Stops every session the fake claude still runs: their processes outlive the app."""
     for session in fake_sessions():
@@ -97,6 +102,23 @@ def chip_state(driver: Driver, title: str) -> str | None:
 
 def dialog_open(driver: Driver, dialog: str) -> bool:
     return bool(driver.script("return document.getElementById(arguments[0]).open", dialog))
+
+
+def picker_rows(driver: Driver) -> list[tuple[str, str]]:
+    """The sessions Ctrl+P lists: (name, detail) for each."""
+    rows: list[list[str]] = driver.script("""return [...document.querySelectorAll('#picker-results li.session')].map(
+      (row) => [row.querySelector('.name').textContent, row.querySelector('.detail').textContent]);""")
+    return [(str(name), str(detail)) for name, detail in rows]
+
+
+def open_from_bar(driver: Driver, title: str) -> None:
+    """Clicks the session's chip, then waits for its pane."""
+    found = driver.script("""return [...document.querySelectorAll('#chips li.chip:not(.more)')].find(
+      (chip) => chip.querySelector('.chip-title').textContent === arguments[0]);""", title)
+    if not isinstance(found, dict) or ELEMENT_KEY not in found:
+        raise AssertionError(f"no chip titled {title} in the bar")
+    driver.click(str(found[ELEMENT_KEY]))
+    wait_until(f"{title} open in a pane", lambda: (chip(driver, title) or ("", False))[1])
 
 
 class Journey(unittest.TestCase):
@@ -159,6 +181,35 @@ class NewSessionFromCtrlN(Journey):
         terminal = wait_until("the pane's terminal", lambda: driver.find("#panes .xterm-helper-textarea"))
         driver.type_into(terminal, "hello work:4" + ENTER)
         wait_until("the typed turn reaching the session", lambda: fake_detail("from-ctrl-n") == "working on: hello work:4")
+
+
+class HiddenThenFoundWithCtrlP(Journey):
+    """Ctrl+Shift+K stops the session of the pane and hides it from the bar; Ctrl+P still finds
+    it, and choosing it brings it back to the bar, started again."""
+
+    started = [("to-hide", "hide me work:1")]
+
+    def test_hide_find_and_bring_back(self) -> None:
+        driver = self.driver
+        wait_until("the session in the bar", lambda: chip_state(driver, "to-hide"))
+        open_from_bar(driver, "to-hide")
+
+        driver.press(CONTROL, SHIFT, "k")
+        wait_until("the question before hiding", lambda: dialog_open(driver, "confirm-hide"))
+        driver.click(driver.find("#hide-form button[type=submit]"))
+        wait_until("the session gone from the bar", lambda: chip_state(driver, "to-hide") is None)
+        wait_until("the session stopped", lambda: not fake_running("to-hide"))
+
+        driver.press(CONTROL, "p")
+        wait_until("the session finder", lambda: dialog_open(driver, "picker"))
+        driver.type_into(driver.find("#picker-query"), "to-hide")
+        found = wait_until("the hidden session in the finder", lambda: next((detail for name, detail in picker_rows(driver) if name == "to-hide"), None))
+        self.assertIn("hidden", found)
+
+        driver.type_into(driver.find("#picker-query"), ENTER)
+        wait_until("the session back in the bar", lambda: chip_state(driver, "to-hide"))
+        wait_until("the session open in a pane", lambda: (chip(driver, "to-hide") or ("", False))[1])
+        wait_until("the session started again", lambda: fake_running("to-hide"))
 
 
 if __name__ == "__main__":
