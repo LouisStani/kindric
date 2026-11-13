@@ -14,7 +14,7 @@ import urllib.request
 from typing import Any, Callable, TypeVar
 
 # How the protocol names an element in what it sends back.
-ELEMENT_KEY = "element-6066-11e4-a52e-4f735466cecc"
+ELEMENT_KEY = "element-6066-11e4-a52e-4f735466cecf"
 # Keys of the protocol, for key presses (https://www.w3.org/TR/webdriver2/#keyboard-actions).
 CONTROL = ""
 SHIFT = ""
@@ -72,6 +72,9 @@ class Driver:
 
     def click(self, element: str) -> None:
         self._command("POST", f"/element/{element}/click", {})
+
+    def clear(self, element: str) -> None:
+        self._command("POST", f"/element/{element}/clear", {})
 
     def type_into(self, element: str, text: str) -> None:
         self._command("POST", f"/element/{element}/value", {"text": text})

@@ -1,25 +1,36 @@
 """kindric's end-to-end journeys, run inside the image by tests/e2e/inside.sh: the real app on a
 screen that does not exist, driven through tauri-driver, with the fake claude (tests/e2e/bin/claude).
 
-Screenshots go to $E2E_OUT (default ~/e2e-out), one per journey, taken at its end.
+Each journey starts from nothing: no kindric data, one account, the sessions it asks for. Its
+screenshot goes to $E2E_OUT (default ~/e2e-out), taken at its end.
 """
 from __future__ import annotations
 
+import json
 import os
 import shutil
 import subprocess
 import unittest
 from typing import Any
 
-from driver import Driver, wait_until
+from driver import CONTROL, ENTER, Driver, wait_until
 
+HOME = os.path.expanduser("~")
 ACCOUNT = "work"
-PROJECT = os.path.expanduser("~/project")
-OUT = os.environ.get("E2E_OUT", os.path.expanduser("~/e2e-out"))
-# The chips of the bar, as the page draws them: [state, title] for each.
+PROJECT = os.path.join(HOME, "project")
+OUT = os.environ.get("E2E_OUT", os.path.join(HOME, "e2e-out"))
+# What the fake claude knows of the account's sessions (tests/e2e/bin/claude).
+FAKE_SESSIONS = os.path.join(HOME, ".local/share/kindric-accounts", ACCOUNT, "fake/sessions.json")
+# Where the app writes its trace (KINDRIC_TRACE=1, set by inside.sh).
+TRACE = os.path.join(HOME, ".local/share/kindric/trace.log")
+# Everything kindric, kindric-accounts and the fake claude write in the container's home.
+STATE = [".claude", ".config/kindric-accounts", ".local/share/kindric", ".local/share/kindric-accounts",
+         ".local/share/io.github.louisstani.kindric"]
+# The chips of the bar, as the page draws them: [state, title, open in a pane] for each.
 CHIPS = """return [...document.querySelectorAll('#chips li.chip:not(.more)')].map(
   (chip) => [[...chip.classList].filter((name) => name !== 'chip' && name !== 'open').join(' '),
-             chip.querySelector('.chip-title').textContent]);"""
+             chip.querySelector('.chip-title').textContent,
+             chip.classList.contains('open')]);"""
 
 
 def accounts(*words: str) -> str:
@@ -37,38 +48,117 @@ def application() -> str:
     return found
 
 
-def chip_state(driver: Driver, title: str) -> str | None:
-    """The state the bar shows for the session with this title, None while it is not there."""
+def fake_sessions() -> list[dict[str, Any]]:
+    try:
+        with open(FAKE_SESSIONS) as source:
+            sessions: list[dict[str, Any]] = json.load(source)
+            return sessions
+    except (OSError, ValueError):
+        return []
+
+
+def fake_detail(name: str) -> str | None:
+    """What the fake claude says the session with this name is doing, None if it has no such session."""
+    return next((str(session.get("detail", "")) for session in fake_sessions() if session.get("name") == name), None)
+
+
+def stop_every_session() -> None:
+    """Stops every session the fake claude still runs: their processes outlive the app."""
+    for session in fake_sessions():
+        if session.get("pid"):
+            subprocess.run(["kindric-accounts", "run", ACCOUNT, "stop", session["id"]], cwd=PROJECT, capture_output=True, timeout=30)
+
+
+def forget_everything() -> None:
+    for path in STATE:
+        shutil.rmtree(os.path.join(HOME, path), ignore_errors=True)
+
+
+def page_ready() -> bool:
+    """The app marks the page ready once its first list is drawn (app.js, mark("page ready"))."""
+    try:
+        with open(TRACE) as trace:
+            return "page ready" in trace.read()
+    except OSError:
+        return False
+
+
+def chip(driver: Driver, title: str) -> tuple[str, bool] | None:
+    """The state the bar shows for the session with this title and whether a pane shows it, None
+    while it is not in the bar."""
     chips: list[list[Any]] = driver.script(CHIPS)
-    return next((str(state) for state, shown in chips if shown == title), None)
+    return next(((str(state), bool(shown)) for state, title_shown, shown in chips if title_shown == title), None)
 
 
-class SessionInTheBar(unittest.TestCase):
-    """A session started before the app is found at start, shown working, then finished: its turn
-    ended and nobody has looked at it yet."""
+def chip_state(driver: Driver, title: str) -> str | None:
+    found = chip(driver, title)
+    return None if found is None else found[0]
 
+
+def dialog_open(driver: Driver, dialog: str) -> bool:
+    return bool(driver.script("return document.getElementById(arguments[0]).open", dialog))
+
+
+class Journey(unittest.TestCase):
+    """The app started from nothing, with the account and the sessions `started` names
+    (name, task), stopped and screenshotted at the end."""
+
+    started: list[tuple[str, str]] = []
     driver: Driver
 
     @classmethod
     def setUpClass(cls) -> None:
+        forget_everything()
         os.makedirs(PROJECT, exist_ok=True)
         os.makedirs(OUT, exist_ok=True)
         accounts("add", ACCOUNT)
-        accounts("run", ACCOUNT, "--bg", "-n", "in-the-bar", "first journey work:8")
+        for name, task in cls.started:
+            accounts("run", ACCOUNT, "--bg", "-n", name, task)
         cls.driver = Driver.start(application())
+        wait_until("the page ready", page_ready)
 
     @classmethod
     def tearDownClass(cls) -> None:
         try:
-            cls.driver.screenshot(os.path.join(OUT, "session-in-the-bar.png"))
+            cls.driver.screenshot(os.path.join(OUT, f"{cls.__name__}.png"))
         finally:
             cls.driver.quit()
-            accounts("run", ACCOUNT, "stop", "in-the-bar")
+            stop_every_session()
+
+
+class SessionInTheBar(Journey):
+    """A session started before the app is found at start, shown working, then finished: its turn
+    ended and nobody has looked at it yet."""
+
+    started = [("in-the-bar", "first journey work:8")]
 
     def test_working_then_finished(self) -> None:
         working = wait_until("the session in the bar", lambda: chip_state(self.driver, "in-the-bar"))
         self.assertEqual(working, "working")
         wait_until("the turn finished", lambda: chip_state(self.driver, "in-the-bar") == "finished")
+
+
+class NewSessionFromCtrlN(Journey):
+    """Ctrl+N, a folder and a name, Enter: the session starts, shows in the bar, opens in a pane,
+    and what is typed in the pane reaches it."""
+
+    def test_start_open_and_type(self) -> None:
+        driver = self.driver
+        driver.press(CONTROL, "n")
+        wait_until("the new session form", lambda: dialog_open(driver, "new-session"))
+        directory = driver.find("#new-form input[name=directory]")
+        driver.clear(directory)
+        driver.type_into(directory, PROJECT)
+        driver.type_into(driver.find("#new-form input[name=name]"), "from-ctrl-n" + ENTER)
+
+        wait_until("the session in the bar", lambda: chip_state(driver, "from-ctrl-n"))
+        wait_until("the form closed", lambda: not dialog_open(driver, "new-session"))
+        wait_until("the session open in a pane", lambda: (chip(driver, "from-ctrl-n") or ("", False))[1])
+        self.assertIsNotNone(fake_detail("from-ctrl-n"), "the fake claude has no session named from-ctrl-n")
+
+        terminal = wait_until("the pane's terminal", lambda: driver.find("#panes .xterm-helper-textarea"))
+        driver.type_into(terminal, "hello work:4" + ENTER)
+        wait_until("the typed turn reaching the session", lambda: fake_detail("from-ctrl-n") == "working on: hello work:4")
 
 
 if __name__ == "__main__":
