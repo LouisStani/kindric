@@ -22,6 +22,7 @@ ALT = ""
 ENTER = ""
 ESCAPE = ""
 TAB = ""
+F2 = ""
 
 T = TypeVar("T")
 

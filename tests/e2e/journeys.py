@@ -13,7 +13,7 @@ import subprocess
 import unittest
 from typing import Any
 
-from driver import CONTROL, ELEMENT_KEY, ENTER, SHIFT, Driver, wait_until
+from driver import CONTROL, ELEMENT_KEY, ENTER, F2, SHIFT, Driver, wait_until
 
 HOME = os.path.expanduser("~")
 ACCOUNT = "work"
@@ -23,6 +23,8 @@ OUT = os.environ.get("E2E_OUT", os.path.join(HOME, "e2e-out"))
 FAKE_SESSIONS = os.path.join(HOME, ".local/share/kindric-accounts", ACCOUNT, "fake/sessions.json")
 # Where the app writes its trace (KINDRIC_TRACE=1, set by inside.sh).
 TRACE = os.path.join(HOME, ".local/share/kindric/trace.log")
+# The theme kindric writes for Claude Code to follow (claude_theme.rs).
+CLAUDE_THEME = os.path.join(HOME, ".claude/themes/kindric.json")
 # Everything kindric, kindric-accounts and the fake claude write in the container's home.
 STATE = [".claude", ".config/kindric-accounts", ".local/share/kindric", ".local/share/kindric-accounts",
          ".local/share/io.github.louisstani.kindric"]
@@ -140,6 +142,14 @@ class Journey(unittest.TestCase):
         wait_until("the page ready", page_ready)
 
     @classmethod
+    def restart(cls) -> None:
+        """Closes the app and starts it again, as the user would."""
+        cls.driver.quit()
+        os.remove(TRACE)
+        cls.driver = Driver.start(application())
+        wait_until("the page ready again", page_ready)
+
+    @classmethod
     def tearDownClass(cls) -> None:
         try:
             cls.driver.screenshot(os.path.join(OUT, f"{cls.__name__}.png"))
@@ -210,6 +220,53 @@ class HiddenThenFoundWithCtrlP(Journey):
         wait_until("the session back in the bar", lambda: chip_state(driver, "to-hide"))
         wait_until("the session open in a pane", lambda: (chip(driver, "to-hide") or ("", False))[1])
         wait_until("the session started again", lambda: fake_running("to-hide"))
+
+
+class RenamedWithF2(Journey):
+    """F2 gives the session of the pane a short name: the bar shows it, and so does the next start."""
+
+    started = [("long-name", "rename me work:1")]
+
+    def test_rename_and_keep_the_name(self) -> None:
+        driver = self.driver
+        wait_until("the session in the bar", lambda: chip_state(driver, "long-name"))
+        open_from_bar(driver, "long-name")
+        driver.press(F2)
+        wait_until("the name form", lambda: dialog_open(driver, "rename"))
+        label = driver.find("#rename-form input[name=label]")
+        driver.clear(label)
+        driver.type_into(label, "router" + ENTER)
+        wait_until("the new name in the bar", lambda: chip_state(driver, "router"))
+        self.assertIsNone(chip_state(driver, "long-name"))
+
+        type(self).restart()
+        wait_until("the new name after a restart", lambda: chip_state(self.driver, "router"))
+
+
+class ThemeWithCtrlShiftE(Journey):
+    """Ctrl+Shift+E moves to the next theme (ember, then paper): the page and Claude Code's theme
+    follow, and the next start keeps it."""
+
+    def background(self) -> str:
+        return str(self.driver.script("return getComputedStyle(document.documentElement).getPropertyValue('--background').trim()"))
+
+    def claude_draws_light(self) -> bool:
+        try:
+            with open(CLAUDE_THEME) as theme:
+                return str(json.load(theme).get("base", "")).startswith("light")
+        except (OSError, ValueError):
+            return False
+
+    def test_next_theme_kept(self) -> None:
+        driver = self.driver
+        self.assertEqual(self.background(), "#1a0e06")
+        driver.press(CONTROL, SHIFT, "e")
+        wait_until("the paper theme", lambda: self.background() == "#f7efe4")
+        self.assertEqual(driver.script("return document.documentElement.style.colorScheme"), "light")
+        wait_until("Claude Code told to draw light", self.claude_draws_light)
+
+        type(self).restart()
+        wait_until("the paper theme after a restart", lambda: self.background() == "#f7efe4")
 
 
 if __name__ == "__main__":
