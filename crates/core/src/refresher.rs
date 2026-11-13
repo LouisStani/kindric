@@ -92,11 +92,15 @@ impl Refresher {
     /// creation wakes the list up through its account's `jobs/`. Called before the accounts
     /// are queried, so that a state written meanwhile is not missed.
     fn watch(&mut self, registry_dir: &Path) -> Vec<String> {
+        let dirs = self.dirs();
         let (Ok(watcher), Ok(mailbox)) = (&mut self.watcher, &self.mailbox) else {
             return Vec::new();
         };
-        let dirs: Vec<PathBuf> = self.account_dirs.iter().map(|(_, dir)| dir.clone()).collect();
         watcher.ensure(&watcher::targets(&dirs, mailbox.root(), registry_dir))
+    }
+
+    fn dirs(&self) -> Vec<PathBuf> {
+        self.account_dirs.iter().map(|(_, dir)| dir.clone()).collect()
     }
 
     fn unread_counts(&self, snapshot: &mut Snapshot) -> HashMap<String, usize> {
@@ -153,7 +157,7 @@ impl Refresher {
             thread::sleep(WITHOUT_WATCHER);
             return Change::Full;
         };
-        match watcher.wait(FALLBACK, SETTLE, MAX_SETTLE) {
+        match watcher.wait(FALLBACK, SETTLE, MAX_SETTLE, &self.dirs()) {
             Wake::Changed(paths) => {
                 let mailbox_root = self.mailbox.as_ref().ok().map(Mailbox::root);
                 classify(&paths, &self.account_dirs, mailbox_root)
