@@ -12,3 +12,8 @@ publish = false
 kindric-accounts = { path = "crates/accounts" }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+
+# Symbols removed from the installed programs: about a third of their size (21 MB to 14 MB),
+# at no build cost. A panic then prints a backtrace without function names.
+[profile.release]
+strip = true
