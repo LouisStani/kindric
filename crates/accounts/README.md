@@ -221,7 +221,7 @@ A message sent with `wake` asks the other session to act now. kindric-accounts a
 In kindric, you can say you are away for a while from a session. kindric-accounts adds `kindric away-hook` to the sessions it starts, on three events. Until that time:
 
 - Stop: it refuses the end of a turn and tells the session to keep working without waiting for your approval. That instruction says what it may do alone and what it must not do: no push, merge, deletion, installation or other account.
-- PreToolUse, shell commands only: it refuses a command that pushes, merges, deletes, installs or uses another account, and tells the session why, so that it goes on with the rest. Claude Code runs this hook in every permission mode. The command is read word by word, not run in a shell: one hidden in `$(…)` or `sh -c "…"` is not seen.
+- PreToolUse, shell commands only: it refuses a command that pushes, merges, deletes, installs or uses another account, and tells the session why, so that it goes on with the rest. Claude Code runs this hook in every permission mode. The command is read word by word, not run in a shell. It looks past `sudo`, `timeout 60`, `nice -n 10`, `xargs` and the like, into `( … )`, `$( … )`, backquotes, `sh -c "…"` and `eval`. Pulling counts as merging; `git reset --hard`, `git stash drop`, `git restore`, `find -exec rm` and `rsync --delete` as deleting; `cargo add`, `npm ci`, `go get` and `python -m pip install` as installing. A command built at run time (a variable that holds `push`, a script file) is not seen.
 - PermissionRequest: it answers yes to the questions Claude Code would ask you, and no to those same commands.
 
 A session that has finished runs `kindric away done <session id>` and stops.
