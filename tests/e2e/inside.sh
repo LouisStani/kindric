@@ -7,11 +7,14 @@ Xvfb :99 -screen 0 1400x900x24 >/dev/null 2>&1 &
 xvfb=$!
 export DISPLAY=:99
 eval "$(dbus-launch --sh-syntax)"
-export KINDRIC_TRACE=1
+# The journeys wait for "page ready" in the trace; measurements run without it (its frame watch costs).
+[ -n "${E2E_NO_TRACE:-}" ] || export KINDRIC_TRACE=1
+# Every call of the fake claude, for measure.py: the app gets the environment of tauri-driver.
+export FAKE_CLAUDE_CALLS="$HOME/claude-calls.log"
 tauri-driver >"$HOME/tauri-driver.log" 2>&1 &
 driver=$!
 
-python3 "$here/journeys.py" "$@"
+python3 "$here/${E2E_SCRIPT:-journeys.py}" "$@"
 code=$?
 
 kill "$driver" "$DBUS_SESSION_BUS_PID" "$xvfb" 2>/dev/null

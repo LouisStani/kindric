@@ -226,6 +226,12 @@ def main(argv):
     if argv[:1] == ["--fake-turn"]:
         turn(argv[1], argv[2])
         return 0
+    # Each call kindric makes, one line each, for measurements: the real claude costs about
+    # 0.55 s of processor per `agents --json`, this one almost nothing.
+    calls = os.environ.get("FAKE_CLAUDE_CALLS")
+    if calls:
+        with open(calls, "a") as log:
+            log.write(f"{time.time():.3f} {' '.join(argv)}\n")
     # Words that are not options or their values: the subcommand and the task.
     words = []
     index = 0
