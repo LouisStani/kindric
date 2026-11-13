@@ -7,6 +7,8 @@
 #   tests/e2e/run.sh SessionInTheBar     one journey (any unittest name works)
 #   tests/e2e/run.sh --rebuild ...       build the image again first (new Rust, new system libs)
 #
+#   E2E_SCRIPT=measure.py E2E_NO_TRACE=1 tests/e2e/run.sh    what the app costs (see measure.py)
+#
 # The image is built the first time. The code of the checkout is then compiled inside, at each
 # run, into a volume that keeps what was compiled: only what changed is compiled again.
 # Screenshots go to $E2E_OUT (default /tmp/kindric-e2e-out), one per journey.
@@ -14,7 +16,9 @@ set -eu
 
 root=$(cd "$(dirname "$0")/../.." && pwd)
 image=kindric-e2e
-target=kindric-e2e-target
+# One build volume per checkout: cargo keeps a build whose sources look older than it, so two
+# checkouts mounted at the same /src in turn would run each other's programs.
+target=kindric-e2e-target-$(printf %s "$root" | cksum | cut -d ' ' -f 1)
 out=${E2E_OUT:-/tmp/kindric-e2e-out}
 
 if ! command -v podman >/dev/null 2>&1; then
@@ -33,7 +37,7 @@ fi
 mkdir -p "$out"
 # keep-id: the tester of the image is this user, so the screenshots belong to them.
 exec podman run --rm --userns=keep-id \
-    -e E2E_OUT=/out \
+    -e E2E_OUT=/out -e E2E_SCRIPT -e E2E_NO_TRACE -e MEASURE_IDLE -e MEASURE_PANES \
     -v "$root:/src:ro,Z" \
     -v "$target:/home/tester/target" \
     -v "$out:/out:Z" \

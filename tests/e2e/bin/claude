@@ -108,10 +108,32 @@ def work_seconds(task):
     return int(match.group(1)) if match else 2
 
 
+# While it works, Claude Code rewrites its job file every few steps, and only that file: its
+# process file changes at the start and the end of the turn (seen on 2.1.323).
+PROGRESS_EVERY = 10
+
+
+def job_progress(session_id, detail):
+    session = find(load(), session_id)
+    if session is None:
+        return
+    write_json(os.path.join(config_dir(), "jobs", session["id"], "state.json"), {
+        "state": "working", "detail": detail, "tempo": "active",
+        "name": session.get("name", ""), "sessionId": session["sessionId"], "cliVersion": VERSION,
+        "cwd": session["cwd"], "createdAt": iso(session["startedAt"]), "updatedAt": iso(now_ms()),
+    })
+
+
 def turn(session_id, task):
     """One turn: busy for the time the task says, then waiting for the user."""
     set_state(session_id, "busy", "working", f"working on: {task[:60]}")
-    time.sleep(work_seconds(task))
+    end = time.time() + work_seconds(task)
+    step = 0
+    while time.time() < end:
+        time.sleep(min(PROGRESS_EVERY, max(end - time.time(), 0)))
+        step += 1
+        if time.time() < end:
+            job_progress(session_id, f"step {step} of: {task[:50]}")
     set_state(session_id, "idle", "blocked", "waiting for you")
 
 
