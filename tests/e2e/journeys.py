@@ -308,5 +308,68 @@ class ProjectTab(Journey):
         self.assertTrue(fake_sessions()[0].get("pid"), "the session stopped with its tab")
 
 
+# The account's folder, as Claude Code gives it to the MCP servers it starts.
+ACCOUNT_DIR = os.path.join(HOME, ".local/share/kindric-accounts", ACCOUNT)
+
+
+def mcp_call(session_id: str, tool: str, arguments: dict[str, Any]) -> str:
+    """Calls a tool of `kindric mcp` as the session `session_id` would, through Claude Code; its text."""
+    requests = [
+        {"jsonrpc": "2.0", "id": 1, "method": "initialize",
+         "params": {"protocolVersion": "2025-06-18", "capabilities": {}, "clientInfo": {"name": "e2e", "version": "1"}}},
+        {"jsonrpc": "2.0", "method": "notifications/initialized"},
+        {"jsonrpc": "2.0", "id": 2, "method": "tools/call", "params": {"name": tool, "arguments": arguments}},
+    ]
+    environment = dict(os.environ, CLAUDE_CODE_SESSION_ID=session_id, CLAUDE_CONFIG_DIR=ACCOUNT_DIR)
+    done = subprocess.run(["kindric", "mcp"], input="".join(json.dumps(request) + "\n" for request in requests),
+                          capture_output=True, text=True, timeout=30, env=environment, cwd=PROJECT)
+    for line in done.stdout.splitlines():
+        answer = json.loads(line)
+        if answer.get("id") == 2:
+            result = answer.get("result", {})
+            text = "".join(part.get("text", "") for part in result.get("content", []))
+            if result.get("isError") or "error" in answer:
+                raise AssertionError(f"{tool} refused: {text or answer.get('error')}")
+            return text
+    raise AssertionError(f"kindric mcp gave no answer to {tool}: {done.stderr.strip()}")
+
+
+def session_id_of(name: str) -> str:
+    return next(str(session["sessionId"]) for session in fake_sessions() if session.get("name") == name)
+
+
+def chip_badge(driver: Driver, title: str) -> str | None:
+    """The unread count the session's chip shows, None without one."""
+    found = driver.script("""const chip = [...document.querySelectorAll('#chips li.chip:not(.more)')].find(
+      (chip) => chip.querySelector('.chip-title').textContent === arguments[0]);
+      const badge = chip && chip.querySelector('.badge');
+      return badge ? badge.textContent : null;""", title)
+    return None if found is None else str(found)
+
+
+class MessageBetweenSessions(Journey):
+    """A session leaves a message to another through `kindric mcp`: the bar counts it on the
+    other's chip, Ctrl+Shift+M shows it, and the count goes once the session read it."""
+
+    started = [("sender", "write work:0"), ("receiver", "read work:0")]
+
+    def test_send_show_and_read(self) -> None:
+        driver = self.driver
+        wait_until("both sessions in the bar", lambda: chip_state(driver, "sender") and chip_state(driver, "receiver"))
+        said = mcp_call(session_id_of("sender"), "send_message", {"to": "receiver", "text": "the build is green"})
+        self.assertIn("Message left for receiver", said)
+        wait_until("the unread count on the receiver", lambda: chip_badge(driver, "receiver") == "1")
+        self.assertIsNone(chip_badge(driver, "sender"))
+
+        open_from_bar(driver, "receiver")
+        driver.press(CONTROL, SHIFT, "m")
+        wait_until("the messages window", lambda: dialog_open(driver, "messages"))
+        wait_until("the message in it", lambda: "the build is green" in driver.text(driver.find("#messages-list")))
+
+        read = mcp_call(session_id_of("receiver"), "read_messages", {})
+        self.assertIn("the build is green", read)
+        wait_until("the count gone once read", lambda: chip_badge(driver, "receiver") is None)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
