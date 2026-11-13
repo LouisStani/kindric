@@ -9,16 +9,19 @@
 #
 #   E2E_SCRIPT=measure.py E2E_NO_TRACE=1 tests/e2e/run.sh    what the app costs (see measure.py)
 #
-# The image is built the first time. The code of the checkout is then compiled inside, at each
-# run, into a volume that keeps what was compiled: only what changed is compiled again.
+# The image is built the first time. The code of the checkout is then copied into the container
+# and compiled there, into one volume shared by every checkout: the dependencies are compiled
+# once for all of them, and only what changed is compiled again.
 # Screenshots go to $E2E_OUT (default /tmp/kindric-e2e-out), one per journey.
 set -eu
 
 root=$(cd "$(dirname "$0")/../.." && pwd)
 image=kindric-e2e
-# One build volume per checkout: cargo keeps a build whose sources look older than it, so two
-# checkouts mounted at the same /src in turn would run each other's programs.
-target=kindric-e2e-target-$(printf %s "$root" | cksum | cut -d ' ' -f 1)
+target=kindric-e2e-target
+# Each checkout is compiled from its own path: cargo tells the programs of two checkouts apart by
+# their path, so one never runs the other's (mounted at the same path, a build whose sources look
+# older than it is kept). Copied, not compiled in place: Tauri's build script writes in the source.
+build=/home/tester/build/$(printf %s "$root" | cksum | cut -d ' ' -f 1)
 out=${E2E_OUT:-/tmp/kindric-e2e-out}
 
 if ! command -v podman >/dev/null 2>&1; then
@@ -37,11 +40,15 @@ fi
 mkdir -p "$out"
 # keep-id: the tester of the image is this user, so the screenshots belong to them.
 exec podman run --rm --userns=keep-id \
-    -e E2E_OUT=/out -e E2E_SCRIPT -e E2E_NO_TRACE -e MEASURE_IDLE -e MEASURE_PANES \
+    -e E2E_OUT=/out -e E2E_SCRIPT -e E2E_NO_TRACE -e MEASURE_IDLE -e MEASURE_PANES -e E2E_BUILD="$build" \
     -v "$root:/src:ro,Z" \
     -v "$target:/home/tester/target" \
     -v "$out:/out:Z" \
     "$image" sh -c '
-        cargo build --locked --release -p kindric-desktop -p kindric-accounts -p kindric >"$HOME/build.log" 2>&1 \
+        mkdir -p "$E2E_BUILD"
+        # tar keeps the dates of the files, which cargo compares to know what changed.
+        (cd /src && tar --exclude=./target --exclude=./.git --exclude=./.claude --exclude=node_modules -cf - .) \
+            | tar -xf - -C "$E2E_BUILD"
+        (cd "$E2E_BUILD" && cargo build --locked --release -p kindric-desktop -p kindric-accounts -p kindric) >"$HOME/build.log" 2>&1 \
             || { tail -40 "$HOME/build.log"; exit 1; }
         exec /src/tests/e2e/inside.sh "$@"' inside "$@"
