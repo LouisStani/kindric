@@ -88,8 +88,11 @@ impl ChangeWatcher {
             let Ok(event) = result else {
                 return;
             };
-            if event.kind.is_create() || event.kind.is_modify() || event.kind.is_remove() {
-                // The receiver only disappears when the refresher stops.
+            // The receiver only disappears when the refresher stops.
+            if event.need_rescan() {
+                // Events were lost (a full inotify queue): no path, so everything is read again.
+                let _ = sender.send(Vec::new());
+            } else if event.kind.is_create() || event.kind.is_modify() || event.kind.is_remove() {
                 let _ = sender.send(event.paths);
             }
         })?;

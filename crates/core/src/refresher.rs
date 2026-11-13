@@ -1,5 +1,5 @@
 //! Keeps the session list current: refreshes when Claude Code or a mailbox writes
-//! something, and every `FALLBACK` in case a change was missed. Only the accounts written
+//! something, and every `fallback` in case a change was missed. Only the accounts written
 //! to are queried again; the others keep what they gave last.
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
@@ -11,7 +11,12 @@ use crate::accounts::{self, Found, Snapshot};
 use crate::mailbox::{self, Mailbox};
 use crate::watcher::{self, ChangeWatcher, Wake};
 
+/// Every account is queried again this often when some folder could not be watched.
 const FALLBACK: Duration = Duration::from_secs(30);
+/// And this often when everything is watched: each query runs `claude agents --json` per
+/// account (about 0.55 s of processor each, all at once), so 30 s made a spike every 30 s.
+/// What watching misses is a session killed outright, whose files stay as they were.
+const CALM_FALLBACK: Duration = Duration::from_secs(300);
 const SETTLE: Duration = Duration::from_millis(300);
 const MAX_SETTLE: Duration = Duration::from_secs(1);
 const WITHOUT_WATCHER: Duration = Duration::from_secs(10);
@@ -70,6 +75,13 @@ struct Refresher {
     default_logged_in: bool,
     /// Whether the sessions without a process are listed too.
     include_stopped: bool,
+    /// Whether the last refresh watched every folder it should.
+    watching_all: bool,
+}
+
+/// How long to wait for a change before querying everything again.
+fn fallback(watching_all: bool) -> Duration {
+    if watching_all { CALM_FALLBACK } else { FALLBACK }
 }
 
 impl Refresher {
@@ -85,6 +97,7 @@ impl Refresher {
             account_dirs: Vec::new(),
             default_logged_in: false,
             include_stopped,
+            watching_all: false,
         }
     }
 
@@ -134,6 +147,7 @@ impl Refresher {
             .map(|account| (account.clone(), accounts::dir_of(&paths, account, implicit_default)))
             .collect();
         let watch_errors = self.watch(&paths.config_dir);
+        self.watching_all = self.watcher.is_ok() && watch_errors.is_empty();
         let asked = to_query(change, &registered, &self.known);
         let queried = accounts::query_accounts(&paths, &asked, implicit_default, self.include_stopped);
         self.known.retain(|account, _| registered.contains(account));
@@ -157,7 +171,7 @@ impl Refresher {
             thread::sleep(WITHOUT_WATCHER);
             return Change::Full;
         };
-        match watcher.wait(FALLBACK, SETTLE, MAX_SETTLE, &self.dirs()) {
+        match watcher.wait(fallback(self.watching_all), SETTLE, MAX_SETTLE, &self.dirs()) {
             Wake::Changed(paths) => {
                 let mailbox_root = self.mailbox.as_ref().ok().map(Mailbox::root);
                 classify(&paths, &self.account_dirs, mailbox_root)
@@ -204,6 +218,13 @@ mod tests {
 
     fn registry() -> Vec<String> {
         ["louis", "pro", "new"].map(String::from).to_vec()
+    }
+
+    #[test]
+    fn everything_watched_waits_longer_before_querying_everything_again() {
+        assert_eq!(fallback(true), CALM_FALLBACK);
+        assert_eq!(fallback(false), FALLBACK);
+        assert!(CALM_FALLBACK > FALLBACK);
     }
 
     #[test]
