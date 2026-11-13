@@ -269,5 +269,44 @@ class ThemeWithCtrlShiftE(Journey):
         wait_until("the paper theme after a restart", lambda: self.background() == "#f7efe4")
 
 
+def tabs(driver: Driver) -> list[tuple[str, bool]]:
+    """The tabs of the window: (name, active) for each."""
+    found: list[list[Any]] = driver.script("""return [...document.querySelectorAll('#tabs button.tab')].map(
+      (tab) => [tab.querySelector('.tab-name').textContent, tab.classList.contains('active')]);""")
+    return [(str(name), bool(active)) for name, active in found]
+
+
+def chip_titles(driver: Driver) -> list[str]:
+    chips: list[list[Any]] = driver.script(CHIPS)
+    return [str(title) for _, title, _ in chips]
+
+
+class ProjectTab(Journey):
+    """Ctrl+Shift+T adds a project tab; Ctrl+N there starts a session of the account at Enter, in
+    the project's folder; Ctrl+Shift+X removes the tab and the session keeps running."""
+
+    def test_add_start_in_it_and_remove(self) -> None:
+        driver = self.driver
+        driver.press(CONTROL, SHIFT, "t")
+        wait_until("the project form", lambda: dialog_open(driver, "new-project"))
+        directory = driver.find("#project-form input[name=directory]")
+        driver.clear(directory)
+        driver.type_into(directory, PROJECT)
+        driver.click(driver.find("#project-form button[type=submit]"))
+        wait_until("the project tab, active", lambda: ("project", True) in tabs(driver))
+
+        driver.press(CONTROL, "n")
+        wait_until("the accounts to start with", lambda: dialog_open(driver, "quick-launch"))
+        driver.press(ENTER)
+        wait_until("a session of the fake claude", lambda: len(fake_sessions()) == 1)
+        session = fake_sessions()[0]
+        self.assertEqual(session["cwd"], PROJECT)
+        wait_until("the session in the project's bar", lambda: len(chip_titles(driver)) == 1)
+
+        driver.press(CONTROL, SHIFT, "x")
+        wait_until("the project tab gone", lambda: all(name != "project" for name, _ in tabs(driver)))
+        self.assertTrue(fake_sessions()[0].get("pid"), "the session stopped with its tab")
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
