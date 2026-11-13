@@ -22,6 +22,8 @@ from driver import CONTROL, SHIFT, Driver, wait_until
 from journeys import ACCOUNT, CHIPS, HOME, accounts, application, forget_everything, open_from_bar, stop_every_session, PROJECT
 
 IDLE = float(os.environ.get("MEASURE_IDLE", "60"))
+# Sessions opened in panes before the app is left alone: 0, 1 or 2.
+PANES = int(os.environ.get("MEASURE_PANES", "2"))
 # Written by the fake claude (FAKE_CLAUDE_CALLS, set by inside.sh).
 CALLS = os.environ.get("FAKE_CLAUDE_CALLS", os.path.join(HOME, "claude-calls.log"))
 # /proc/<pid>/comm keeps 15 characters.
@@ -92,9 +94,11 @@ def main() -> int:
     try:
         wait_until("three sessions in the bar", lambda: len(driver.script(CHIPS)) == 3, timeout=60)
         report("start", (time.monotonic() - started) * 1000, "ms")
-        open_from_bar(driver, "first")
-        driver.press(CONTROL, SHIFT, "d")  # split: the second session goes in the new pane
-        open_from_bar(driver, "second")
+        if PANES >= 1:
+            open_from_bar(driver, "first")
+        if PANES >= 2:
+            driver.press(CONTROL, SHIFT, "d")  # split: the second session goes in the new pane
+            open_from_bar(driver, "second")
         time.sleep(5)
         pids = app_processes()
         before, since = cpu_seconds(pids), time.time()
