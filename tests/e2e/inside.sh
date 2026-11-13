@@ -11,7 +11,7 @@ export KINDRIC_TRACE=1
 tauri-driver >"$HOME/tauri-driver.log" 2>&1 &
 driver=$!
 
-python3 "$here/journeys.py"
+python3 "$here/journeys.py" "$@"
 code=$?
 
 kill "$driver" "$DBUS_SESSION_BUS_PID" "$xvfb" 2>/dev/null
