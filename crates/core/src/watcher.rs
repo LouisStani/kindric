@@ -254,6 +254,12 @@ mod tests {
         let account = [root.clone()];
         let mut watcher = ChangeWatcher::new().unwrap();
         assert!(watcher.ensure(&targets(&account, &root.join("mailbox"), &root.join("registry"))).is_empty());
+        // macOS can report the creation of the folder itself after watching has started (CI,
+        // 2026-11-14): those reports go first, so that only the writes below are tested.
+        let quiet_by = Instant::now() + Duration::from_secs(5);
+        while Instant::now() < quiet_by
+            && matches!(watcher.wait(Duration::from_millis(300), Duration::from_millis(50), Duration::from_secs(1), &account), Wake::Changed(_))
+        {}
         let started = Instant::now();
         for index in 0..5 {
             fs::write(root.join(".claude.json"), index.to_string()).unwrap();
