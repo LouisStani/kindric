@@ -77,9 +77,10 @@ pub fn user_words(session: &str, minutes: Option<u32>) -> String {
     }
 }
 
-/// A shell command cut into its simple commands (split on `;`, `&`, `|` and new lines), each into
+/// A shell command cut into its simple commands (split on `;`, `&`, `|`, new lines, parentheses
+/// and backquotes, so that `(…)`, `$(…)` and `` `…` `` count as commands of their own), each into
 /// its words, quotes taken off. Quoted text is one word and never splits: `git commit -m "a; rm b"`
-/// is one command. Not a shell: `$(…)`, backquotes and `sh -c "…"` are not looked into.
+/// is one command. Not a shell: what `sh -c` and `eval` run is read again by `what_waits`.
 fn simple_commands(line: &str) -> Vec<Vec<String>> {
     let mut commands = Vec::new();
     let mut words: Vec<String> = Vec::new();
@@ -100,7 +101,7 @@ fn simple_commands(line: &str) -> Vec<Vec<String>> {
                 quote = Some(character);
                 in_word = true;
             },
-            (None, ';' | '&' | '|' | '\n') => {
+            (None, ';' | '&' | '|' | '\n' | '(' | ')' | '`') => {
                 end_word(&mut word, &mut in_word, &mut words);
                 if !words.is_empty() {
                     commands.push(std::mem::take(&mut words));
@@ -120,10 +121,60 @@ fn simple_commands(line: &str) -> Vec<Vec<String>> {
     commands
 }
 
-/// The program a simple command runs, past `sudo`, `env`, `VAR=value` and the like, with its
-/// arguments.
+/// A program that runs the rest of its words as a command: its options that take a value, and
+/// how many words it takes before the command (`timeout 60 …`).
+struct Wrapper {
+    name: &'static str,
+    with_value: &'static [&'static str],
+    positional: usize,
+}
+
+const WRAPPERS: [Wrapper; 15] = [
+    Wrapper { name: "sudo", with_value: &["-u", "-g", "-C", "-D", "-h", "-p", "-r", "-t", "-U", "-T"], positional: 0 },
+    Wrapper { name: "doas", with_value: &["-u", "-C"], positional: 0 },
+    Wrapper { name: "env", with_value: &["-u", "-C"], positional: 0 },
+    Wrapper { name: "command", with_value: &[], positional: 0 },
+    Wrapper { name: "exec", with_value: &["-a"], positional: 0 },
+    Wrapper { name: "nohup", with_value: &[], positional: 0 },
+    Wrapper { name: "time", with_value: &["-f", "-o"], positional: 0 },
+    Wrapper { name: "nice", with_value: &["-n"], positional: 0 },
+    Wrapper { name: "ionice", with_value: &["-c", "-n", "-p"], positional: 0 },
+    Wrapper { name: "timeout", with_value: &["-k", "-s"], positional: 1 },
+    Wrapper { name: "xargs", with_value: &["-n", "-P", "-I", "-d", "-L", "-s", "-E", "-a"], positional: 0 },
+    Wrapper { name: "stdbuf", with_value: &["-i", "-o", "-e"], positional: 0 },
+    Wrapper { name: "setsid", with_value: &[], positional: 0 },
+    Wrapper { name: "watch", with_value: &["-n", "-d"], positional: 0 },
+    Wrapper { name: "flock", with_value: &["-w", "-E"], positional: 1 },
+];
+
+/// Shell words that come before a command without being one: `{ …; }`, `! …`, `then …`, `do …`.
+const SHELL_WORDS: [&str; 6] = ["{", "}", "!", "then", "do", "else"];
+
+/// The words of a wrapper's command, past the wrapper's options, their values and the words it
+/// takes first.
+fn past_wrapper<'a>(wrapper: &Wrapper, args: &'a [String]) -> &'a [String] {
+    let mut index = 0;
+    let mut positional = wrapper.positional;
+    while let Some(arg) = args.get(index) {
+        if arg == "--" {
+            index += 1;
+            break;
+        }
+        if arg.len() > 1 && arg.starts_with('-') {
+            index += if wrapper.with_value.contains(&arg.as_str()) { 2 } else { 1 };
+        } else if positional > 0 {
+            positional -= 1;
+            index += 1;
+        } else {
+            break;
+        }
+    }
+    args.get(index..).unwrap_or(&[])
+}
+
+/// The program a simple command runs, past wrappers (`sudo`, `timeout 60`, `xargs -n 1`…),
+/// shell words (`{`, `!`, `then`) and `VAR=value`, with its arguments.
 fn program(words: &[String]) -> Option<(&str, &[String])> {
-    const WRAPPERS: [&str; 7] = ["sudo", "env", "command", "exec", "nohup", "time", "nice"];
     let mut rest = words;
     while let Some((first, after)) = rest.split_first() {
         // `VAR=value` before the program: the environment it runs with, the account among it.
@@ -132,53 +183,101 @@ fn program(words: &[String]) -> Option<(&str, &[String])> {
             if first.starts_with("CLAUDE_CONFIG_DIR=") {
                 return Some(("CLAUDE_CONFIG_DIR", after));
             }
+            rest = after;
+        } else if SHELL_WORDS.contains(&first.as_str()) {
+            rest = after;
         } else {
             let name = first.rsplit('/').next().unwrap_or(first);
-            if !WRAPPERS.contains(&name) && !name.starts_with('-') {
-                return Some((name, after));
+            match WRAPPERS.iter().find(|wrapper| wrapper.name == name) {
+                Some(wrapper) => rest = past_wrapper(wrapper, after),
+                None => return Some((name, after)),
             }
         }
-        rest = after;
     }
     None
 }
 
-/// git's subcommand: the first word that is not an option, past `-C <dir>` and `-c <setting>`.
-fn git_subcommand(args: &[String]) -> Option<&str> {
+/// git's subcommand and its arguments: the first word that is not an option, past `-C <dir>`
+/// and `-c <setting>`.
+fn git_subcommand(args: &[String]) -> Option<(&str, &[String])> {
     let mut index = 0;
     while let Some(arg) = args.get(index) {
         match arg.as_str() {
             "-C" | "-c" => index += 2,
             option if option.starts_with('-') => index += 1,
-            sub => return Some(sub),
+            sub => return Some((sub, args.get(index + 1..).unwrap_or(&[]))),
         }
     }
     None
 }
 
+/// What a git command does that waits for the user, if anything. `pull` merges what it fetched;
+/// `reset --hard`, `stash drop`, `restore` throw away work not committed.
+fn git_waits(sub: &str, args: &[String]) -> Option<&'static str> {
+    let has = |word: &str| args.iter().any(|arg| arg == word);
+    let first = args.iter().find(|arg| !arg.starts_with('-')).map(String::as_str);
+    match sub {
+        "push" => Some("pushing"),
+        "merge" | "pull" => Some("merging"),
+        "rm" | "clean" => Some("deleting"),
+        "branch" if has("-d") || has("-D") || has("--delete") => Some("deleting"),
+        "worktree" if first == Some("remove") => Some("deleting"),
+        "reset" if has("--hard") => Some("deleting"),
+        "stash" if matches!(first, Some("drop" | "clear")) => Some("deleting"),
+        // Only the index is put back with --staged alone: the files stay as they are.
+        "restore" if !((has("--staged") || has("-S")) && !has("--worktree") && !has("-W")) => Some("deleting"),
+        _ => None,
+    }
+}
+
+/// The program `find -exec`, `-execdir` or `-ok` runs.
+fn find_runs(args: &[String]) -> impl Iterator<Item = &str> {
+    args.windows(2)
+        .filter(|pair| matches!(pair[0].as_str(), "-exec" | "-execdir" | "-ok" | "-okdir"))
+        .map(|pair| pair[1].rsplit('/').next().unwrap_or(&pair[1]))
+}
+
+/// Shells read again what they are given to run, this deep at most.
+const SHELL_DEPTH: usize = 3;
+
+/// What `sh -c '…'` (or bash, zsh, dash) runs: the first word after an option made of letters
+/// that holds `c` (`-c`, `-lc`, `-ec`).
+fn shell_script(args: &[String]) -> Option<&str> {
+    let at = args.iter().position(|arg| arg.starts_with('-') && !arg.starts_with("--") && arg[1..].chars().all(|c| c.is_ascii_alphabetic()) && arg.contains('c'))?;
+    args.get(at + 1..)?.iter().find(|arg| !arg.starts_with('-')).map(String::as_str)
+}
+
 /// What waits for the user's return in a simple command, if anything: pushing, merging, deleting,
-/// installing, using another account (decision 249).
-fn waits_for_the_user(words: &[String]) -> Option<&'static str> {
+/// installing, using another account (decision 249). `depth` counts the shells already read into.
+fn waits_for_the_user(words: &[String], depth: usize) -> Option<&'static str> {
     let (name, args) = program(words)?;
     let has = |word: &str| args.iter().any(|arg| arg == word);
     let first = args.iter().find(|arg| !arg.starts_with('-')).map(String::as_str);
     match name {
         "CLAUDE_CONFIG_DIR" | "kindric-accounts" | "claude-accounts" => Some("using another account"),
-        "git" => match git_subcommand(args)? {
-            "push" => Some("pushing"),
-            "merge" => Some("merging"),
-            "rm" | "clean" => Some("deleting"),
-            "branch" if has("-d") || has("-D") || has("--delete") => Some("deleting"),
-            "worktree" if has("remove") => Some("deleting"),
-            _ => None,
+        "export" | "declare" | "typeset" | "readonly" | "local" if args.iter().any(|arg| arg.starts_with("CLAUDE_CONFIG_DIR=")) => {
+            Some("using another account")
+        },
+        "sh" | "bash" | "zsh" | "dash" | "ksh" if depth < SHELL_DEPTH => what_waits(shell_script(args)?, depth + 1),
+        "eval" if depth < SHELL_DEPTH => what_waits(&args.join(" "), depth + 1),
+        "git" => {
+            let (sub, rest) = git_subcommand(args)?;
+            git_waits(sub, rest)
         },
         "gh" if has("merge") => Some("merging"),
-        "rm" | "rmdir" | "unlink" | "shred" => Some("deleting"),
-        "find" if has("-delete") => Some("deleting"),
-        "cargo" | "pipx" | "gem" | "go" if first == Some("install") => Some("installing"),
-        "npm" | "pnpm" if matches!(first, Some("install" | "i" | "add")) => Some("installing"),
+        "rm" | "rmdir" | "unlink" | "shred" | "truncate" => Some("deleting"),
+        "find" if has("-delete") || find_runs(args).any(|run| matches!(run, "rm" | "rmdir" | "unlink" | "shred")) => Some("deleting"),
+        "rsync" if args.iter().any(|arg| arg.starts_with("--delete") || arg.starts_with("--remove-source-files")) => Some("deleting"),
+        "cargo" if matches!(first, Some("install" | "add")) => Some("installing"),
+        "pipx" | "gem" if first == Some("install") => Some("installing"),
+        "go" if matches!(first, Some("install" | "get")) => Some("installing"),
+        "npm" | "pnpm" if matches!(first, Some("install" | "i" | "add" | "ci")) => Some("installing"),
         "yarn" if matches!(first, Some("add" | "global")) => Some("installing"),
+        "bun" | "deno" if matches!(first, Some("add" | "install" | "i")) => Some("installing"),
         "pip" | "pip3" | "apt" | "apt-get" | "dnf" | "brew" | "mise" if matches!(first, Some("install" | "use")) => Some("installing"),
+        python if python.starts_with("python") && args.windows(2).any(|pair| pair[0] == "-m" && pair[1].starts_with("pip")) && has("install") => {
+            Some("installing")
+        },
         "uv" if args.iter().any(|arg| arg == "install" || arg == "add") => Some("installing"),
         "pacman" | "yay" | "paru" if args.iter().any(|arg| arg.starts_with("-S")) => Some("installing"),
         "omarchy" if has("pkg") && (has("add") || has("install")) => Some("installing"),
@@ -187,9 +286,14 @@ fn waits_for_the_user(words: &[String]) -> Option<&'static str> {
     }
 }
 
+/// What waits for the user's return in a shell command, from the first of its simple commands that does.
+fn what_waits(command: &str, depth: usize) -> Option<&'static str> {
+    simple_commands(command).iter().find_map(|words| waits_for_the_user(words, depth))
+}
+
 /// Why `command` waits for the user's return, if one of its simple commands does.
 fn refusal(command: &str) -> Option<String> {
-    let what = simple_commands(command).iter().find_map(|words| waits_for_the_user(words))?;
+    let what = what_waits(command, 0)?;
     Some(format!(
         "Refused while the user is away: {what} waits for their return. Write down what you would have done, then go on with the rest of the task."
     ))
@@ -383,6 +487,65 @@ mod tests {
         for (command, what) in cases {
             let reason = refusal(command).unwrap_or_else(|| panic!("{command} let through"));
             assert!(reason.contains(&format!("{what} waits for their return")), "{command}: {reason}");
+        }
+    }
+
+    /// Ways an agent writes these commands without meaning to get round anything (audit of
+    /// 2026-11-14, decision 319).
+    #[test]
+    fn what_waits_is_found_inside_groups_wrappers_and_shells() {
+        let cases = [
+            ("(git push)", "pushing"),
+            ("{ git push; }", "pushing"),
+            ("! git push", "pushing"),
+            ("nice -n 10 git push", "pushing"),
+            ("timeout 60 git push", "pushing"),
+            ("timeout -k 5 60s git push origin", "pushing"),
+            ("sudo -u louis rm notes.md", "deleting"),
+            ("doas rm notes.md", "deleting"),
+            ("ls | xargs rm", "deleting"),
+            ("ls | xargs -n 1 rm -f", "deleting"),
+            ("bash -c \"git push\"", "pushing"),
+            ("sh -c 'cd x && rm -rf y'", "deleting"),
+            ("eval git push", "pushing"),
+            ("export CLAUDE_CONFIG_DIR=/home/me/pro; claude -p hi", "using another account"),
+            ("python -m pip install requests", "installing"),
+            ("python3 -m pip install --user requests", "installing"),
+            ("find . -name '*.o' -exec rm {} +", "deleting"),
+            ("rsync -a --delete src/ dst/", "deleting"),
+            ("git pull", "merging"),
+            ("git reset --hard origin/main", "deleting"),
+            ("git stash drop", "deleting"),
+            ("git stash clear", "deleting"),
+            ("git restore src/lib.rs", "deleting"),
+            ("cargo add serde", "installing"),
+            ("npm ci", "installing"),
+            ("go get example.com/x", "installing"),
+            ("bun add zod", "installing"),
+        ];
+        for (command, what) in cases {
+            let reason = refusal(command).unwrap_or_else(|| panic!("{command} let through"));
+            assert!(reason.contains(&format!("{what} waits for their return")), "{command}: {reason}");
+        }
+    }
+
+    #[test]
+    fn ordinary_work_goes_through_wrappers_and_shells_too() {
+        let cases = [
+            "timeout 60 cargo test",
+            "nice -n 10 cargo build --release",
+            "bash -c \"cargo test --workspace\"",
+            "(cd crates/core && cargo test)",
+            "python -m pytest -q",
+            "export PATH=/opt/bin:$PATH",
+            "find . -name '*.rs' -exec grep -n unwrap {} +",
+            "git stash push -m wip",
+            "git restore --staged src/lib.rs",
+            "git reset HEAD~1",
+            "ls | xargs wc -l",
+        ];
+        for command in cases {
+            assert_eq!(refusal(command), None, "{command}");
         }
     }
 
