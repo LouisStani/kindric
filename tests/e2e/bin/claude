@@ -1,0 +1,288 @@
+#!/usr/bin/env python3
+"""A fake Claude Code for kindric's end-to-end tests (decision 310): it answers what kindric asks
+and writes the files kindric reads, in the shapes Claude Code 2.1.323 gives, without any model.
+
+    claude --version                      "2.1.323 (Claude Code)"
+    claude auth status --json             logged in for an account (CLAUDE_CONFIG_DIR set), not for ~/.claude
+    claude agents --json [--all]          the sessions of the account, stopped ones with --all
+    claude [options] --bg [-n name] TASK  a background session; TASK may hold "work:N": it works N
+                                          seconds (2 by default), then waits for the user
+    claude attach ID                      a terminal on the session: each line typed is a new turn;
+                                          a stopped session is started again, waiting
+    claude stop ID / claude rm ID
+
+Options kindric-accounts adds (--settings, --mcp-config=…, --append-system-prompt-file …) are
+ignored. Everything lives in the account's folder: fake/sessions.json, sessions/<pid>.json,
+jobs/<id>/state.json.
+"""
+import json
+import os
+import re
+import signal
+import subprocess
+import sys
+import time
+import uuid
+
+VERSION = "2.1.323"
+# Options that take the next word as their value, when not written with "=".
+WITH_VALUE = {"--settings", "--mcp-config", "--append-system-prompt-file", "--plugin-dir", "--model", "--setting-sources", "--permission-mode", "-n", "--name"}
+
+
+def config_dir():
+    return os.environ.get("CLAUDE_CONFIG_DIR") or os.path.join(os.path.expanduser("~"), ".claude")
+
+
+def now_ms():
+    return int(time.time() * 1000)
+
+
+def iso(ms):
+    return time.strftime("%Y-%m-%dT%H:%M:%S", time.gmtime(ms / 1000)) + f".{ms % 1000:03d}Z"
+
+
+def write_json(path, value):
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    temporary = f"{path}.{os.getpid()}.tmp"
+    with open(temporary, "w") as out:
+        json.dump(value, out)
+    os.replace(temporary, path)
+
+
+def registry_path():
+    return os.path.join(config_dir(), "fake", "sessions.json")
+
+
+def load():
+    try:
+        with open(registry_path()) as source:
+            return json.load(source)
+    except (OSError, ValueError):
+        return []
+
+
+def save(sessions):
+    write_json(registry_path(), sessions)
+
+
+def find(sessions, wanted):
+    for session in sessions:
+        if wanted in (session["id"], session["sessionId"], session.get("name")):
+            return session
+    return None
+
+
+def alive(pid):
+    if not pid:
+        return False
+    try:
+        os.kill(pid, 0)
+        return True
+    except OSError:
+        return False
+
+
+def set_state(session_id, status, state, detail):
+    """What the session is doing: its process file (status) and its job file (state, detail)."""
+    sessions = load()
+    session = find(sessions, session_id)
+    if session is None:
+        return
+    session.update(status=status, state=state, detail=detail)
+    save(sessions)
+    if session.get("pid"):
+        write_json(os.path.join(config_dir(), "sessions", f"{session['pid']}.json"), {
+            "pid": session["pid"], "sessionId": session["sessionId"], "cwd": session["cwd"], "startedAt": session["startedAt"],
+            "version": VERSION, "kind": "bg", "name": session.get("name", ""), "jobId": session["id"],
+            "updatedAt": now_ms(), "status": status, "statusUpdatedAt": now_ms(),
+        })
+    write_json(os.path.join(config_dir(), "jobs", session["id"], "state.json"), {
+        "state": state, "detail": detail, "tempo": "active" if status == "busy" else "idle",
+        "name": session.get("name", ""), "sessionId": session["sessionId"], "cliVersion": VERSION,
+        "cwd": session["cwd"], "createdAt": iso(session["startedAt"]), "updatedAt": iso(now_ms()),
+    })
+
+
+def work_seconds(task):
+    match = re.search(r"work:(\d+)", task or "")
+    return int(match.group(1)) if match else 2
+
+
+# While it works, Claude Code rewrites its job file every few steps, and only that file: its
+# process file changes at the start and the end of the turn (seen on 2.1.323).
+PROGRESS_EVERY = 10
+
+
+def job_progress(session_id, detail):
+    session = find(load(), session_id)
+    if session is None:
+        return
+    write_json(os.path.join(config_dir(), "jobs", session["id"], "state.json"), {
+        "state": "working", "detail": detail, "tempo": "active",
+        "name": session.get("name", ""), "sessionId": session["sessionId"], "cliVersion": VERSION,
+        "cwd": session["cwd"], "createdAt": iso(session["startedAt"]), "updatedAt": iso(now_ms()),
+    })
+
+
+def turn(session_id, task):
+    """One turn: busy for the time the task says, then waiting for the user."""
+    set_state(session_id, "busy", "working", f"working on: {task[:60]}")
+    end = time.time() + work_seconds(task)
+    step = 0
+    while time.time() < end:
+        time.sleep(min(PROGRESS_EVERY, max(end - time.time(), 0)))
+        step += 1
+        if time.time() < end:
+            job_progress(session_id, f"step {step} of: {task[:50]}")
+    set_state(session_id, "idle", "blocked", "waiting for you")
+
+
+def worker(session_id, task):
+    """The session's process: it lives until stopped, like a background session of Claude Code.
+    Without a task, it was stopped and is started again: it waits for the user."""
+    signal.signal(signal.SIGTERM, lambda *_: sys.exit(0))
+    if task is None:
+        set_state(session_id, "idle", "blocked", "waiting for you")
+    else:
+        turn(session_id, task)
+    while True:
+        time.sleep(3600)
+
+
+def spawn(session_id, task):
+    """Starts the session's process and records its pid; task None starts a stopped session again."""
+    mode = ["--fake-resume", session_id] if task is None else ["--fake-worker", session_id, task]
+    process = subprocess.Popen([sys.executable, os.path.abspath(__file__), *mode],
+                               stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True)
+    sessions = load()
+    find(sessions, session_id).update(pid=process.pid, status="idle" if task is None else "busy")
+    save(sessions)
+
+
+def background(args, task):
+    name = None
+    for index, arg in enumerate(args):
+        if arg in ("-n", "--name") and index + 1 < len(args):
+            name = args[index + 1]
+    sessions = load()
+    session = {"id": uuid.uuid4().hex[:8], "sessionId": str(uuid.uuid4()), "name": name or "", "cwd": os.getcwd(),
+               "startedAt": now_ms(), "pid": None, "status": "busy", "state": "working", "detail": ""}
+    sessions.append(session)
+    save(sessions)
+    spawn(session["sessionId"], task or "")
+    print(f"backgrounded · {session['id']}" + (f" · {name}" if name else ""))
+    return 0
+
+
+def agents(args):
+    show_all = "--all" in args
+    listed = []
+    for session in load():
+        running = alive(session.get("pid"))
+        if not running and not show_all:
+            continue
+        entry = {"id": session["id"], "cwd": session["cwd"], "kind": "background", "startedAt": session["startedAt"],
+                 "sessionId": session["sessionId"]}
+        if session.get("name"):
+            entry["name"] = session["name"]
+        if running:
+            entry.update(pid=session["pid"], status=session["status"], state=session["state"])
+        else:
+            entry["state"] = "stopped"
+        listed.append(entry)
+    print(json.dumps(listed))
+    return 0
+
+
+def attach(wanted):
+    session = find(load(), wanted)
+    if session is None:
+        print(f"No job matching {wanted}", file=sys.stderr)
+        return 1
+    # Like Claude Code: attaching to a stopped session starts it again.
+    if not alive(session.get("pid")):
+        spawn(session["sessionId"], None)
+    print(f"fake claude · {session.get('name') or session['id']} · {session['cwd']}")
+    print("❯ ", end="", flush=True)
+    for line in sys.stdin:
+        line = line.strip()
+        if line:
+            print(f"you said: {line}")
+            child = subprocess.Popen([sys.executable, os.path.abspath(__file__), "--fake-turn", session["sessionId"], line],
+                                     stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True)
+            del child
+        print("❯ ", end="", flush=True)
+    return 0
+
+
+def stop(wanted, remove):
+    sessions = load()
+    session = find(sessions, wanted)
+    if session is None:
+        print(f"No job matching {wanted}", file=sys.stderr)
+        return 1
+    if alive(session.get("pid")):
+        os.kill(session["pid"], signal.SIGTERM)
+    if session.get("pid"):
+        try:
+            os.remove(os.path.join(config_dir(), "sessions", f"{session['pid']}.json"))
+        except OSError:
+            pass
+    session.update(pid=None, status=None, state="stopped")
+    if remove:
+        sessions.remove(session)
+    save(sessions)
+    if not remove:
+        write_json(os.path.join(config_dir(), "jobs", session["id"], "state.json"), {"state": "stopped", "detail": "Stopped", "tempo": "idle"})
+    print(f"{'removed' if remove else 'stopped'} {session['id']}")
+    return 0
+
+
+def main(argv):
+    if argv[:1] == ["--fake-worker"]:
+        worker(argv[1], argv[2])
+        return 0
+    if argv[:1] == ["--fake-resume"]:
+        worker(argv[1], None)
+        return 0
+    if argv[:1] == ["--fake-turn"]:
+        turn(argv[1], argv[2])
+        return 0
+    # Each call kindric makes, one line each, for measurements: the real claude costs about
+    # 0.55 s of processor per `agents --json`, this one almost nothing.
+    calls = os.environ.get("FAKE_CLAUDE_CALLS")
+    if calls:
+        with open(calls, "a") as log:
+            log.write(f"{time.time():.3f} {' '.join(argv)}\n")
+    # Words that are not options or their values: the subcommand and the task.
+    words = []
+    index = 0
+    while index < len(argv):
+        arg = argv[index]
+        if arg in WITH_VALUE:
+            index += 2
+            continue
+        if not arg.startswith("-"):
+            words.append(arg)
+        index += 1
+    if "--version" in argv or "-v" in argv:
+        print(f"{VERSION} (Claude Code)")
+        return 0
+    if words[:2] == ["auth", "status"]:
+        logged_in = "CLAUDE_CONFIG_DIR" in os.environ
+        print(json.dumps({"loggedIn": logged_in, "authMethod": "claude.ai" if logged_in else "none", "loginExpiresAt": "2027-01-01T00:00:00.000Z" if logged_in else None}))
+        return 0 if logged_in else 1
+    if words[:1] == ["agents"]:
+        return agents(argv)
+    if words[:1] == ["attach"] and len(words) > 1:
+        return attach(words[1])
+    if words[:1] in (["stop"], ["rm"]) and len(words) > 1:
+        return stop(words[1], remove=words[0] == "rm")
+    if "--bg" in argv:
+        return background(argv, " ".join(words))
+    print(f"fake claude: not imitated: {' '.join(argv)}", file=sys.stderr)
+    return 2
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))

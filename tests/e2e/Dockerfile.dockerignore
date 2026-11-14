@@ -1,0 +1,7 @@
+# What the image does not need from the repository (Docker reads this file next to the Dockerfile;
+# run.sh gives it to podman with --ignorefile).
+target
+.git
+.claude
+**/__pycache__
+**/node_modules
