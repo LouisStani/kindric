@@ -5,8 +5,9 @@
 
 use std::fs;
 use std::io;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
+use std::time::SystemTime;
 
 use kindric_accounts::injection::SUBCOMMANDS;
 use kindric_accounts::{Paths, launch, registry};
@@ -199,6 +200,47 @@ fn check_subcommands() -> Result<Vec<String>, String> {
     }
 }
 
+/// The claude found in `PATH` as it is on disk: what it said holds while this does not change.
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct Stamp {
+    path: PathBuf,
+    len: u64,
+    modified: Option<SystemTime>,
+}
+
+fn stamp() -> Option<Stamp> {
+    let path = launch::require_claude().ok()?;
+    let metadata = fs::metadata(&path).ok()?;
+    Some(Stamp { path, len: metadata.len(), modified: metadata.modified().ok() })
+}
+
+/// What `claude --version` and `claude --help` said, and of which claude.
+#[derive(Clone, Debug)]
+pub struct ClaudeFacts {
+    stamp: Option<Stamp>,
+    claude: ClaudeCheck,
+    subcommands: Result<Vec<String>, String>,
+}
+
+/// Whether `previous` still speaks for the claude found now: a claude not found is looked for
+/// again each time.
+fn still_holds(previous: Option<&ClaudeFacts>, now: Option<&Stamp>) -> bool {
+    previous.is_some_and(|previous| now.is_some() && previous.stamp.as_ref() == now)
+}
+
+impl ClaudeFacts {
+    /// `previous` again while the same claude is found, else read again: the two calls cost about
+    /// 0.4 s of processor, and the list is checked again each time a session starts. A claude
+    /// updated behind a shim of the same size and date (mise) is seen at the next start of the app.
+    pub fn current(previous: Option<&ClaudeFacts>) -> ClaudeFacts {
+        let now = stamp();
+        match previous {
+            Some(previous) if still_holds(Some(previous), now.as_ref()) => previous.clone(),
+            _ => ClaudeFacts { stamp: now, claude: check_claude(), subcommands: check_subcommands() },
+        }
+    }
+}
+
 /// Shown only when something is off, and never when Claude Code itself is missing: its own line
 /// says so.
 fn subcommands_line(subcommands: &Result<Vec<String>, String>, claude: &ClaudeCheck) -> Option<Line> {
@@ -356,14 +398,14 @@ pub fn lines(found: &Found) -> Vec<Line> {
     lines
 }
 
-/// The list for the accounts and sessions the app shows now. About a second at most:
-/// `claude --version`, `claude --help` (0.2 s measured) and `kindric-accounts --version`.
-pub fn run(accounts: Vec<String>, sessions: usize) -> Result<Vec<Line>, String> {
+/// The list for the accounts and sessions the app shows now, with what claude said (see
+/// `ClaudeFacts::current`). Runs `kindric-accounts --version`.
+pub fn run(accounts: Vec<String>, sessions: usize, claude: &ClaudeFacts) -> Result<Vec<Line>, String> {
     let paths = accounts::paths().map_err(|error| error.to_string())?;
     let registry = !registry::list_accounts(&paths).map_err(|error| error.to_string())?.is_empty();
     let found = Found {
-        claude: check_claude(),
-        subcommands: check_subcommands(),
+        claude: claude.claude.clone(),
+        subcommands: claude.subcommands.clone(),
         launcher: check_launcher(),
         messages: check_messages(&paths)?,
         registry,
@@ -377,7 +419,21 @@ pub fn run(accounts: Vec<String>, sessions: usize) -> Result<Vec<Line>, String> 
 mod tests {
     use super::*;
 
-    use std::path::PathBuf;
+    #[test]
+    fn what_claude_said_holds_while_the_same_claude_is_found() {
+        let stamp = |len| Stamp { path: PathBuf::from("/bin/claude"), len, modified: None };
+        let facts = ClaudeFacts {
+            stamp: Some(stamp(10)),
+            claude: ClaudeCheck { version: Some("2.1.323".into()), tested: true, error: None },
+            subcommands: Ok(Vec::new()),
+        };
+        assert!(still_holds(Some(&facts), Some(&stamp(10))));
+        assert!(!still_holds(Some(&facts), Some(&stamp(11))), "another claude: asked again");
+        assert!(!still_holds(Some(&facts), None), "no claude found: looked for again");
+        assert!(!still_holds(None, Some(&stamp(10))), "never asked yet");
+        let not_found = ClaudeFacts { stamp: None, ..facts };
+        assert!(!still_holds(Some(&not_found), None));
+    }
 
     #[test]
     fn claude_versions_are_read_and_compared_with_the_tested_one() {

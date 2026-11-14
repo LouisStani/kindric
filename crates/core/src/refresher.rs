@@ -1,5 +1,5 @@
 //! Keeps the session list current: refreshes when Claude Code or a mailbox writes
-//! something, and every `FALLBACK` in case a change was missed. Only the accounts written
+//! something, and every `fallback` in case a change was missed. Only the accounts written
 //! to are queried again; the others keep what they gave last.
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
@@ -7,11 +7,17 @@ use std::path::{Path, PathBuf};
 use std::thread;
 use std::time::Duration;
 
-use crate::accounts::{self, Found, Snapshot};
+use crate::accounts::{self, Found, SessionInfo, Snapshot};
 use crate::mailbox::{self, Mailbox};
+use crate::progress;
 use crate::watcher::{self, ChangeWatcher, Wake};
 
+/// Every account is queried again this often when some folder could not be watched.
 const FALLBACK: Duration = Duration::from_secs(30);
+/// And this often when everything is watched: each query runs `claude agents --json` per
+/// account (about 0.55 s of processor each, all at once), so 30 s made a spike every 30 s.
+/// What watching misses is a session killed outright, whose files stay as they were.
+const CALM_FALLBACK: Duration = Duration::from_secs(300);
 const SETTLE: Duration = Duration::from_millis(300);
 const MAX_SETTLE: Duration = Duration::from_secs(1);
 const WITHOUT_WATCHER: Duration = Duration::from_secs(10);
@@ -19,12 +25,29 @@ const WITHOUT_WATCHER: Duration = Duration::from_secs(10);
 /// The session list with unread message counts by session id, or why it could not be read.
 pub type Update = Result<(Snapshot, HashMap<String, usize>), String>;
 
-/// What to query again: every account, or only those written to. A write in the mailbox
+/// What to read again: every account, or only those written to. A write in the mailbox
 /// alone queries none: the unread counts are always counted again.
 #[derive(Debug, PartialEq, Eq)]
 enum Change {
     Full,
-    Accounts(BTreeSet<String>),
+    Accounts {
+        /// Accounts whose sessions may have changed: `claude agents --json` again.
+        query: BTreeSet<String>,
+        /// Accounts where only the files of some jobs were written, by short id: their progress
+        /// lines are read again, without running claude (about 0.55 s of processor each time).
+        jobs: BTreeMap<String, BTreeSet<String>>,
+    },
+}
+
+/// The job a write in an account directory belongs to, when it is a file inside
+/// `jobs/<id>/`: `jobs/<id>` itself is a job that appeared, which a query must list.
+fn job_written(in_account: &Path) -> Option<String> {
+    let mut parts = in_account.components();
+    if parts.next()?.as_os_str() != "jobs" {
+        return None;
+    }
+    let id = parts.next()?.as_os_str().to_string_lossy().into_owned();
+    parts.next().map(|_| id)
 }
 
 /// The accounts the written `paths` belong to. A path of no account and not in the
@@ -33,19 +56,26 @@ fn classify(paths: &[PathBuf], account_dirs: &[(String, PathBuf)], mailbox_root:
     if paths.is_empty() {
         return Change::Full;
     }
-    let mut accounts = BTreeSet::new();
+    let mut query = BTreeSet::new();
+    let mut jobs: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
     for path in paths {
         if mailbox_root.is_some_and(|root| path.starts_with(root)) {
             continue;
         }
-        match account_dirs.iter().find(|(_, dir)| path.starts_with(dir)) {
-            Some((account, _)) => {
-                accounts.insert(account.clone());
+        let Some((account, dir)) = account_dirs.iter().find(|(_, dir)| path.starts_with(dir)) else {
+            return Change::Full;
+        };
+        match path.strip_prefix(dir).ok().and_then(job_written) {
+            Some(job) => {
+                jobs.entry(account.clone()).or_default().insert(job);
             },
-            None => return Change::Full,
+            None => {
+                query.insert(account.clone());
+            },
         }
     }
-    Change::Accounts(accounts)
+    jobs.retain(|account, _| !query.contains(account));
+    Change::Accounts { query, jobs }
 }
 
 /// The accounts to query, in registry order: those changed, and those never queried yet.
@@ -54,10 +84,22 @@ fn to_query(change: &Change, accounts: &[String], known: &BTreeMap<String, Found
         .iter()
         .filter(|account| match change {
             Change::Full => true,
-            Change::Accounts(changed) => changed.contains(*account) || !known.contains_key(*account),
+            Change::Accounts { query, .. } => query.contains(*account) || !known.contains_key(*account),
         })
         .cloned()
         .collect()
+}
+
+/// Reads again the progress line of the jobs `ids` among the account's `sessions`, from the
+/// account directory `dir`. False when one of them is not a known session: a query must list it.
+fn reread_progress(sessions: &mut [SessionInfo], dir: &Path, ids: &BTreeSet<String>) -> bool {
+    for id in ids {
+        let Some(session) = sessions.iter_mut().find(|session| session.short_id.as_deref() == Some(id.as_str())) else {
+            return false;
+        };
+        session.progress = progress::progress(dir, id);
+    }
+    true
 }
 
 struct Refresher {
@@ -70,6 +112,13 @@ struct Refresher {
     default_logged_in: bool,
     /// Whether the sessions without a process are listed too.
     include_stopped: bool,
+    /// Whether the last refresh watched every folder it should.
+    watching_all: bool,
+}
+
+/// How long to wait for a change before querying everything again.
+fn fallback(watching_all: bool) -> Duration {
+    if watching_all { CALM_FALLBACK } else { FALLBACK }
 }
 
 impl Refresher {
@@ -85,6 +134,7 @@ impl Refresher {
             account_dirs: Vec::new(),
             default_logged_in: false,
             include_stopped,
+            watching_all: false,
         }
     }
 
@@ -97,6 +147,18 @@ impl Refresher {
             return Vec::new();
         };
         watcher.ensure(&watcher::targets(&dirs, mailbox.root(), registry_dir))
+    }
+
+    /// The progress lines of `ids` in `account`, read again from its files; false if the account
+    /// has no list yet or one of them is not in it.
+    fn reread_jobs(&mut self, account: &str, ids: &BTreeSet<String>) -> bool {
+        let Some((_, dir)) = self.account_dirs.iter().find(|(name, _)| name == account) else {
+            return false;
+        };
+        match self.known.get_mut(account) {
+            Some(Ok(sessions)) => reread_progress(sessions, dir, ids),
+            _ => false,
+        }
     }
 
     fn dirs(&self) -> Vec<PathBuf> {
@@ -134,7 +196,15 @@ impl Refresher {
             .map(|account| (account.clone(), accounts::dir_of(&paths, account, implicit_default)))
             .collect();
         let watch_errors = self.watch(&paths.config_dir);
-        let asked = to_query(change, &registered, &self.known);
+        self.watching_all = self.watcher.is_ok() && watch_errors.is_empty();
+        let mut asked = to_query(change, &registered, &self.known);
+        if let Change::Accounts { jobs, .. } = change {
+            for (account, ids) in jobs {
+                if !asked.contains(account) && !self.reread_jobs(account, ids) {
+                    asked.push(account.clone());
+                }
+            }
+        }
         let queried = accounts::query_accounts(&paths, &asked, implicit_default, self.include_stopped);
         self.known.retain(|account, _| registered.contains(account));
         let mut timings = Vec::new();
@@ -157,7 +227,7 @@ impl Refresher {
             thread::sleep(WITHOUT_WATCHER);
             return Change::Full;
         };
-        match watcher.wait(FALLBACK, SETTLE, MAX_SETTLE, &self.dirs()) {
+        match watcher.wait(fallback(self.watching_all), SETTLE, MAX_SETTLE, &self.dirs()) {
             Wake::Changed(paths) => {
                 let mailbox_root = self.mailbox.as_ref().ok().map(Mailbox::root);
                 classify(&paths, &self.account_dirs, mailbox_root)
@@ -195,7 +265,12 @@ mod tests {
     }
 
     fn changed(accounts: &[&str]) -> Change {
-        Change::Accounts(accounts.iter().map(|account| account.to_string()).collect())
+        Change::Accounts { query: accounts.iter().map(|account| account.to_string()).collect(), jobs: BTreeMap::new() }
+    }
+
+    fn jobs_written(account: &str, ids: &[&str]) -> Change {
+        let ids = ids.iter().map(|id| id.to_string()).collect();
+        Change::Accounts { query: BTreeSet::new(), jobs: BTreeMap::from([(account.to_string(), ids)]) }
     }
 
     fn known(accounts: &[&str]) -> BTreeMap<String, Found> {
@@ -204,6 +279,13 @@ mod tests {
 
     fn registry() -> Vec<String> {
         ["louis", "pro", "new"].map(String::from).to_vec()
+    }
+
+    #[test]
+    fn everything_watched_waits_longer_before_querying_everything_again() {
+        assert_eq!(fallback(true), CALM_FALLBACK);
+        assert_eq!(fallback(false), FALLBACK);
+        assert!(CALM_FALLBACK > FALLBACK);
     }
 
     #[test]
@@ -222,8 +304,45 @@ mod tests {
 
     #[test]
     fn an_account_is_not_mistaken_for_one_whose_name_it_starts() {
-        let paths = [PathBuf::from("/a/louis/jobs/abc/state.json")];
+        let paths = [PathBuf::from("/a/louis/sessions/1.json")];
         assert_eq!(classify(&paths, &dirs(), None), changed(&["louis"]));
+    }
+
+    #[test]
+    fn a_write_inside_jobs_only_reads_their_progress_again() {
+        let paths = [
+            PathBuf::from("/a/pro/jobs/abc/state.json"),
+            PathBuf::from("/a/pro/jobs/abc/state.json.tmp.1"),
+            PathBuf::from("/a/pro/jobs/def/timeline.jsonl"),
+        ];
+        assert_eq!(classify(&paths, &dirs(), None), jobs_written("pro", &["abc", "def"]));
+        // A job that appeared, or a write elsewhere in the account, needs the query.
+        assert_eq!(classify(&[PathBuf::from("/a/pro/jobs/abc")], &dirs(), None), changed(&["pro"]));
+        let paths = [PathBuf::from("/a/pro/jobs/abc/state.json"), PathBuf::from("/a/pro/daemon/roster.json")];
+        assert_eq!(classify(&paths, &dirs(), None), changed(&["pro"]));
+        assert_eq!(to_query(&jobs_written("pro", &["abc"]), &registry(), &known(&["louis", "pro"])), ["new"]);
+    }
+
+    #[test]
+    fn the_progress_of_a_known_job_is_read_again_and_an_unknown_job_asks_for_the_query() {
+        let dir = std::env::temp_dir().join(format!("kindric-reread-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("jobs/abc")).unwrap();
+        std::fs::write(dir.join("jobs/abc/state.json"), r#"{"state":"working","detail":"reading progress.rs"}"#).unwrap();
+        let mut sessions = vec![SessionInfo {
+            account: "pro".to_string(),
+            state: accounts::SessionState::Working,
+            short_id: Some("abc".to_string()),
+            session_id: String::new(),
+            name: String::new(),
+            cwd: String::new(),
+            isolated: false,
+            progress: None,
+        }];
+        assert!(reread_progress(&mut sessions, &dir, &BTreeSet::from(["abc".to_string()])));
+        assert_eq!(sessions[0].progress.as_deref(), Some("reading progress.rs"));
+        assert!(!reread_progress(&mut sessions, &dir, &BTreeSet::from(["zzz".to_string()])));
+        std::fs::remove_dir_all(dir).unwrap();
     }
 
     #[test]

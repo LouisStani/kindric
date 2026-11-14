@@ -77,6 +77,8 @@ struct Shared {
     helper: Mutex<Helper>,
     /// Where the locks of the sessions shown here are taken, or why they cannot be.
     claims_dir: Result<PathBuf, String>,
+    /// What `claude --version` and `--help` said, kept while the same claude is found.
+    claude_facts: Mutex<Option<checks::ClaudeFacts>>,
 }
 
 /// The Claude Code shown in a terminal over a dialog: asking whether a folder is trusted, or
@@ -178,13 +180,30 @@ async fn new_session(app: AppHandle, shared: State<'_, Shared>, account: String,
     Ok(created)
 }
 
-/// The list of the welcome screen, for the accounts and sessions shown now. It runs two
-/// programs, so off the window's thread.
+/// The list of the welcome screen for the accounts and sessions shown now, after `first` (which
+/// may change what it finds). It runs programs, so off the window's thread; claude only when it
+/// is not the one already asked.
+async fn check_setup(
+    shared: &Shared,
+    first: impl FnOnce(&[String]) -> Result<(), String> + Send + 'static,
+) -> Result<Vec<checks::Line>, String> {
+    let (accounts, sessions) = shown_now(shared);
+    let previous = shared.claude_facts.lock().unwrap_or_else(PoisonError::into_inner).clone();
+    let (lines, facts) = tauri::async_runtime::spawn_blocking(move || {
+        first(&accounts)?;
+        let facts = checks::ClaudeFacts::current(previous.as_ref());
+        Ok::<_, String>((checks::run(accounts, sessions, &facts)?, facts))
+    })
+    .await
+    .map_err(|error| error.to_string())??;
+    *shared.claude_facts.lock().unwrap_or_else(PoisonError::into_inner) = Some(facts);
+    Ok(lines)
+}
+
 #[tauri::command]
 async fn welcome_checks(shared: State<'_, Shared>) -> Result<Vec<checks::Line>, String> {
     let _span = shared.trace.span("welcome_checks");
-    let (accounts, sessions) = shown_now(&shared);
-    tauri::async_runtime::spawn_blocking(move || checks::run(accounts, sessions)).await.map_err(|error| error.to_string())?
+    check_setup(&shared, |_| Ok(())).await
 }
 
 /// The "add" button of the welcome list: adds the messages server where it is missing, then
@@ -192,13 +211,7 @@ async fn welcome_checks(shared: State<'_, Shared>) -> Result<Vec<checks::Line>, 
 #[tauri::command]
 async fn add_messages_server(shared: State<'_, Shared>) -> Result<Vec<checks::Line>, String> {
     let _span = shared.trace.span("add_messages_server");
-    let (accounts, sessions) = shown_now(&shared);
-    tauri::async_runtime::spawn_blocking(move || {
-        checks::add_messages_server(&accounts)?;
-        checks::run(accounts, sessions)
-    })
-    .await
-    .map_err(|error| error.to_string())?
+    check_setup(&shared, checks::add_messages_server).await
 }
 
 /// How much of its limits each of `accounts` used, for the account choice of a new session. Reads
@@ -1301,6 +1314,7 @@ fn main() -> ExitCode {
         claims_dir: mailbox::data_dir()
             .map(|directory| directory.join("attached"))
             .map_err(|error| format!("cannot tell whether another kindric window shows a session: {error}")),
+        claude_facts: Mutex::new(None),
     };
     let built = tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
