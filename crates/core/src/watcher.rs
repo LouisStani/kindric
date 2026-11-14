@@ -11,13 +11,16 @@ use notify::{RecommendedWatcher, RecursiveMode, Watcher};
 /// What to watch in one account directory (`CLAUDE_CONFIG_DIR`):
 /// `sessions/` gets a file per running session, rewritten when its state changes;
 /// `daemon/` holds the roster of background sessions; `jobs/<id>/` their state.
-/// `.claude.json` is left out on purpose: Claude Code rewrites it all the time.
+/// The account directory itself is watched for these three folders, which a new account
+/// does not have yet: what else it holds wakes nothing (`ChangeWatcher::wait`), as
+/// `.claude.json`, which Claude Code rewrites all the time.
 /// `registry_dir` holds the list of accounts: one added or removed shows at once.
 /// Reads `jobs/` to list the job directories present now.
 pub fn targets(account_dirs: &[PathBuf], mailbox_root: &Path, registry_dir: &Path) -> Vec<(PathBuf, RecursiveMode)> {
     let mut targets = Vec::new();
     for dir in account_dirs {
         let jobs = dir.join("jobs");
+        targets.push((dir.clone(), RecursiveMode::NonRecursive));
         targets.push((dir.join("sessions"), RecursiveMode::NonRecursive));
         targets.push((dir.join("daemon"), RecursiveMode::NonRecursive));
         targets.extend(job_dirs(&jobs).into_iter().map(|job| (job, RecursiveMode::NonRecursive)));
@@ -42,6 +45,26 @@ fn job_dirs(jobs: &Path) -> Vec<PathBuf> {
         .filter(|entry| entry.file_type().is_ok_and(|kind| kind.is_dir()))
         .map(|entry| entry.path())
         .collect()
+}
+
+/// The folders of an account directory that wake the list up when they appear.
+const ACCOUNT_FOLDERS: [&str; 3] = ["sessions", "daemon", "jobs"];
+
+/// Whether a write at `path` may change the list: anything but a file or folder right in an
+/// account directory other than `ACCOUNT_FOLDERS`.
+fn counts(path: &Path, account_dirs: &[PathBuf]) -> bool {
+    let in_account = path.parent().is_some_and(|parent| account_dirs.iter().any(|dir| dir == parent));
+    !in_account || path.file_name().is_some_and(|name| ACCOUNT_FOLDERS.iter().any(|folder| name == *folder))
+}
+
+/// The paths of a report that count, or None if none does. A report without paths counts:
+/// something changed, where is not known.
+fn counted(paths: Vec<PathBuf>, account_dirs: &[PathBuf]) -> Option<Vec<PathBuf>> {
+    if paths.is_empty() {
+        return Some(paths);
+    }
+    let kept: Vec<PathBuf> = paths.into_iter().filter(|path| counts(path, account_dirs)).collect();
+    (!kept.is_empty()).then_some(kept)
 }
 
 pub struct ChangeWatcher {
@@ -96,12 +119,24 @@ impl ChangeWatcher {
 
     /// Waits for a change, then lets a burst of writes settle so it counts as one: until
     /// `settle` passes without a write, but no longer than `max_settle`, or a session that
-    /// keeps writing would hold the list back.
-    pub fn wait(&self, fallback: Duration, settle: Duration, max_settle: Duration) -> Wake {
-        let mut paths = match self.changes.recv_timeout(fallback) {
-            Ok(paths) => paths,
-            Err(RecvTimeoutError::Timeout) => return Wake::TimedOut,
-            Err(RecvTimeoutError::Disconnected) => return Wake::Closed,
+    /// keeps writing would hold the list back. Writes in `account_dirs` that do not count
+    /// (see `counts`) are let go by without moving the `fallback` deadline.
+    pub fn wait(&self, fallback: Duration, settle: Duration, max_settle: Duration, account_dirs: &[PathBuf]) -> Wake {
+        let fallback_at = Instant::now() + fallback;
+        let mut paths = loop {
+            let left = fallback_at.saturating_duration_since(Instant::now());
+            if left.is_zero() {
+                return Wake::TimedOut;
+            }
+            match self.changes.recv_timeout(left) {
+                Ok(paths) => {
+                    if let Some(kept) = counted(paths, account_dirs) {
+                        break kept;
+                    }
+                },
+                Err(RecvTimeoutError::Timeout) => return Wake::TimedOut,
+                Err(RecvTimeoutError::Disconnected) => return Wake::Closed,
+            }
         };
         let deadline = Instant::now() + max_settle;
         loop {
@@ -110,7 +145,7 @@ impl ChangeWatcher {
                 break;
             }
             match self.changes.recv_timeout(settle.min(left)) {
-                Ok(more) => paths.extend(more),
+                Ok(more) => paths.extend(more.into_iter().filter(|path| counts(path, account_dirs))),
                 Err(_) => break,
             }
         }
@@ -128,8 +163,9 @@ mod tests {
     fn targets_cover_each_account_the_list_of_accounts_and_the_mailbox() {
         let dirs = [PathBuf::from("/a/louis"), PathBuf::from("/a/pro")];
         let targets = targets(&dirs, Path::new("/m"), Path::new("/c"));
-        assert_eq!(targets.len(), 8);
+        assert_eq!(targets.len(), 10);
         assert!(targets.contains(&(PathBuf::from("/c"), RecursiveMode::NonRecursive)));
+        assert!(targets.contains(&(PathBuf::from("/a/louis"), RecursiveMode::NonRecursive)));
         assert!(targets.contains(&(PathBuf::from("/a/pro/jobs"), RecursiveMode::NonRecursive)));
         assert!(targets.contains(&(PathBuf::from("/a/louis/sessions"), RecursiveMode::NonRecursive)));
         assert_eq!(targets.last(), Some(&(PathBuf::from("/m"), RecursiveMode::Recursive)));
@@ -140,7 +176,7 @@ mod tests {
     fn woken_by(watcher: &ChangeWatcher, name: &str) -> bool {
         let deadline = Instant::now() + Duration::from_secs(5);
         while Instant::now() < deadline {
-            if let Wake::Changed(paths) = watcher.wait(Duration::from_millis(500), Duration::from_millis(50), Duration::from_secs(1))
+            if let Wake::Changed(paths) = watcher.wait(Duration::from_millis(500), Duration::from_millis(50), Duration::from_secs(1), &[])
                 && paths.iter().any(|path| path.file_name().is_some_and(|file| file == name))
             {
                 return true;
@@ -178,6 +214,54 @@ mod tests {
         assert!(watcher.ensure(&targets(&account, &root.join("mailbox"), &root.join("registry"))).is_empty());
         fs::write(root.join("jobs/abc/state.json"), b"{}").unwrap();
         assert!(woken_by(&watcher, "state.json"), "the state of the new job did not wake the list up");
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    /// A new account has none of `sessions/`, `daemon/`, `jobs/`: the first one Claude Code
+    /// creates wakes the list up, which then watches it.
+    #[test]
+    fn the_first_folder_of_a_new_account_wakes_the_list_up() {
+        let root = std::env::temp_dir().join(format!("kindric-watch-new-account-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).unwrap();
+        let account = [root.clone()];
+        let mut watcher = ChangeWatcher::new().unwrap();
+        assert!(watcher.ensure(&targets(&account, &root.join("mailbox"), &root.join("registry"))).is_empty());
+        fs::create_dir(root.join("sessions")).unwrap();
+        let deadline = Instant::now() + Duration::from_secs(5);
+        let mut woken = false;
+        while !woken && Instant::now() < deadline {
+            woken = matches!(watcher.wait(Duration::from_millis(500), Duration::from_millis(50), Duration::from_secs(1), &account),
+                Wake::Changed(paths) if paths.iter().any(|path| path.ends_with("sessions")));
+        }
+        assert!(woken, "the new sessions/ did not wake the list up");
+        assert!(watcher.ensure(&targets(&account, &root.join("mailbox"), &root.join("registry"))).is_empty());
+        assert!(watcher.watched.contains(&root.join("sessions")));
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    /// Claude Code rewrites `.claude.json` all the time, in the account directory now watched.
+    #[test]
+    fn a_write_beside_the_account_folders_does_not_wake_the_list_up() {
+        let made = std::env::temp_dir().join(format!("kindric-watch-beside-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&made);
+        fs::create_dir_all(&made).unwrap();
+        // The path as events name it (/private/var on macOS for /var).
+        let root = fs::canonicalize(&made).unwrap();
+        let account = [root.clone()];
+        let mut watcher = ChangeWatcher::new().unwrap();
+        assert!(watcher.ensure(&targets(&account, &root.join("mailbox"), &root.join("registry"))).is_empty());
+        let started = Instant::now();
+        for index in 0..5 {
+            fs::write(root.join(".claude.json"), index.to_string()).unwrap();
+            fs::write(root.join("history.jsonl"), index.to_string()).unwrap();
+        }
+        match watcher.wait(Duration::from_millis(800), Duration::from_millis(50), Duration::from_secs(1), &account) {
+            Wake::TimedOut => {},
+            Wake::Changed(paths) => panic!("woken by a change of {paths:?}"),
+            Wake::Closed => panic!("the watcher stopped"),
+        }
+        assert!(started.elapsed() < Duration::from_secs(2), "the writes let go by moved the fallback deadline");
         fs::remove_dir_all(root).unwrap();
     }
 
@@ -222,7 +306,7 @@ mod tests {
             fs::write(root.join(format!("jobs/abc/state-{index}.json")), b"{}").unwrap();
         }
         let started = Instant::now();
-        let Wake::Changed(paths) = watcher.wait(Duration::from_secs(5), Duration::from_millis(200), Duration::from_secs(5)) else {
+        let Wake::Changed(paths) = watcher.wait(Duration::from_secs(5), Duration::from_millis(200), Duration::from_secs(5), &[]) else {
             panic!("no change seen");
         };
         assert!(started.elapsed() < Duration::from_secs(2));
@@ -231,7 +315,7 @@ mod tests {
             let name = format!("state-{index}.json");
             assert!(paths.iter().any(|path| path.file_name().is_some_and(|file| file == name.as_str())), "{name} not in {paths:?}");
         }
-        let quiet = watcher.wait(Duration::from_millis(300), Duration::from_millis(50), Duration::from_secs(5));
+        let quiet = watcher.wait(Duration::from_millis(300), Duration::from_millis(50), Duration::from_secs(5), &[]);
         assert!(matches!(quiet, Wake::TimedOut));
         fs::remove_dir_all(root).unwrap();
     }
@@ -251,7 +335,7 @@ mod tests {
             }
         });
         let started = Instant::now();
-        let woke = watcher.wait(Duration::from_secs(5), Duration::from_millis(300), Duration::from_secs(1));
+        let woke = watcher.wait(Duration::from_secs(5), Duration::from_millis(300), Duration::from_secs(1), &[]);
         let waited = started.elapsed();
         writer.join().unwrap();
         assert!(matches!(woke, Wake::Changed(_)));
@@ -273,11 +357,11 @@ mod tests {
         // those reports go first, so that only the reads below are tested.
         let quiet_by = Instant::now() + Duration::from_secs(5);
         while Instant::now() < quiet_by
-            && matches!(watcher.wait(Duration::from_millis(300), Duration::from_millis(50), Duration::from_secs(1)), Wake::Changed(_))
+            && matches!(watcher.wait(Duration::from_millis(300), Duration::from_millis(50), Duration::from_secs(1), &[]), Wake::Changed(_))
         {}
         fs::read(root.join("roster.json")).unwrap();
         fs::read_dir(&root).unwrap().for_each(drop);
-        match watcher.wait(Duration::from_millis(500), Duration::from_millis(50), Duration::from_secs(1)) {
+        match watcher.wait(Duration::from_millis(500), Duration::from_millis(50), Duration::from_secs(1), &[]) {
             Wake::TimedOut => {},
             Wake::Changed(paths) => panic!("woken by a change of {paths:?}"),
             Wake::Closed => panic!("the watcher stopped"),
