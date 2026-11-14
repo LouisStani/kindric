@@ -23,6 +23,12 @@ On Linux the desktop interface needs WebKitGTK 4.1 (`webkit2gtk-4.1` on Arch, `l
 
 The tests never start Claude Code and never touch your accounts.
 
+### End-to-end journeys
+
+`tests/e2e/run.sh` runs the desktop app in a container (podman, rootless), on a screen that does not exist, driven through WebDriver, with a fake `claude` (`tests/e2e/bin/claude`). Each journey starts from nothing and leaves a screenshot in `/tmp/kindric-e2e-out`. The first run builds the image (several minutes); later runs compile only what changed. Pass a journey name to run only it (`tests/e2e/run.sh SessionInTheBar`), `--rebuild` to build the image again. They are not part of CI.
+
+`E2E_SCRIPT=measure.py E2E_NO_TRACE=1 tests/e2e/run.sh` measures the app instead: start time, processor and memory while left alone with a working session, how many times it ran `claude`, the size of the programs. Compare two branches with it, never with a timer by hand.
+
 ## CI and releases
 
 - At every push, CI runs clippy and the tests on Linux, macOS and Windows.
