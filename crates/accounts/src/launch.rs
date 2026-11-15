@@ -124,6 +124,17 @@ fn apply_theme(
     }
 }
 
+/// The hooks of kindric a session gets. An isolated account gets the one of the user being away
+/// alone (309): it reads only kindric's marks of absence, while messages and waking would let
+/// something cross from one account to another (039).
+fn hooks_for(isolated: bool, all: usage::KindricHooks) -> usage::KindricHooks {
+    if isolated {
+        usage::KindricHooks { away: all.away, ..usage::KindricHooks::default() }
+    } else {
+        all
+    }
+}
+
 /// Prepares `claude` for `name`: links the shared configuration again (a shared
 /// directory may have appeared since `add`), cleans the environment, adds the args. With
 /// `conversation_dir`, the directory a conversation starts in, the memory of its zone is added;
@@ -146,8 +157,7 @@ pub fn prepare(
     }
     // The status line that writes down how much of its limits the account used.
     let isolated_file = isolated.as_ref().map(|settings| settings.file.as_path());
-    // kindric's hooks (unread messages, the user away); never for an isolated account (039).
-    let hooks = if isolated.is_none() { usage::kindric_hooks() } else { usage::KindricHooks::default() };
+    let hooks = hooks_for(isolated.is_some(), usage::kindric_hooks());
     let mut settings = usage::settings_file(paths, name, isolated_file, usage::wrapper_command().as_deref(), &hooks, &mut warnings);
     if let Some(theme) = theme {
         apply_theme(paths, name, theme, isolated.as_mut(), &mut settings, &mut warnings);
@@ -213,6 +223,19 @@ mod tests {
         let own = claude_args(&paths, None, Some(Path::new("/x/own.json")), None, true);
         assert_eq!(own, [OsString::from("--settings"), OsString::from("/x/own.json")]);
         fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn an_isolated_account_gets_the_away_hook_alone() {
+        let all = usage::KindricHooks {
+            unread: Some("k unread".into()),
+            away: Some("k away-hook".into()),
+            wake: Some("k wait-message".into()),
+        };
+        let isolated = hooks_for(true, all.clone());
+        assert_eq!(isolated, usage::KindricHooks { away: Some("k away-hook".into()), ..usage::KindricHooks::default() });
+        assert_eq!(hooks_for(false, all.clone()), all, "a shared account gets them all");
+        assert_eq!(hooks_for(true, usage::KindricHooks::default()), usage::KindricHooks::default(), "none when kindric has none");
     }
 
     #[test]
