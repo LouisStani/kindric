@@ -227,7 +227,7 @@ In kindric, you can say you are away for a while from a session. kindric-account
 A session that has finished runs `kindric away done <session id>` and stops.
 
 - The hook comes after your own hooks, and does nothing for a session you are not away from: Claude Code decides and asks as usual.
-- An isolated account gets no hook.
+- An isolated account gets this hook too, and no other hook of kindric's: it reads only kindric's marks of absence, nothing of another account.
 - It is added only when the `kindric` in `PATH` knows `away-hook`.
 - Claude Code reads the settings when a session starts: only sessions started after kindric is installed have it.
 
