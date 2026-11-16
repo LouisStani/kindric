@@ -1,15 +1,22 @@
-// The overview (decisions 324 to 331, page B): number 0 in the bar, the page the user lives on.
-// A summary of where the sessions stand, then a column per project with a card per session.
-// A card opens its session, and shows what the session asks: answered from here (325).
+// The control center (decisions 324 to 343, mockups C2): number 0 in the bar, the page the user
+// lives on. On the side, every project with the standing of its sessions, and every account with
+// its limits. In the middle, every project ("all", what needs you first) or one of them: a row per
+// session, with what it asks, answered from here (325).
 
 import {
   STANDINGS,
+  accountCards,
+  allView,
   answersInOneClick,
   choicesAnswer,
-  columnsOf,
+  contextLevel,
+  keptLabel,
   keptText,
   lineOf,
+  nextAsking,
   permissionText,
+  projectView,
+  projectsOf,
   requestsBySession,
   standing,
   summaryOf,
@@ -29,28 +36,53 @@ function button(className, text, onClick) {
   return node;
 }
 
-// Narrowest a column gets before the last one gathers the others.
-const COLUMN_WIDTH = 300;
+// "18:40" for Unix seconds, in the user's time.
+function clockOf(seconds) {
+  return new Date(seconds * 1000).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+}
+
+// A bar filled to `percent`, set through the CSSOM: the page's policy refuses style attributes.
+function bar(className, percent) {
+  const track = element("span", `bar ${className}`);
+  const fill = element("span", "bar-fill");
+  fill.style.setProperty("width", `${Math.max(0, Math.min(100, percent))}%`);
+  track.append(fill);
+  return track;
+}
+
+// At most this many dots for a project on the side.
+const MOST_DOTS = 12;
 
 export class Overview {
-  // `onOpen(row)` opens the session of a card. `onAnswer(request, answer)` answers a permission
-  // or a question of AskUserQuestion; `onType(row, request, text)` types the answer to a
-  // `kindric ask` into the session. Both return promises that fail with what to tell the user.
-  // `onArtifacts(row, project)` opens the artifacts window of a project; `thumbnailOf(artifact)`
-  // gives the address of an image kept, or null.
-  constructor(section, { onOpen, onAnswer, onType, onArtifacts, thumbnailOf }) {
+  // `onOpen(row)` opens the session of a row. `onAnswer(request, answer)` answers a permission or
+  // a question of AskUserQuestion; `onType(row, request, text)` types the answer to a `kindric ask`
+  // into the session. Both return promises that fail with what to tell the user.
+  // `onArtifacts(row, project)` opens the artifacts window of a project (a folder, null for
+  // "other"); `thumbnailOf(artifact)` gives the address of an image kept, or null.
+  // `onNewSession(project)` starts a session in a project (null: the form); `onAddProject()`.
+  constructor(section, { onOpen, onAnswer, onType, onArtifacts, thumbnailOf, onNewSession, onAddProject }) {
     this.section = section;
     this.onOpen = onOpen;
     this.onAnswer = onAnswer;
     this.onType = onType;
     this.onArtifacts = onArtifacts;
     this.thumbnailOf = thumbnailOf;
+    this.onNewSession = onNewSession;
+    this.onAddProject = onAddProject;
     // Session id → the files it kept for the user, not yet seen, oldest first (346).
     this.artifacts = new Map();
     this.seenArtifacts = "[]";
-    this.summary = element("header", "overview-summary");
-    this.board = element("div", "overview-board");
-    section.append(this.summary, this.board);
+    // What `control_figures` read last: limits by account, context and files kept by session.
+    this.figures = { usages: [], contexts: {}, kept: {} };
+    this.seenFigures = "";
+    this.side = element("aside", "control-side");
+    this.main = element("div", "control-main");
+    section.append(this.side, this.main);
+    section.addEventListener("keydown", (event) => this.onKey(event));
+    // "all", or the id of the tab shown; kept in memory only, "all" at start.
+    this.shown = "all";
+    // The session picked with the arrows, by id.
+    this.selected = null;
     // Session id → its requests, oldest first.
     this.requests = new Map();
     this.seen = "[]";
@@ -78,6 +110,15 @@ export class Overview {
     return this.artifacts.get(sessionId) ?? [];
   }
 
+  // What `control_figures` returned. Returns whether it changed.
+  setFigures(figures) {
+    const seen = JSON.stringify(figures);
+    if (seen === this.seenFigures) return false;
+    this.seenFigures = seen;
+    this.figures = figures;
+    return true;
+  }
+
   // The requests of `overview_requests`. Returns whether they changed. What was kept for a
   // request that is gone (answered, or settled in the terminal) goes with it.
   setRequests(requests) {
@@ -94,21 +135,18 @@ export class Overview {
     return true;
   }
 
-  // `rows` are the sessions the bar would show, `tabs` `[{ id, name }]` in the order of the bar.
-  render(view, rows, tabs, newSessionKey) {
-    this.last = { view, rows, tabs, newSessionKey };
+  // `rows` are the sessions not hidden, paused ones included; `tabs` `[{ id, name, directory }]` in
+  // the order of the bar (directory null for "other"); `accounts` those of the registry.
+  render(view, rows, tabs, accounts, newSessionKey) {
+    this.last = { view, rows, tabs, accounts, newSessionKey };
+    if (this.shown !== "all" && !tabs.some((tab) => tab.id === this.shown)) this.shown = "all";
     const focused = document.activeElement instanceof HTMLElement && this.section.contains(document.activeElement) ? document.activeElement : null;
     const focusKey = focused?.dataset.key ?? null;
     const caret = focused instanceof HTMLInputElement ? focused.selectionStart : null;
-    this.renderSummary(rows);
-    if (!view.loaded) {
-      this.board.replaceChildren(element("p", "overview-note", "loading…"));
-    } else if (rows.length === 0) {
-      this.board.replaceChildren(element("p", "overview-note", `no sessions yet · ${newSessionKey} starts one`));
-    } else {
-      const most = Math.floor(this.section.clientWidth / COLUMN_WIDTH);
-      this.board.replaceChildren(...columnsOf(rows, tabs, most, this.requests).map((column) => this.column(column)));
-    }
+    const scroll = this.main.scrollTop;
+    this.renderSide(rows, tabs, accounts);
+    this.renderMain(view, rows, tabs, newSessionKey);
+    this.main.scrollTop = scroll;
     // The field being typed in keeps the keyboard and its caret.
     const again = focusKey && this.section.querySelector(`[data-key="${CSS.escape(focusKey)}"]`);
     if (again) {
@@ -119,89 +157,261 @@ export class Overview {
 
   redraw() {
     if (this.last) {
-      const { view, rows, tabs, newSessionKey } = this.last;
-      this.render(view, rows, tabs, newSessionKey);
+      const { view, rows, tabs, accounts, newSessionKey } = this.last;
+      this.render(view, rows, tabs, accounts, newSessionKey);
     }
   }
 
-  renderSummary(rows) {
+  show(shown) {
+    this.shown = shown;
+    this.selected = null;
+    this.redraw();
+    this.main.scrollTop = 0;
+    this.section.focus();
+  }
+
+  renderSide(rows, tabs, accounts) {
+    const projects = element("nav", "control-projects");
+    for (const entry of projectsOf(rows, tabs, this.requests)) {
+      const item = button(entry.id === this.shown ? "control-project on" : "control-project", "", () => this.show(entry.id));
+      const dots = element("span", "control-dots");
+      for (const id of entry.standings.slice(0, MOST_DOTS)) dots.append(element("span", `dot is-${id}`));
+      item.append(element("span", "control-project-name", entry.name), dots);
+      if (entry.needs > 0) item.append(element("span", "control-needs", `${entry.needs}`));
+      projects.append(item);
+    }
+    projects.append(button("control-add", "+ add a project", () => this.onAddProject()));
+    const cards = accountCards(rows, accounts, this.figures.usages ?? []);
+    const title = element("h3", "control-side-title", "accounts");
+    this.side.replaceChildren(projects, title, ...cards.map((card) => this.accountCard(card)));
+  }
+
+  accountCard(card) {
+    const box = element("section", card.hot ? "account-card hot" : "account-card");
+    const head = element("div", "account-head");
+    head.append(element("strong", "", card.name), element("span", "", card.sessions === 1 ? "1 session" : `${card.sessions} sessions`));
+    box.append(head);
+    if (!card.usage) {
+      box.append(element("p", "account-note", "no figures yet"));
+      return box;
+    }
+    for (const [label, percent] of [["5h", card.usage.five_hour], ["7d", card.usage.seven_day]]) {
+      const line = element("div", "account-line");
+      line.append(element("span", "", label), bar(label === "5h" && card.hot ? "hot" : "", percent), element("span", "account-percent", `${Math.round(percent)}%`));
+      box.append(line);
+    }
+    if (card.usage.five_hour_resets_at) box.append(element("p", "account-note", `5h resets at ${clockOf(card.usage.five_hour_resets_at)}`));
+    return box;
+  }
+
+  renderMain(view, rows, tabs, newSessionKey) {
+    const tab = tabs.find((each) => each.id === this.shown) ?? null;
+    const mine = tab ? rows.filter((row) => row.tab === tab.id) : rows;
+    const head = element("header", "control-head");
+    const title = element("div", "control-title");
+    title.append(element("h1", "", tab ? tab.name : "all projects"));
+    if (tab?.directory) title.append(element("span", "control-directory", tab.directory));
+    const actions = element("div", "control-actions");
+    actions.append(button("primary", "+ new session", () => this.onNewSession(tab?.directory ? tab : null)));
+    head.append(title, this.summary(mine), actions);
+    const body = element("div", "control-body");
+    if (!view.loaded) {
+      body.append(element("p", "overview-note", "loading…"));
+    } else if (mine.length === 0) {
+      body.append(element("p", "overview-note", `no sessions yet · ${newSessionKey} starts one`));
+    } else if (tab) {
+      this.projectBody(body, mine, tab);
+    } else {
+      this.allBody(body, rows, tabs);
+    }
+    const hint = element("footer", "overview-hint", "↑ ↓ picks a session · ⏎ opens it · a allows · d denies · n next request in any project · esc all projects");
+    this.main.replaceChildren(head, body, hint);
+  }
+
+  summary(rows) {
     const counts = summaryOf(rows, this.requests);
-    this.summary.replaceChildren(
-      ...STANDINGS.map((group) => {
-        const item = element("span", `overview-count is-${group.id}`);
-        item.append(element("span", "dot"), element("strong", "", `${counts[group.id]}`), element("span", "", group.label));
-        return item;
-      }),
-    );
-    const kept = rows.reduce((sum, row) => sum + this.artifactsOf(row.session_id).length, 0);
-    if (kept > 0) {
-      const item = element("span", "overview-count is-kept");
-      item.append(element("span", "kept-mark", "◆"), element("strong", "", `${kept}`), element("span", "", kept === 1 ? "new artifact" : "new artifacts"));
-      this.summary.append(item);
+    const line = element("p", "control-summary");
+    for (const group of STANDINGS) {
+      if (counts[group.id] === 0 && group.id !== "need") continue;
+      const item = element("span", `overview-count is-${group.id}`);
+      item.append(element("strong", "", `${counts[group.id]}`), document.createTextNode(` ${group.label}`));
+      line.append(item);
     }
-    this.summary.append(element("span", "overview-hint", "click or ⏎ on a card opens it"));
+    const fresh = rows.reduce((sum, row) => sum + this.artifactsOf(row.session_id).length, 0);
+    if (fresh > 0) {
+      const item = element("span", "overview-count is-kept");
+      item.append(element("strong", "", `${fresh}`), document.createTextNode(fresh === 1 ? " new artifact" : " new artifacts"));
+      line.append(item);
+    }
+    return line;
   }
 
-  // The files the session kept for the user, not yet seen: a click opens the artifacts window.
-  kept(row, artifacts) {
-    const line = element("div", "card-kept");
-    line.title = "open the artifacts of this project";
-    line.append(element("span", "kept-mark", "◆"), element("span", "card-kept-names", keptText(artifacts)));
-    for (const artifact of artifacts.filter((each) => each.image).slice(-3).reverse()) {
-      const thumb = element("img", "card-kept-thumb");
-      thumb.alt = artifact.name;
+  allBody(body, rows, tabs) {
+    const { needs, groups } = allView(rows, tabs, this.requests);
+    const nameOf = new Map(tabs.map((tab) => [tab.id, tab]));
+    if (needs.length > 0) {
+      body.append(element("h2", "control-group is-need", `needs you · ${needs.length}`));
+      for (const row of needs) body.append(this.row(row, nameOf.get(row.tab) ?? null, true));
+    }
+    for (const group of groups) {
+      const heading = element("h2", "control-group");
+      heading.append(button("control-group-name", `${group.tab.name} ›`, () => this.show(group.tab.id)));
+      const fresh = group.rows.reduce((sum, row) => sum + this.artifactsOf(row.session_id).length, 0);
+      if (fresh > 0) heading.append(element("span", "control-group-note", fresh === 1 ? "1 new artifact" : `${fresh} new artifacts`));
+      body.append(heading, ...group.rows.map((row) => this.row(row, group.tab, false)));
+    }
+  }
+
+  projectBody(body, rows, tab) {
+    const { active, paused } = projectView(rows, tab.id, this.requests);
+    body.append(...active.map((row) => this.row(row, tab, false)));
+    if (paused.length > 0) body.append(element("h2", "control-group", "paused"), ...paused.map((row) => this.row(row, tab, false)));
+  }
+
+  // The rows in the order shown, by session id.
+  shownIds() {
+    return [...this.main.querySelectorAll(".control-row")].map((row) => row.dataset.session);
+  }
+
+  // A session: its name, what it does, what it kept, its context and account, then what it asks.
+  // `withProject`: in "needs you", where it comes from.
+  row(row, tab, withProject) {
+    const id = standing(row, this.requests);
+    const article = element("article", `control-row is-${id}`);
+    if (row.session_id === this.selected) article.classList.add("selected");
+    article.dataset.session = row.session_id;
+    article.dataset.key = `row/${row.session_id}`;
+    article.tabIndex = -1;
+    article.title = `${row.title}\n${row.directory}`;
+    const line = element("div", "row-line");
+    const doing = withProject ? `${tab?.name ?? "other"} · ${lineOf(row, this.requests)}` : lineOf(row, this.requests);
+    // The badges go with what it does: the columns after it stay aligned from row to row.
+    const what = element("span", "row-doing");
+    what.append(element("span", "row-doing-text", doing));
+    if (row.unread > 0) what.append(element("span", "row-badge", `${row.unread} msg`));
+    if ((this.requests.get(row.session_id) ?? []).some((request) => request.kind === "ask")) what.append(element("span", "row-badge keeps", "keeps working meanwhile"));
+    line.append(element("span", "dot"), element("span", "row-name", row.label), what, this.kept(row, tab), this.context(row), element("span", "row-account", row.account));
+    if (id === "paused") {
+      line.append(
+        button("row-resume", "resume", (event) => {
+          event.stopPropagation();
+          this.onOpen(row);
+        }),
+      );
+    }
+    article.append(line);
+    for (const request of this.requests.get(row.session_id) ?? []) article.append(this.request(row, request));
+    // A session shown in a terminal outside kindric cannot be opened here.
+    if (row.short_id) {
+      article.classList.add("opens");
+      article.onclick = () => this.onOpen(row);
+    }
+    return article;
+  }
+
+  // "3 kept · 2 new": a click opens the artifacts window of its project; the latest new image
+  // beside it (346).
+  kept(row, tab) {
+    const fresh = this.artifactsOf(row.session_id);
+    const total = this.figures.kept?.[row.session_id] ?? 0;
+    const label = keptLabel(total, fresh.length);
+    const box = element("span", fresh.length > 0 ? "row-kept fresh" : total > 0 ? "row-kept" : "row-kept none", label);
+    if (fresh.length === 0 && total === 0) return box;
+    if (fresh.length > 0) box.title = keptText(fresh);
+    const image = [...fresh].reverse().find((artifact) => artifact.image);
+    if (image) {
+      const thumb = element("img", "row-thumb");
+      thumb.alt = image.name;
       thumb.hidden = true;
-      this.thumbnailOf(artifact).then((url) => {
+      this.thumbnailOf(image).then((url) => {
         if (!url) return;
         thumb.src = url;
         thumb.hidden = false;
       });
-      line.append(thumb);
+      box.prepend(thumb);
     }
-    line.onclick = (event) => {
+    box.onclick = (event) => {
       event.stopPropagation();
-      this.onArtifacts(row, artifacts[0].project);
+      this.onArtifacts(row, fresh[0]?.project ?? tab?.directory ?? null);
     };
-    return line;
+    return box;
   }
 
-  column(column) {
-    const section = element("section", "overview-column");
-    const head = element("h2", "", column.names.join(" · "));
-    head.append(element("span", "count", `${column.cards.length}`));
-    section.append(head, ...column.cards.map((card) => this.card(card)));
-    return section;
-  }
-
-  card({ row, project }) {
-    const requests = this.requests.get(row.session_id) ?? [];
-    const card = element("article", `overview-card is-${standing(row, this.requests)}`);
-    const head = element("div", "card-head");
-    head.append(element("span", "dot"), element("span", "card-name", row.label));
-    if (requests.some((request) => request.kind === "ask")) head.append(element("span", "card-badge keeps", "keeps working"));
-    if (row.unread > 0) head.append(element("span", "card-badge", `${row.unread} msg`));
-    head.append(element("span", "card-where", project ? `${row.account} · ${project}` : row.account));
-    card.append(head);
-    const artifacts = this.artifactsOf(row.session_id);
-    if (artifacts.length > 0) card.append(this.kept(row, artifacts));
-    // What the session asks takes the place of what it last said.
-    if (requests.length === 0) card.append(element("p", "card-line", lineOf(row, this.requests)));
-    for (const request of requests) card.append(this.request(row, request));
-    card.title = `${row.title}\n${row.directory}`;
-    // A session shown in a terminal outside kindric cannot be opened here.
-    if (row.short_id) {
-      card.tabIndex = 0;
-      card.classList.add("opens");
-      card.dataset.key = `card/${row.session_id}`;
-      card.onclick = () => this.onOpen(row);
-      card.onkeydown = (event) => {
-        if (event.key === "Enter" && event.target === card) {
-          event.preventDefault();
-          this.onOpen(row);
-        }
-      };
+  context(row) {
+    const box = element("span", "row-ctx");
+    const percent = this.figures.contexts?.[row.session_id];
+    box.append(element("span", "row-ctx-label", "ctx"));
+    if (percent === undefined) {
+      box.append(element("span", "row-ctx-none", "—"));
+      return box;
     }
-    return card;
+    box.append(bar(contextLevel(percent), percent), element("span", "row-ctx-percent", `${Math.round(percent)}%`));
+    return box;
+  }
+
+  // ↑ ↓ pick a row, Enter opens it, a / d answer its permission, n goes to the next session that
+  // asks, Escape goes back to every project. Fields keep their keys.
+  onKey(event) {
+    if (event.ctrlKey || event.altKey || event.metaKey) return;
+    if (event.target instanceof HTMLInputElement || event.target instanceof HTMLTextAreaElement) return;
+    if (event.target instanceof HTMLButtonElement && (event.key === "Enter" || event.key === " ")) return;
+    const ids = this.shownIds();
+    const row = () => this.last?.rows.find((each) => each.session_id === this.selected) ?? null;
+    switch (event.key) {
+      case "ArrowDown":
+      case "ArrowUp": {
+        if (ids.length === 0) return;
+        const at = ids.indexOf(this.selected);
+        const step = event.key === "ArrowDown" ? 1 : -1;
+        this.pick(ids[at < 0 ? (step > 0 ? 0 : ids.length - 1) : Math.max(0, Math.min(ids.length - 1, at + step))]);
+        break;
+      }
+      case "Enter":
+        if (row()?.short_id) this.onOpen(row());
+        else return;
+        break;
+      case "a":
+      case "d": {
+        const permission = (this.requests.get(this.selected) ?? []).find((request) => request.kind === "permission");
+        if (!permission) return;
+        this.answer(permission, { kind: event.key === "a" ? "allow" : "deny" });
+        break;
+      }
+      case "n": {
+        const asking = this.askingInOrder();
+        const next = nextAsking(asking, this.selected);
+        if (next === null) return;
+        const target = this.last.rows.find((each) => each.session_id === next);
+        if (this.shown !== "all" && target && target.tab !== this.shown) this.shown = target.tab;
+        this.pick(next);
+        break;
+      }
+      case "Escape":
+        if (this.shown === "all") return;
+        this.show("all");
+        break;
+      default:
+        return;
+    }
+    event.preventDefault();
+    event.stopPropagation();
+  }
+
+  // The sessions with a request, as "all" orders them.
+  askingInOrder() {
+    if (!this.last) return [];
+    const { rows, tabs } = this.last;
+    return allView(rows, tabs, this.requests)
+      .needs.filter((row) => this.requests.has(row.session_id))
+      .map((row) => row.session_id);
+  }
+
+  pick(sessionId) {
+    this.selected = sessionId;
+    this.redraw();
+    const picked = this.main.querySelector(`[data-session="${CSS.escape(sessionId)}"]`);
+    picked?.scrollIntoView({ block: "nearest" });
+    this.section.focus();
   }
 
   request(row, request) {

@@ -278,11 +278,40 @@ async function addMessagesServer() {
   return null;
 }
 
-// The sessions the bar would show, in every tab, and the tabs as the overview names them.
+// The tabs as the control center names them, with their project.
+function overviewTabs() {
+  return panes.state.tabs.map((tab) => ({
+    id: tab.id,
+    name: tab.project ? tab.project.name : "other",
+    directory: tab.project ? tab.project.directory : null,
+    project: tab.project,
+  }));
+}
+
+// Every session not hidden, paused ones included: the control center shows them all.
+function overviewRows() {
+  return lastView.sessions.filter((session) => !session.hidden);
+}
+
 function renderOverview() {
   if (!panes.state?.overview) return;
-  const tabs = panes.state.tabs.map((tab) => ({ id: tab.id, name: tab.project ? tab.project.name : "other" }));
-  overview.render(lastView, lastView.sessions.filter(inBar), tabs, keyText("new-session"));
+  overview.render(lastView, overviewRows(), overviewTabs(), lastView.accounts, keyText("new-session"));
+}
+
+// The limits of the accounts, the context of the sessions and what each kept, read every 5 s
+// while the control center shows: the status lines write them, no refresh brings them.
+async function readControlFigures() {
+  if (!panes.state?.overview) return;
+  const rows = overviewRows();
+  const accounts = [...new Set([...lastView.accounts, ...rows.map((row) => row.account)])];
+  const sessions = rows.map((row) => ({ account: row.account, session_id: row.session_id }));
+  try {
+    if (!overview.setFigures(await invoke("control_figures", { accounts, sessions }))) return;
+  } catch (error) {
+    setStatus(`figures of the control center not read: ${error}`);
+    return;
+  }
+  renderOverview();
 }
 
 // The answer to a `kindric ask` of `row`, typed as the user's message with its question: in the
@@ -743,8 +772,8 @@ function openNewSessionForm() {
 }
 
 // In a project: the list of its accounts (launcher.js). Elsewhere, or with no account: the form.
-function openNewSession() {
-  const project = panes.activeTab().project;
+// In `project`: that of the tab shown unless the control center names one.
+function openNewSession(project = panes.activeTab().project) {
   if (!project || lastView.accounts.length === 0) {
     openNewSessionForm();
     return;
@@ -1224,6 +1253,8 @@ const overview = new Overview(document.getElementById("overview"), {
   onType: typeAnswer,
   onArtifacts: openArtifactsOf,
   thumbnailOf,
+  onNewSession: (project) => openNewSession(project),
+  onAddProject: openProjectForm,
 });
 
 const panes = new Panes(document.getElementById("panes"), document.getElementById("tabs"), document.getElementById("overview"), {
@@ -1231,6 +1262,7 @@ const panes = new Panes(document.getElementById("panes"), document.getElementByI
   onChange: () => {
     render(lastView);
     followProjects();
+    readControlFigures();
   },
   onError: setStatus,
   titleOf,
@@ -1271,8 +1303,6 @@ const projectDirectory = directoryField("project-form");
 document.addEventListener("keydown", onKey);
 window.addEventListener("focus", checkOnReturn);
 new ResizeObserver(fitChips).observe(document.getElementById("chips"));
-// How many columns fit depends on the width.
-new ResizeObserver(renderOverview).observe(document.getElementById("overview"));
 document.getElementById("new-form").addEventListener("submit", startNewSession);
 document.getElementById("project-form").addEventListener("submit", addProject);
 document.getElementById("rename-form").addEventListener("submit", renameSession);
@@ -1337,6 +1367,7 @@ await panes.load();
 render(await invoke("current_list"));
 setInterval(readRequests, 1000);
 setInterval(readNewArtifacts, 1000);
+setInterval(readControlFigures, 5000);
 readNewArtifacts();
 readAccountStatuses();
 // Since the page started loading.

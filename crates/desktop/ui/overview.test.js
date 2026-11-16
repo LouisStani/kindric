@@ -1,27 +1,38 @@
-// Tests of the overview's board (decision 331, page B): `node --test crates/desktop/ui/overview.test.js`.
-// Rows have the shape of view.rs's SessionRow, requests that of overview.rs's Request.
+// Tests of the control center (decision 343, mockups C2): `node --test crates/desktop/ui/overview.test.js`.
+// Rows have the shape of view.rs's SessionRow, requests that of overview.rs's Request, usages that
+// of core accounts.rs's AccountUsage.
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import {
+  HOT_PERCENT,
+  accountCards,
+  allView,
   answersInOneClick,
   choicesAnswer,
-  columnsOf,
+  contextLevel,
+  keptLabel,
   keptText,
   lineOf,
+  nextAsking,
   permissionText,
+  projectView,
+  projectsOf,
   requestsBySession,
   standing,
   summaryOf,
 } from "./overview-board.js";
 
 function row(label, tab, extra = {}) {
-  return { label, tab, state: "waiting", finished: false, waiting_for: null, progress: null, ...extra };
+  return { label, tab, session_id: `s-${label}`, account: "louis", state: "waiting", finished: false, waiting_for: null, progress: null, ...extra };
 }
 
 const asking = { waiting_for: "permission prompt" };
 const working = { state: "working" };
 const done = { finished: true };
+const paused = { state: "paused" };
+
+const labels = (rows) => rows.map((each) => each.label);
 
 test("a session stands where the user sees it", () => {
   assert.equal(standing(row("a", 1, asking)), "need");
@@ -29,45 +40,91 @@ test("a session stands where the user sees it", () => {
   assert.equal(standing(row("a", 1, done)), "done");
   assert.equal(standing(row("a", 1, working)), "working");
   assert.equal(standing(row("a", 1)), "rest");
+  assert.equal(standing(row("a", 1, paused)), "paused");
   assert.equal(standing(row("a", 1, { state: "elsewhere" })), "elsewhere");
 });
 
-test("the summary counts each group, and elsewhere in none", () => {
-  const rows = [row("a", 1, asking), row("b", 1, working), row("c", 2, working), row("d", 2, done), row("e", 2), row("f", 2, { state: "elsewhere" })];
-  assert.deepEqual(summaryOf(rows), { need: 1, working: 2, done: 1, rest: 1 });
+test("the summary counts each group, paused too, and elsewhere in none", () => {
+  const rows = [row("a", 1, asking), row("b", 1, working), row("c", 2, working), row("d", 2, done), row("e", 2), row("f", 2, paused), row("g", 2, { state: "elsewhere" })];
+  assert.deepEqual(summaryOf(rows), { need: 1, working: 2, done: 1, rest: 1, paused: 1 });
 });
 
-test("a column per tab with sessions, those that need you first, then the busiest, urgent cards on top", () => {
-  const tabs = [
-    { id: 1, name: "other" },
-    { id: 2, name: "kindric" },
-    { id: 3, name: "arcade" },
-    { id: 4, name: "empty" },
+const tabs = [
+  { id: 1, name: "other" },
+  { id: 2, name: "kindric" },
+  { id: 3, name: "merkio" },
+  { id: 4, name: "suivi42" },
+];
+
+test("the side lists all, then every tab in the bar's order, with its dots most urgent first and its needs", () => {
+  const rows = [row("rest", 2), row("stopped", 2, paused), row("asks", 2, asking), row("tests", 3, working), row("notes", 1, done)];
+  const entries = projectsOf(rows, tabs);
+  assert.deepEqual(entries.map((entry) => entry.name), ["all", "other", "kindric", "merkio", "suivi42"]);
+  assert.deepEqual(entries[2].standings, ["need", "rest", "paused"]);
+  assert.deepEqual(entries.map((entry) => entry.needs), [1, 0, 1, 0, 0]);
+  assert.deepEqual(entries[0].standings, ["need", "working", "done", "rest", "paused"], "all gathers every project");
+  assert.deepEqual(entries[4].standings, [], "a project without sessions is still listed");
+});
+
+test("all projects: what needs you first, from any project, then a group per project in the bar's order", () => {
+  const rows = [row("rest", 2), row("api", 3, asking), row("merge", 2, asking), row("stopped", 2, paused), row("pricing", 3, working)];
+  const { needs, groups } = allView(rows, tabs);
+  assert.deepEqual(labels(needs), ["api", "merge"], "the list's order among those that need you");
+  assert.deepEqual(groups.map((group) => group.tab.name), ["kindric", "merkio"], "a project left with nothing is not shown");
+  assert.deepEqual(labels(groups[0].rows), ["rest", "stopped"]);
+  assert.deepEqual(labels(groups[1].rows), ["pricing"]);
+});
+
+test("one project: its sessions most urgent first, the paused ones apart", () => {
+  const rows = [row("rest", 2), row("stopped", 2, paused), row("working", 2, working), row("asks", 2, asking), row("elsewhere", 3, working)];
+  const { active, paused: stopped } = projectView(rows, 2);
+  assert.deepEqual(labels(active), ["asks", "working", "rest"]);
+  assert.deepEqual(labels(stopped), ["stopped"]);
+});
+
+test("a row says how many files its session kept and how many are new", () => {
+  assert.equal(keptLabel(0, 0), "nothing kept");
+  assert.equal(keptLabel(1, 0), "1 kept");
+  assert.equal(keptLabel(3, 2), "3 kept · 2 new");
+  assert.equal(keptLabel(0, 1), "1 kept · 1 new", "a new file not counted yet is still kept");
+});
+
+test("an account is shown with sessions running or figures, framed from 80% of its five hours", () => {
+  const rows = [row("a", 1), row("b", 1, { account: "pro" }), row("c", 1, { account: "louis", ...paused }), row("d", 1, { account: "old", ...paused })];
+  const usages = [
+    { name: "louis", five_hour: 52, seven_day: 19, five_hour_resets_at: null, updated_at: 1 },
+    { name: "pro", five_hour: HOT_PERCENT, seven_day: 63, five_hour_resets_at: 2, updated_at: 1 },
+    { name: "lystriq", five_hour: 12, seven_day: 40, five_hour_resets_at: null, updated_at: 1 },
   ];
-  const rows = [row("rest", 2), row("working", 2, working), row("leaderboard", 3, asking), row("notes", 1), row("server", 3, asking)];
-  const columns = columnsOf(rows, tabs, 4);
-  assert.deepEqual(columns.map((column) => column.names), [["arcade"], ["kindric"], ["other"]]);
-  assert.deepEqual(columns[1].cards.map((card) => card.row.label), ["working", "rest"]);
-  assert.deepEqual(columns[0].cards.map((card) => card.row.label), ["leaderboard", "server"], "the list's order within a group");
-  assert.ok(columns.every((column) => column.cards.every((card) => card.project === null)));
+  const cards = accountCards(rows, ["louis", "lystriq", "unused"], usages);
+  assert.deepEqual(cards.map((card) => [card.name, card.sessions, card.hot]), [
+    ["louis", 1, false],
+    ["lystriq", 0, false],
+    ["pro", 1, true],
+  ], "the registry's order first; a paused session does not count; an account with neither is left out");
 });
 
-test("past the room, the last column gathers the smallest and names their project", () => {
-  const tabs = ["other", "pro", "kindric", "app", "socials"].map((name, index) => ({ id: index + 1, name }));
-  const rows = [row("a", 1), row("b", 2, asking), row("c", 3), row("c2", 3, working), row("d", 4, done), row("e", 5)];
-  const columns = columnsOf(rows, tabs, 3);
-  assert.deepEqual(columns.map((column) => column.names), [["pro"], ["kindric"], ["other", "app", "socials"]]);
-  assert.deepEqual(
-    columns[2].cards.map((card) => [card.row.label, card.project]),
-    [["d", "app"], ["a", "other"], ["e", "socials"]],
-  );
-  assert.equal(columnsOf(rows, tabs, 0).length, 1, "at least one column");
+test("a context bar turns amber from 60%, red from 80%", () => {
+  assert.equal(contextLevel(41), "low");
+  assert.equal(contextLevel(60), "mid");
+  assert.equal(contextLevel(79.9), "mid");
+  assert.equal(contextLevel(80), "high");
 });
 
-test("a card says what the session last said, else what it waits for", () => {
+test("n goes to the next session that asks, round, from anywhere", () => {
+  const asking = ["s-a", "s-b", "s-c"];
+  assert.equal(nextAsking(asking, null), "s-a", "from no row: the first");
+  assert.equal(nextAsking(asking, "s-a"), "s-b");
+  assert.equal(nextAsking(asking, "s-c"), "s-a");
+  assert.equal(nextAsking(asking, "s-quiet"), "s-a", "from a row that asks nothing: the first");
+  assert.equal(nextAsking([], "s-a"), null);
+});
+
+test("a row says what the session last said, else what it waits for", () => {
   assert.equal(lineOf(row("a", 1, { ...working, progress: "running the tests" })), "running the tests");
   assert.equal(lineOf(row("a", 1, asking)), "waits for you: permission prompt");
   assert.equal(lineOf(row("a", 1)), "at rest");
+  assert.equal(lineOf(row("a", 1, paused)), "paused");
 });
 
 function request(id, session_id, body) {
@@ -84,9 +141,12 @@ test("a session with a request needs you, even one that keeps working on a kindr
   const other = row("notes", 1, { session_id: "s-notes" });
   assert.equal(standing(board, requests), "need");
   assert.equal(standing(other, requests), "rest");
-  assert.deepEqual(summaryOf([board, other], requests), { need: 1, working: 0, done: 0, rest: 1 });
-  const columns = columnsOf([other, board], [{ id: 1, name: "arcade" }], 4, requests);
-  assert.deepEqual(columns[0].cards.map((card) => card.row.label), ["leaderboard", "notes"]);
+  assert.equal(lineOf(board, requests), "waits for your answer", "no question of Claude Code on screen to quote");
+  const permission = requestsBySession([request("3-1", "s-merge", { kind: "permission", tool: "Bash", input: { command: "git merge main" } })]);
+  assert.equal(lineOf(row("merge", 1, { session_id: "s-merge" }), permission), "waits for your permission");
+  assert.deepEqual(summaryOf([board, other], requests), { need: 1, working: 0, done: 0, rest: 1, paused: 0 });
+  assert.deepEqual(labels(projectView([other, board], 1, requests).active), ["leaderboard", "notes"]);
+  assert.deepEqual(labels(allView([other, board], [{ id: 1, name: "arcade" }], requests).needs), ["leaderboard"]);
 });
 
 test("a permission shows the command alone, another tool what it touches", () => {
@@ -113,7 +173,7 @@ test("the answer to AskUserQuestion waits for every question, labels joined, Oth
   assert.equal(answersInOneClick(questions.slice(1)), false);
 });
 
-test("a card names the files its session kept, the latest first, three at most", () => {
+test("the files a session kept and not seen are named, the latest first, three at most", () => {
   const kept = (name) => ({ session_id: "s-logo", project: "/home/u/socials", group: null, name, image: true });
   assert.equal(keptText([kept("logo.png")]), "kept logo.png");
   const four = ["a.png", "b.png", "c.png", "d.png"].map(kept);

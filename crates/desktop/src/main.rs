@@ -27,7 +27,7 @@ use kindric_core::launcher::{self, Request, resolve_directory};
 use kindric_core::mailbox::Mailbox;
 use kindric_core::accounts::SessionInfo;
 use kindric_core::artifacts::{self, Kind};
-use kindric_core::{accounts, atlas, away, changes, checks, claude_theme, images, mailbox, overview, refresher, worktrees};
+use kindric_core::{accounts, atlas, away, changes, checks, claude_theme, images, mailbox, origins, overview, refresher, worktrees};
 use serde::Serialize;
 use serde::de::DeserializeOwned;
 use tauri::ipc::{Channel, InvokeResponseBody, Response};
@@ -220,11 +220,45 @@ async fn add_messages_server(shared: State<'_, Shared>) -> Result<Vec<checks::Li
 #[tauri::command]
 fn account_usage(accounts: Vec<String>) -> Result<Vec<accounts::AccountUsage>, String> {
     let paths = accounts::paths().map_err(|error| error.to_string())?;
-    let now = std::time::SystemTime::now()
+    Ok(accounts::usages(&paths, &accounts, unix_now()?))
+}
+
+fn unix_now() -> Result<i64, String> {
+    std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|elapsed| i64::try_from(elapsed.as_secs()).unwrap_or(i64::MAX))
-        .map_err(|error| error.to_string())?;
-    Ok(accounts::usages(&paths, &accounts, now))
+        .map_err(|error| error.to_string())
+}
+
+/// The figures of the overview that no refresh brings: the limits of every account, the context
+/// of each session, and how many files each session kept for the user.
+#[derive(Serialize)]
+struct ControlFigures {
+    usages: Vec<accounts::AccountUsage>,
+    /// Session id → percentage of its context window used.
+    contexts: std::collections::BTreeMap<String, f64>,
+    /// Session id → files it kept for the user, in every project.
+    kept: std::collections::BTreeMap<String, usize>,
+}
+
+/// Reads a few small files per account and per project, so off the window's thread.
+#[tauri::command(async)]
+fn control_figures(shared: State<'_, Shared>, accounts: Vec<String>, sessions: Vec<accounts::SessionRef>) -> Result<ControlFigures, String> {
+    let _span = shared.trace.span("control_figures");
+    let paths = accounts::paths().map_err(|error| error.to_string())?;
+    let data = mailbox::data_dir().map_err(|error| error.to_string())?;
+    let projects = artifacts::read_projects(&data)?;
+    let roots: Vec<PathBuf> = projects
+        .iter()
+        .map(|project| Some(project.as_path()))
+        .chain(std::iter::once(None))
+        .map(|project| artifacts::root_of_project(&data, project))
+        .collect();
+    Ok(ControlFigures {
+        usages: accounts::usages(&paths, &accounts, unix_now()?),
+        contexts: accounts::contexts(&paths, &sessions),
+        kept: origins::kept_for_user(&roots),
+    })
 }
 
 /// The accounts of the settings: login state, plan, sessions, isolation. Asks Claude Code about
@@ -1484,6 +1518,7 @@ fn main() -> ExitCode {
             open_login,
             account_statuses,
             account_usage,
+            control_figures,
             session_changes,
             file_diff,
             set_away,

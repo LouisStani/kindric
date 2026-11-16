@@ -189,6 +189,8 @@ pub struct AccountUsage {
     pub name: String,
     pub five_hour: f64,
     pub seven_day: f64,
+    /// When the five-hour window starts again, Unix seconds; `None` when unknown or already past.
+    pub five_hour_resets_at: Option<i64>,
     /// When the figures were written down, Unix seconds.
     pub updated_at: i64,
 }
@@ -203,8 +205,28 @@ pub fn usages(paths: &Paths, names: &[String], now: i64) -> Vec<AccountUsage> {
                 name: name.clone(),
                 five_hour: usage::percent(figures.five_hour.as_ref(), now),
                 seven_day: usage::percent(figures.seven_day.as_ref(), now),
+                five_hour_resets_at: figures.five_hour.and_then(|window| window.resets_at).filter(|resets_at| *resets_at > now),
                 updated_at: figures.updated_at,
             })
+        })
+        .collect()
+}
+
+/// A session, by its account and the id Claude Code gives it.
+#[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
+pub struct SessionRef {
+    pub account: String,
+    pub session_id: String,
+}
+
+/// How full the context window of each of `sessions` was when its status line last ran, by
+/// session id; a session without figures is left out.
+pub fn contexts(paths: &Paths, sessions: &[SessionRef]) -> BTreeMap<String, f64> {
+    sessions
+        .iter()
+        .filter_map(|session| {
+            let context = usage::read_context(paths, &session.account, &session.session_id)?;
+            Some((session.session_id.clone(), context.used_percentage))
         })
         .collect()
 }
@@ -480,6 +502,33 @@ mod tests {
         std::fs::create_dir_all(&home).expect("home");
         let paths = Paths::from_roots(root.join("config"), root.join("data"), home);
         (root, paths)
+    }
+
+    fn write(path: &Path, text: &str) {
+        std::fs::create_dir_all(path.parent().expect("parent")).expect("folder");
+        std::fs::write(path, text).expect("write");
+    }
+
+    #[test]
+    fn the_five_hour_reset_is_given_until_it_has_passed() {
+        let (root, paths) = scratch_paths("resets");
+        let window = |resets_at: i64| format!(r#"{{"used_percentage": 52.0, "resets_at": {resets_at}}}"#);
+        write(&usage::usage_file(&paths, "louis"), &format!(r#"{{"five_hour": {}, "seven_day": null, "updated_at": 1}}"#, window(2_000)));
+        let names = ["louis".to_string()];
+        assert_eq!(usages(&paths, &names, 1_000)[0].five_hour_resets_at, Some(2_000));
+        assert_eq!(usages(&paths, &names, 3_000)[0].five_hour_resets_at, None, "a reset already past is not shown");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn the_context_of_each_session_is_read_and_one_without_figures_left_out() {
+        let (root, paths) = scratch_paths("contexts");
+        let context = usage::context_file(&paths, "louis", "aaaa-1111").expect("a session id");
+        write(&context, r#"{"used_percentage": 41.5, "updated_at": 1}"#);
+        let session = |account: &str, session_id: &str| SessionRef { account: account.into(), session_id: session_id.into() };
+        let read = contexts(&paths, &[session("louis", "aaaa-1111"), session("louis", "bbbb-2222"), session("pro", "aaaa-1111")]);
+        assert_eq!(read.into_iter().collect::<Vec<_>>(), [("aaaa-1111".to_string(), 41.5)]);
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     #[test]

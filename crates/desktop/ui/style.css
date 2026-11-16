@@ -1599,7 +1599,8 @@ input:focus, select:focus {
 }
 .atlas-search[hidden] { display: none; }
 
-/* The overview (page B): number 0 in the bar, shown instead of the panes. */
+/* The control center (mockups C2): number 0 in the bar, shown instead of the panes. Projects and
+   accounts on the side, every project or one of them in the middle. */
 #panes[hidden], #overview[hidden] {
   display: none;
 }
@@ -1607,74 +1608,314 @@ input:focus, select:focus {
 #overview {
   flex: 1;
   min-width: 0;
-  overflow: auto;
-  padding: 18px 20px;
+  min-height: 0;
+  display: grid;
+  grid-template-columns: 250px minmax(0, 1fr);
   outline: none;
 }
 
-.overview-summary {
+.control-side {
   display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 8px 22px;
-  margin-bottom: 22px;
+  flex-direction: column;
+  gap: 8px;
+  min-height: 0;
+  overflow: auto;
+  padding: 18px 14px 18px 20px;
+  border-right: var(--stroke) solid var(--line);
 }
 
-.overview-count {
-  display: flex;
+.control-projects {
+  display: grid;
+  gap: 4px;
+  padding-bottom: 14px;
+  border-bottom: var(--stroke) solid var(--line);
+}
+
+.control-project {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  grid-template-areas: "name needs" "dots needs";
+  gap: 6px 8px;
   align-items: center;
+  padding: 10px 12px;
+  border: 0;
+  border-left: 3px solid transparent;
+  border-radius: var(--radius);
+  background: transparent;
+  font: inherit;
+  text-align: left;
+  color: var(--text);
+  cursor: pointer;
+}
+
+.control-project:hover {
+  background: var(--surface);
+}
+
+.control-project.on {
+  border-left-color: var(--active);
+  background: var(--raised);
+  color: var(--text-strong);
+}
+
+.control-project-name {
+  grid-area: name;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-weight: 700;
+}
+
+.control-dots {
+  grid-area: dots;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  min-height: 7px;
+}
+
+.control-dots .dot {
+  width: 7px;
+  height: 7px;
+}
+
+.control-needs {
+  grid-area: needs;
+  min-width: 22px;
+  padding: 2px 6px;
+  border-radius: 11px;
+  background: var(--waiting);
+  font-size: 11px;
+  font-weight: 700;
+  text-align: center;
+  color: var(--on-accent);
+}
+
+.control-add {
+  padding: 10px 12px;
+  border: 0;
+  background: transparent;
+  font: inherit;
+  text-align: left;
+  color: var(--muted);
+  cursor: pointer;
+}
+
+.control-add:hover {
+  color: var(--text-strong);
+}
+
+.control-side-title {
+  margin: 8px 0 2px;
+  font-size: var(--font-size);
+  font-weight: 400;
+  color: var(--muted);
+}
+
+.account-card {
+  display: grid;
+  gap: 6px;
+  padding: 10px 12px;
+  border: var(--stroke) solid var(--line);
+  border-radius: var(--radius);
+  background: var(--surface);
+}
+
+.account-card.hot {
+  border-color: var(--waiting);
+}
+
+.account-head {
+  display: flex;
+  justify-content: space-between;
   gap: 8px;
   color: var(--muted);
 }
 
-.overview-count strong {
-  font-size: 18px;
+.account-head strong {
   color: var(--text-strong);
 }
 
-.overview-hint {
-  margin-left: auto;
-  color: var(--faint);
+.account-line {
+  display: grid;
+  grid-template-columns: 24px minmax(0, 1fr) 40px;
+  gap: 8px;
+  align-items: center;
+  color: var(--muted);
 }
 
-.overview-board {
+.account-percent {
+  text-align: right;
+  color: var(--text);
+}
+
+.account-note {
+  margin: 0;
+  color: var(--muted);
+}
+
+.bar {
+  display: block;
+  height: 5px;
+  overflow: hidden;
+  border-radius: 3px;
+  background: var(--line);
+}
+
+.bar-fill {
+  display: block;
+  height: 100%;
+  border-radius: 3px;
+  background: var(--muted);
+}
+
+.bar.hot .bar-fill, .bar.mid .bar-fill {
+  background: var(--waiting);
+}
+
+.bar.high .bar-fill {
+  background: var(--error);
+}
+
+.control-main {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  min-height: 0;
+  overflow: auto;
+  padding: 18px 20px;
+}
+
+.control-head {
   display: grid;
-  grid-auto-flow: column;
-  grid-auto-columns: minmax(0, 1fr);
-  gap: 16px;
-  align-items: start;
+  grid-template-columns: minmax(0, 1fr) auto;
+  grid-template-areas: "title summary" "actions actions";
+  gap: 12px 16px;
+  align-items: baseline;
+  padding-bottom: 14px;
+  border-bottom: var(--stroke) solid var(--line);
+}
+
+.control-title {
+  grid-area: title;
+  display: flex;
+  align-items: baseline;
+  gap: 12px;
+  min-width: 0;
+}
+
+.control-title h1 {
+  margin: 0;
+  font-size: 20px;
+  color: var(--text-strong);
+}
+
+.control-directory {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--muted);
+}
+
+.control-summary {
+  grid-area: summary;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 14px;
+  margin: 0;
+  color: var(--muted);
+}
+
+.control-actions {
+  grid-area: actions;
+  display: flex;
+  gap: 8px;
+}
+
+.control-actions button, .row-resume {
+  padding: 6px 14px;
+  border: var(--stroke) solid var(--line-strong);
+  border-radius: var(--radius);
+  background: transparent;
+  font: inherit;
+  color: var(--text);
+  cursor: pointer;
+}
+
+.control-actions button.primary {
+  border-color: var(--active);
+  background: var(--active);
+  color: var(--on-active);
+}
+
+.overview-count strong {
+  color: var(--text-strong);
+}
+
+.overview-count.is-need strong {
+  color: var(--waiting);
+}
+
+.overview-count.is-done strong {
+  color: var(--done);
+}
+
+.overview-count.is-kept strong {
+  color: var(--active);
+}
+
+.control-body {
+  display: grid;
+  gap: 10px;
+  align-content: start;
+}
+
+.control-group {
+  display: flex;
+  align-items: baseline;
+  gap: 12px;
+  margin: 10px 0 0;
+  font-size: var(--font-size);
+  font-weight: 400;
+  color: var(--muted);
+}
+
+.control-group.is-need {
+  color: var(--waiting);
+}
+
+.control-group-name {
+  padding: 0;
+  border: 0;
+  background: transparent;
+  font: inherit;
+  font-weight: 700;
+  color: var(--text-strong);
+  cursor: pointer;
+}
+
+.control-group-name:hover {
+  color: var(--active);
+}
+
+.control-group-note {
+  margin-left: auto;
+  color: var(--muted);
 }
 
 .overview-note {
   color: var(--muted);
 }
 
-.overview-column {
-  display: grid;
-  gap: 10px;
-  min-width: 0;
-}
-
-.overview-column h2 {
-  display: flex;
-  gap: 8px;
-  margin: 0 0 4px;
-  padding-bottom: 8px;
-  border-bottom: var(--stroke) solid var(--line);
-  font-size: 11px;
-  font-weight: 700;
-  letter-spacing: 0.12em;
-  text-transform: uppercase;
+.overview-hint {
+  margin-top: auto;
+  padding-top: 8px;
   color: var(--faint);
 }
 
-.overview-column h2 .count {
-  color: var(--muted);
-}
-
-.overview-card {
+.control-row {
   display: grid;
-  gap: 8px;
+  gap: 10px;
   min-width: 0;
   padding: 12px 14px;
   border: var(--stroke) solid var(--line);
@@ -1683,26 +1924,37 @@ input:focus, select:focus {
   outline: none;
 }
 
-.overview-card.opens {
+.control-row.opens {
   cursor: pointer;
 }
 
-.overview-card.opens:hover, .overview-card:focus-visible {
+.control-row.opens:hover {
   border-color: var(--line-strong);
 }
 
-.overview-card.is-need, .overview-card.is-need:hover {
+.control-row.is-need, .control-row.is-need:hover {
   border-color: var(--waiting);
 }
 
-.card-head {
-  display: flex;
+.control-row.is-paused {
+  border-style: dashed;
+  background: transparent;
+}
+
+.control-row.selected, .control-row.selected:hover {
+  border-color: var(--active);
+  box-shadow: 0 0 0 1px var(--active);
+}
+
+.row-line {
+  display: grid;
+  grid-template-columns: 10px minmax(120px, 190px) minmax(0, 1fr) 160px 150px 70px 76px;
+  gap: 14px;
   align-items: center;
-  gap: 8px;
   min-width: 0;
 }
 
-.card-name {
+.row-name {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -1710,71 +1962,145 @@ input:focus, select:focus {
   color: var(--text-strong);
 }
 
-.card-badge {
-  flex: none;
-  padding: 0 6px;
-  border: var(--stroke) solid var(--waiting);
-  border-radius: var(--radius);
-  font-size: 11px;
-  color: var(--waiting);
-}
-
-.card-where {
-  flex: none;
-  margin-left: auto;
-  font-size: 11px;
-  color: var(--faint);
-}
-
-.card-line {
-  margin: 0;
-  overflow-wrap: anywhere;
+.row-doing {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
   color: var(--muted);
 }
 
-.card-badge.keeps {
-  border-color: var(--done);
-  color: var(--done);
-}
-
-.kept-mark {
-  color: var(--active);
-}
-
-.card-kept {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  min-width: 0;
-  padding: 4px 8px;
-  border: var(--stroke) solid var(--line-strong);
-  border-radius: var(--radius);
-  cursor: pointer;
-  color: var(--text);
-}
-
-.card-kept:hover {
-  border-color: var(--active);
-}
-
-.card-kept-names {
-  flex: 1 1 0;
+.row-doing-text {
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
-.card-kept-thumb {
+.row-badge {
   flex: none;
-  width: 36px;
-  height: 36px;
-  object-fit: cover;
-  border-radius: 4px;
+  margin-left: auto;
+  padding: 0 6px;
+  border: var(--stroke) solid var(--waiting);
+  border-radius: var(--radius);
+  font-size: 11px;
+  white-space: nowrap;
+  color: var(--waiting);
 }
 
-.card-kept-thumb[hidden] {
+.row-badge + .row-badge {
+  margin-left: 0;
+}
+
+.row-badge.keeps {
+  border-color: var(--done);
+  color: var(--done);
+}
+
+.row-kept {
+  grid-column: 4;
+  justify-self: end;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 2px 8px;
+  border: var(--stroke) solid transparent;
+  border-radius: var(--radius);
+  white-space: nowrap;
+  color: var(--text);
+  cursor: pointer;
+}
+
+.row-kept.fresh {
+  border-color: var(--waiting);
+  color: var(--text-strong);
+}
+
+.row-kept.none {
+  color: var(--faint);
+  cursor: default;
+}
+
+.row-kept:not(.none):hover {
+  border-color: var(--active);
+}
+
+.row-thumb {
+  width: 20px;
+  height: 20px;
+  object-fit: cover;
+  border-radius: 3px;
+}
+
+.row-thumb[hidden] {
   display: none;
+}
+
+.row-ctx {
+  grid-column: 5;
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) 36px;
+  gap: 8px;
+  align-items: center;
+  color: var(--muted);
+}
+
+.row-ctx-percent {
+  text-align: right;
+  color: var(--text);
+}
+
+.row-ctx-none {
+  grid-column: 2 / 4;
+  color: var(--faint);
+}
+
+.row-account {
+  grid-column: 6;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  text-align: right;
+  color: var(--muted);
+}
+
+.row-resume {
+  grid-column: 7;
+  padding: 4px 10px;
+}
+
+.control-row .request.is-permission {
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+}
+
+.control-title h1::before {
+  content: none;
+}
+
+.dot.is-need {
+  background: var(--waiting);
+}
+
+.dot.is-working {
+  background: conic-gradient(var(--working) 0 50%, transparent 0);
+  box-shadow: inset 0 0 0 var(--stroke) var(--working);
+}
+
+.dot.is-done {
+  background: var(--done);
+}
+
+.dot.is-rest {
+  background: var(--faint);
+}
+
+.is-paused .dot, .dot.is-paused {
+  border: var(--stroke) solid var(--faint);
+}
+
+.dot.is-elsewhere {
+  border: var(--stroke) dashed var(--faint);
 }
 
 .request {
