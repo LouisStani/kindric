@@ -13,6 +13,7 @@ mod signal;
 mod store;
 mod tabs;
 mod trace;
+mod typing;
 mod view;
 
 use std::collections::HashMap;
@@ -26,7 +27,7 @@ use kindric_core::launcher::{self, Request, resolve_directory};
 use kindric_core::mailbox::Mailbox;
 use kindric_core::accounts::SessionInfo;
 use kindric_core::artifacts::{self, Kind};
-use kindric_core::{accounts, atlas, away, changes, checks, claude_theme, images, mailbox, refresher, worktrees};
+use kindric_core::{accounts, atlas, away, changes, checks, claude_theme, images, mailbox, overview, refresher, worktrees};
 use serde::Serialize;
 use serde::de::DeserializeOwned;
 use tauri::ipc::{Channel, InvokeResponseBody, Response};
@@ -1052,6 +1053,63 @@ fn set_away(app: AppHandle, shared: State<'_, Shared>, session_id: String, minut
     Ok(Away { until, words: away::user_words(&session_id, minutes) })
 }
 
+fn overview_root() -> Result<PathBuf, String> {
+    overview::default_root().map_err(|error| format!("cannot find kindric's data: {error}"))
+}
+
+/// What the sessions ask the user, oldest first.
+#[tauri::command]
+fn overview_requests(shared: State<'_, Shared>) -> Result<Vec<overview::Request>, String> {
+    let _span = shared.trace.span("overview_requests");
+    Ok(overview::pending(&overview_root()?))
+}
+
+/// The user answers a permission or a question of AskUserQuestion: the hook waiting in the
+/// session reads the answer and gives it to Claude Code.
+#[tauri::command]
+fn answer_request(shared: State<'_, Shared>, session_id: String, id: String, answer: overview::Answer) -> Result<(), String> {
+    let _span = shared.trace.span("answer_request");
+    if matches!(answer, overview::Answer::Text { .. }) {
+        return Err("the answer to kindric ask is typed into the session, not written for a hook".into());
+    }
+    overview::answer(&overview_root()?, &session_id, &id, &answer).map_err(|error| error.to_string())
+}
+
+/// The page typed the answer to a `kindric ask` in the pane that shows the session.
+#[tauri::command]
+fn settle_request(shared: State<'_, Shared>, session_id: String, id: String) -> Result<(), String> {
+    let _span = shared.trace.span("settle_request");
+    overview::settle(&overview_root()?, &session_id, &id).map_err(|error| format!("cannot remove the request: {error}"))
+}
+
+/// Types the answer to a `kindric ask` into a session no pane shows, as the user's message, then
+/// removes the request. Holds the session's claim meanwhile, as a pane does.
+#[tauri::command]
+async fn type_answer(
+    shared: State<'_, Shared>,
+    account: String,
+    short_id: String,
+    session_id: String,
+    id: String,
+    text: String,
+) -> Result<(), String> {
+    let _span = shared.trace.span("type_answer");
+    let implicit = implicit_default(&account)?;
+    let claims = shared.claims_dir.clone()?;
+    let root = overview_root()?;
+    let typed = move || {
+        if !overview::pending(&root).iter().any(|request| request.session_id == session_id && request.id == id) {
+            return Err("this request is already settled".to_string());
+        }
+        let key = SessionKey { account: account.clone(), short_id: short_id.clone() };
+        let _claim = claim::claim(&claims, &key)?;
+        typing::type_into(&attach_command(&account, &short_id, implicit), &text, &typing::TIMINGS)
+            .map_err(|error| format!("cannot type into {short_id}: {error}"))?;
+        overview::settle(&root, &session_id, &id).map_err(|error| format!("cannot remove the request: {error}"))
+    };
+    tauri::async_runtime::spawn_blocking(typed).await.map_err(|error| error.to_string())?
+}
+
 /// Counts the files the sessions of `to_count` changed, outside the lock of the list (git takes
 /// tens to hundreds of milliseconds a session), then shows the counts.
 fn count_changes(app: &AppHandle, to_count: &[SessionInfo], implicit_default: bool) {
@@ -1374,6 +1432,10 @@ fn main() -> ExitCode {
             session_changes,
             file_diff,
             set_away,
+            overview_requests,
+            answer_request,
+            settle_request,
+            type_answer,
             project_worktrees,
             remove_worktree,
             add_account,
