@@ -7,6 +7,7 @@ import {
   answersInOneClick,
   choicesAnswer,
   columnsOf,
+  keptText,
   lineOf,
   permissionText,
   requestsBySession,
@@ -110,4 +111,12 @@ test("the answer to AskUserQuestion waits for every question, labels joined, Oth
   assert.equal(answersInOneClick(questions), false);
   assert.equal(answersInOneClick(questions.slice(0, 1)), true);
   assert.equal(answersInOneClick(questions.slice(1)), false);
+});
+
+test("a card names the files its session kept, the latest first, three at most", () => {
+  const kept = (name) => ({ session_id: "s-logo", project: "/home/u/socials", group: null, name, image: true });
+  assert.equal(keptText([kept("logo.png")]), "kept logo.png");
+  const four = ["a.png", "b.png", "c.png", "d.png"].map(kept);
+  assert.equal(keptText(four), "kept d.png, c.png, b.png +1");
+  assert.deepEqual([...requestsBySession(four).keys()], ["s-logo"], "grouped by session like the requests");
 });

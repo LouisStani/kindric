@@ -833,6 +833,46 @@ struct ArtifactFile {
     /// Seconds since 1970.
     modified: u64,
     image: bool,
+    /// Kept by a session since the window was last opened.
+    new: bool,
+}
+
+/// A file a session kept for the user and the user has not seen yet.
+#[derive(Serialize)]
+struct NewArtifact {
+    session_id: String,
+    /// The project's folder; None for "other".
+    project: Option<String>,
+    group: Option<String>,
+    name: String,
+    image: bool,
+}
+
+/// The files sessions kept for the user in every project since its artifacts window was last
+/// opened, oldest first in each project.
+#[tauri::command(async)]
+fn new_artifacts(shared: State<'_, Shared>) -> Result<Vec<NewArtifact>, String> {
+    let _span = shared.trace.span("new_artifacts");
+    let data = mailbox::data_dir().map_err(|error| error.to_string())?;
+    let projects = artifacts::read_projects(&data)?;
+    let places = projects.iter().map(|project| Some(project.as_path())).chain(std::iter::once(None));
+    Ok(places
+        .flat_map(|project| {
+            artifacts::unseen(&artifacts::root_of_project(&data, project)).into_iter().map(move |kept| NewArtifact {
+                image: images::is_image_name(&kept.name),
+                session_id: kept.session_id,
+                project: project.map(|project| project.to_string_lossy().into_owned()),
+                group: kept.group,
+                name: kept.name,
+            })
+        })
+        .collect())
+}
+
+/// The artifacts window of `project` was opened: what it showed as new no longer is.
+#[tauri::command(async)]
+fn artifacts_seen(project: Option<String>) -> Result<(), String> {
+    artifacts::mark_seen(&artifacts_root(project.as_deref())?)
 }
 
 /// A block of the artifacts window: the unsorted files (no name), then each group.
@@ -848,13 +888,19 @@ fn artifacts_view(shared: State<'_, Shared>, project: Option<String>) -> Result<
     let _span = shared.trace.span("artifacts_view");
     let root = artifacts_root(project.as_deref())?;
     let listed = artifacts::entries(&root, Kind::User)?;
+    let unseen = artifacts::unseen(&root);
     let names = std::iter::once(None).chain(artifacts::groups(&root, Kind::User)?.into_iter().map(Some));
     Ok(names
         .map(|name| {
             let files = listed
                 .iter()
                 .filter(|file| file.group == name)
-                .map(|file| ArtifactFile { name: file.name.clone(), modified: file.modified, image: images::is_image_name(&file.name) })
+                .map(|file| ArtifactFile {
+                    name: file.name.clone(),
+                    modified: file.modified,
+                    image: images::is_image_name(&file.name),
+                    new: unseen.iter().any(|kept| kept.group == file.group && kept.name == file.name),
+                })
                 .collect();
             ArtifactGroup { name, files }
         })
@@ -1423,6 +1469,8 @@ fn main() -> ExitCode {
             memory_note,
             memory_search,
             artifacts_view,
+            new_artifacts,
+            artifacts_seen,
             add_artifacts,
             move_artifact,
             create_artifact_group,

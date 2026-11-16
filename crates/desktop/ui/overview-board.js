@@ -45,6 +45,14 @@ export function requestsBySession(requests) {
   return bySession;
 }
 
+// The line of a card for the files its session kept for the user, not yet seen: the latest
+// first, `most` names at most, then how many more.
+export function keptText(artifacts, most = 3) {
+  const names = artifacts.map((artifact) => artifact.name).reverse();
+  const shown = names.slice(0, most).join(", ");
+  return names.length > most ? `kept ${shown} +${names.length - most}` : `kept ${shown}`;
+}
+
 // The columns of the board: one per tab with sessions, `tabs` being `[{ id, name }]` in the
 // order of the bar. Those that need the user most come first, then the busiest. Past `most`
 // columns, the last one gathers the others, the smallest, and its cards then name their project.

@@ -7,6 +7,7 @@ import {
   answersInOneClick,
   choicesAnswer,
   columnsOf,
+  keptText,
   lineOf,
   permissionText,
   requestsBySession,
@@ -35,11 +36,18 @@ export class Overview {
   // `onOpen(row)` opens the session of a card. `onAnswer(request, answer)` answers a permission
   // or a question of AskUserQuestion; `onType(row, request, text)` types the answer to a
   // `kindric ask` into the session. Both return promises that fail with what to tell the user.
-  constructor(section, { onOpen, onAnswer, onType }) {
+  // `onArtifacts(row, project)` opens the artifacts window of a project; `thumbnailOf(artifact)`
+  // gives the address of an image kept, or null.
+  constructor(section, { onOpen, onAnswer, onType, onArtifacts, thumbnailOf }) {
     this.section = section;
     this.onOpen = onOpen;
     this.onAnswer = onAnswer;
     this.onType = onType;
+    this.onArtifacts = onArtifacts;
+    this.thumbnailOf = thumbnailOf;
+    // Session id → the files it kept for the user, not yet seen, oldest first (346).
+    this.artifacts = new Map();
+    this.seenArtifacts = "[]";
     this.summary = element("header", "overview-summary");
     this.board = element("div", "overview-board");
     section.append(this.summary, this.board);
@@ -55,6 +63,19 @@ export class Overview {
     this.others = new Set();
     this.sending = new Map();
     this.last = null;
+  }
+
+  // The files of `new_artifacts`. Returns whether they changed.
+  setArtifacts(artifacts) {
+    const seen = JSON.stringify(artifacts);
+    if (seen === this.seenArtifacts) return false;
+    this.seenArtifacts = seen;
+    this.artifacts = requestsBySession(artifacts);
+    return true;
+  }
+
+  artifactsOf(sessionId) {
+    return this.artifacts.get(sessionId) ?? [];
   }
 
   // The requests of `overview_requests`. Returns whether they changed. What was kept for a
@@ -111,8 +132,37 @@ export class Overview {
         item.append(element("span", "dot"), element("strong", "", `${counts[group.id]}`), element("span", "", group.label));
         return item;
       }),
-      element("span", "overview-hint", "click or ⏎ on a card opens it"),
     );
+    const kept = rows.reduce((sum, row) => sum + this.artifactsOf(row.session_id).length, 0);
+    if (kept > 0) {
+      const item = element("span", "overview-count is-kept");
+      item.append(element("span", "kept-mark", "◆"), element("strong", "", `${kept}`), element("span", "", kept === 1 ? "new artifact" : "new artifacts"));
+      this.summary.append(item);
+    }
+    this.summary.append(element("span", "overview-hint", "click or ⏎ on a card opens it"));
+  }
+
+  // The files the session kept for the user, not yet seen: a click opens the artifacts window.
+  kept(row, artifacts) {
+    const line = element("div", "card-kept");
+    line.title = "open the artifacts of this project";
+    line.append(element("span", "kept-mark", "◆"), element("span", "card-kept-names", keptText(artifacts)));
+    for (const artifact of artifacts.filter((each) => each.image).slice(-3).reverse()) {
+      const thumb = element("img", "card-kept-thumb");
+      thumb.alt = artifact.name;
+      thumb.hidden = true;
+      this.thumbnailOf(artifact).then((url) => {
+        if (!url) return;
+        thumb.src = url;
+        thumb.hidden = false;
+      });
+      line.append(thumb);
+    }
+    line.onclick = (event) => {
+      event.stopPropagation();
+      this.onArtifacts(row, artifacts[0].project);
+    };
+    return line;
   }
 
   column(column) {
@@ -132,6 +182,8 @@ export class Overview {
     if (row.unread > 0) head.append(element("span", "card-badge", `${row.unread} msg`));
     head.append(element("span", "card-where", project ? `${row.account} · ${project}` : row.account));
     card.append(head);
+    const artifacts = this.artifactsOf(row.session_id);
+    if (artifacts.length > 0) card.append(this.kept(row, artifacts));
     // What the session asks takes the place of what it last said.
     if (requests.length === 0) card.append(element("p", "card-line", lineOf(row, this.requests)));
     for (const request of requests) card.append(this.request(row, request));
