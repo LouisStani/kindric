@@ -378,6 +378,7 @@ mod tests {
             state: SessionState::Waiting,
             isolated: false,
             progress: None,
+            waiting_for: None,
         }
     }
 

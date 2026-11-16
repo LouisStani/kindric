@@ -338,6 +338,7 @@ mod tests {
             cwd: String::new(),
             isolated: false,
             progress: None,
+            waiting_for: None,
         }];
         assert!(reread_progress(&mut sessions, &dir, &BTreeSet::from(["abc".to_string()])));
         assert_eq!(sessions[0].progress.as_deref(), Some("reading progress.rs"));

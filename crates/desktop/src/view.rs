@@ -33,6 +33,9 @@ pub struct SessionRow {
     pub session_id: String,
     /// What the session last said it is doing, if Claude Code wrote it.
     pub progress: Option<String>,
+    /// What the session waits for from the user while a question of Claude Code is on its
+    /// screen ("permission prompt", "input needed"), in Claude Code's words.
+    pub waiting_for: Option<String>,
     /// Only background sessions have one, and only they can be opened here.
     pub short_id: Option<String>,
     pub state: &'static str,
@@ -94,6 +97,7 @@ fn row(position: usize, session: &SessionInfo, unread: usize, finished: bool) ->
         directory: session.cwd.clone(),
         session_id: session.session_id.clone(),
         progress: session.progress.clone(),
+        waiting_for: session.waiting_for.clone(),
         short_id: session.short_id.clone(),
         state: session.state.label(),
         isolated: session.isolated,
@@ -289,6 +293,7 @@ mod tests {
             state: SessionState::Waiting,
             isolated,
             progress: None,
+            waiting_for: None,
         }
     }
 
@@ -331,6 +336,14 @@ mod tests {
         assert_eq!(view.sessions[0].short_id.as_deref(), Some("abc"));
         assert_eq!(view.sessions[0].state, "waiting");
         assert!(view.sessions[0].isolated);
+    }
+
+    #[test]
+    fn a_row_says_what_its_session_waits_for() {
+        let asking = SessionInfo { waiting_for: Some("permission prompt".into()), ..session("louis", "a", false) };
+        let view = apply(&ListView::default(), Ok((snapshot(vec![asking, session("louis", "b", false)]), HashMap::new())), None);
+        let waits: Vec<_> = view.sessions.iter().map(|row| row.waiting_for.as_deref()).collect();
+        assert_eq!(waits, [Some("permission prompt"), None]);
     }
 
     #[test]
