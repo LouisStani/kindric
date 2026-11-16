@@ -11,9 +11,12 @@ import {
   allView,
   answersInOneClick,
   canPrompt,
+  changedOf,
   choicesAnswer,
   contextLevel,
   extensionOf,
+  figureText,
+  groupNote,
   keptLabel,
   keptText,
   keptTime,
@@ -127,6 +130,27 @@ test("prompt all says how many it reached and why the others failed", () => {
   assert.equal(sentText([{ label: "a", error: null }, { label: "b", error: null }]), "sent to 2 of 2");
   assert.equal(sentText([{ label: "a", error: null }, { label: "pricing page", error: "busy elsewhere" }]), "sent to 1 of 2 · pricing page: busy elsewhere");
   assert.equal(sentText([{ label: "a", error: "x" }]), "sent to 0 of 1 · a: x");
+});
+
+test("a project counts the files its sessions changed, each session on its own", () => {
+  const rows = [row("a", 2, { changed: 3 }), row("b", 2, { changed: 0 }), row("c", 2, { changed: null }), row("d", 2, { changed: 1 })];
+  const { total, sessions } = changedOf(rows);
+  assert.equal(total, 4);
+  assert.deepEqual(labels(sessions), ["a", "d"], "a session without a count, or with none, is left out");
+  assert.deepEqual(changedOf([]), { total: 0, sessions: [] });
+});
+
+test("a group of all says what its project changed and kept, only what there is", () => {
+  assert.equal(groupNote(4, 2), "4 files changed · 2 new artifacts");
+  assert.equal(groupNote(1, 0), "1 file changed");
+  assert.equal(groupNote(0, 1), "1 new artifact");
+  assert.equal(groupNote(0, 0), "");
+});
+
+test("a figure is singular for one only", () => {
+  assert.equal(figureText(1, "worktree", "worktrees"), "1 worktree");
+  assert.equal(figureText(3, "worktree", "worktrees"), "3 worktrees");
+  assert.equal(figureText(0, "worktree", "worktrees"), "0 worktrees");
 });
 
 test("the last screen says how long ago the session wrote", () => {

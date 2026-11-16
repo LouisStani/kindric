@@ -1338,6 +1338,28 @@ async fn project_worktrees(shared: State<'_, Shared>, project: PathBuf) -> Resul
         .map_err(|error| error.to_string())?
 }
 
+/// What the head of a project in the control center counts.
+#[derive(Serialize)]
+struct ProjectFigures {
+    /// The worktrees besides the main checkout; None outside a git repository or for "other".
+    worktrees: Option<usize>,
+    /// The files kept for the user in the project.
+    artifacts: usize,
+}
+
+/// Asks git about each worktree and lists the project's artifacts, so off the window's thread.
+#[tauri::command]
+async fn project_figures(shared: State<'_, Shared>, project: Option<String>) -> Result<ProjectFigures, String> {
+    let _span = shared.trace.span("project_figures");
+    let sessions = session_folders(&shared);
+    let root = artifacts_root(project.as_deref())?;
+    let counted = move || -> Result<ProjectFigures, String> {
+        let worktrees = project.and_then(|project| worktrees::list(Path::new(&project), &sessions).ok()).map(|all| all.len().saturating_sub(1));
+        Ok(ProjectFigures { worktrees, artifacts: artifacts::list(&root, Kind::User)?.len() })
+    };
+    tauri::async_runtime::spawn_blocking(counted).await.map_err(|error| error.to_string())?
+}
+
 /// Removes a worktree of `project` and its branch if git finds it merged; never forced.
 #[tauri::command]
 async fn remove_worktree(shared: State<'_, Shared>, project: PathBuf, path: PathBuf) -> Result<worktrees::BranchOutcome, String> {
@@ -1592,6 +1614,7 @@ fn main() -> ExitCode {
             type_answer,
             type_prompt,
             project_worktrees,
+            project_figures,
             remove_worktree,
             add_account,
             forget_account,
