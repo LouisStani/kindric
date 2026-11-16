@@ -1,5 +1,5 @@
 import { DirectoryField } from "./directories.js";
-import { Panes, sameSession } from "./panes.js";
+import { imageType, Panes, sameSession } from "./panes.js";
 import { applyTheme, nextProjectTheme, nextTheme, THEMES } from "./themes.js";
 import { mark, note, startTrace, traced } from "./trace.js";
 import { askTrust } from "./helper.js";
@@ -127,6 +127,16 @@ function chip(session, index) {
     badge.addEventListener("click", (event) => {
       event.stopPropagation();
       openMessages(session);
+    });
+    item.append(badge);
+  }
+  const kept = overview.artifactsOf(session.session_id);
+  if (kept.length > 0) {
+    const badge = element("span", "badge kept", `◆ ${kept.length}`);
+    badge.title = `kept for you: ${kept.map((artifact) => artifact.name).join(", ")}`;
+    badge.addEventListener("click", (event) => {
+      event.stopPropagation();
+      openArtifactsOf(session, kept[0].project);
     });
     item.append(badge);
   }
@@ -299,6 +309,58 @@ async function readRequests() {
   }
   panes.renderBar();
   renderOverview();
+}
+
+// The files sessions kept for the user and not yet seen (346), read every second too: a session
+// keeps one at any time. Its chip and its card show them.
+async function readNewArtifacts() {
+  let artifacts;
+  try {
+    artifacts = await invoke("new_artifacts");
+  } catch (error) {
+    setStatus(`new artifacts not read: ${error}`);
+    return;
+  }
+  if (!overview.setArtifacts(artifacts)) return;
+  forgetThumbnails(artifacts);
+  renderChips(lastView);
+  renderOverview();
+}
+
+// Thumbnails of the overview's cards, by "project/group/name": read once while the file is new.
+const thumbnails = new Map();
+
+function thumbnailKey(artifact) {
+  return `${artifact.project ?? ""}/${artifact.group ?? ""}/${artifact.name}`;
+}
+
+function thumbnailOf(artifact) {
+  const key = thumbnailKey(artifact);
+  if (!thumbnails.has(key)) {
+    const args = { project: artifact.project, group: artifact.group, name: artifact.name };
+    thumbnails.set(
+      key,
+      invoke("artifact_bytes", args).then(
+        (bytes) => URL.createObjectURL(new Blob([new Uint8Array(bytes)], { type: imageType(artifact.name) })),
+        () => null,
+      ),
+    );
+  }
+  return thumbnails.get(key);
+}
+
+function forgetThumbnails(artifacts) {
+  const still = new Set(artifacts.map(thumbnailKey));
+  for (const [key, url] of thumbnails) {
+    if (still.has(key)) continue;
+    thumbnails.delete(key);
+    url.then((address) => address && URL.revokeObjectURL(address));
+  }
+}
+
+// The artifacts window of `project` (a folder, null for "other"), from a session's chip or card.
+function openArtifactsOf(session, project) {
+  return artifactsWindow.open(project, panes.projectName(session.tab) ?? "other");
 }
 
 // The welcome screen covers the panes, or the overview, while something is left to do and no
@@ -1160,6 +1222,8 @@ const overview = new Overview(document.getElementById("overview"), {
   onOpen: openSession,
   onAnswer: (request, answer) => invoke("answer_request", { sessionId: request.session_id, id: request.id, answer }),
   onType: typeAnswer,
+  onArtifacts: openArtifactsOf,
+  thumbnailOf,
 });
 
 const panes = new Panes(document.getElementById("panes"), document.getElementById("tabs"), document.getElementById("overview"), {
@@ -1272,6 +1336,8 @@ await listen("tauri://drag-drop", ({ payload }) => {
 await panes.load();
 render(await invoke("current_list"));
 setInterval(readRequests, 1000);
+setInterval(readNewArtifacts, 1000);
+readNewArtifacts();
 readAccountStatuses();
 // Since the page started loading.
 mark("page ready", 0);
