@@ -275,6 +275,32 @@ function renderOverview() {
   overview.render(lastView, lastView.sessions.filter(inBar), tabs, keyText("new-session"));
 }
 
+// The answer to a `kindric ask` of `row`, typed as the user's message with its question: in the
+// pane of this window that shows the session, else by kindric without a pane (`type_answer`).
+async function typeAnswer(row, request, text) {
+  const view = panes.viewShowing({ account: row.account, short_id: row.short_id });
+  if (!view) {
+    await invoke("type_answer", { account: row.account, shortId: row.short_id, sessionId: request.session_id, id: request.id, text });
+    return;
+  }
+  const words = await invoke("answer_words", { sessionId: request.session_id, id: request.id, text });
+  if (!view.say(words)) throw new Error("the pane of this session has ended: open it again");
+  await invoke("settle_request", { sessionId: request.session_id, id: request.id });
+}
+
+// What the sessions ask, read every second: a hook writes a request at any time. The count in
+// the bar follows on every tab, the cards on the overview.
+async function readRequests() {
+  try {
+    if (!overview.setRequests(await invoke("overview_requests"))) return;
+  } catch (error) {
+    setStatus(`requests of the overview not read: ${error}`);
+    return;
+  }
+  panes.renderBar();
+  renderOverview();
+}
+
 // The welcome screen covers the panes, or the overview, while something is left to do and no
 // pane of the visible tab shows a session.
 function placeWelcome() {
@@ -1130,7 +1156,11 @@ const tabLaunch = new AccountList(document.getElementById("quick"), {
   onTrust: askTrust,
 });
 
-const overview = new Overview(document.getElementById("overview"), { onOpen: openSession });
+const overview = new Overview(document.getElementById("overview"), {
+  onOpen: openSession,
+  onAnswer: (request, answer) => invoke("answer_request", { sessionId: request.session_id, id: request.id, answer }),
+  onType: typeAnswer,
+});
 
 const panes = new Panes(document.getElementById("panes"), document.getElementById("tabs"), document.getElementById("overview"), {
   keyFilter: (event) => shortcutFor(event) === null,
@@ -1142,7 +1172,7 @@ const panes = new Panes(document.getElementById("panes"), document.getElementByI
   titleOf,
   isFinished,
   markOf,
-  needsOf: () => summaryOf(lastView.sessions.filter(inBar)).need,
+  needsOf: () => summaryOf(lastView.sessions.filter(inBar), overview.requests).need,
   progressOf: (key) => rowOf(key)?.progress ?? null,
   changedOf: (key) => rowOf(key)?.changed ?? null,
   awayOf: (key) => {
@@ -1241,6 +1271,7 @@ await listen("tauri://drag-drop", ({ payload }) => {
 });
 await panes.load();
 render(await invoke("current_list"));
+setInterval(readRequests, 1000);
 readAccountStatuses();
 // Since the page started loading.
 mark("page ready", 0);
