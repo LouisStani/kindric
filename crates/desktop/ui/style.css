@@ -2056,6 +2056,38 @@ input:focus, select:focus {
   color: var(--text-strong);
 }
 
+.control-figures {
+  display: flex;
+  gap: 8px;
+  margin-left: auto;
+}
+
+.control-actions button.control-figure:disabled {
+  color: var(--faint);
+  cursor: default;
+}
+
+.figure-new {
+  margin-left: 8px;
+  padding: 0 6px;
+  border: var(--stroke) solid var(--waiting);
+  border-radius: var(--radius);
+  color: var(--waiting);
+}
+
+.row-badge.files {
+  border-color: var(--line-strong);
+  background: transparent;
+  font: inherit;
+  font-size: 11px;
+  color: var(--text);
+  cursor: pointer;
+}
+
+.row-badge.files:hover {
+  border-color: var(--active);
+}
+
 .control-row.is-need, .control-row.is-need:hover {
   border-color: var(--waiting);
 }

@@ -10,9 +10,12 @@ import {
   allView,
   answersInOneClick,
   canPrompt,
+  changedOf,
   choicesAnswer,
   contextLevel,
   extensionOf,
+  figureText,
+  groupNote,
   keptLabel,
   keptText,
   keptTime,
@@ -62,6 +65,9 @@ const MOST_DOTS = 12;
 // How often the detail of the session picked is read again, in ms.
 const DETAIL_EVERY = 3000;
 
+// How often the head of the project shown counts again, in ms: git is asked about each worktree.
+const PROJECT_EVERY = 30000;
+
 // How each step of the last screen starts, as Claude Code draws them.
 const STEP_MARKS = { prompt: "›", text: "●", tool: "●", result: "⎿", error: "⎿" };
 
@@ -74,9 +80,16 @@ export class Overview {
   // `onNewSession(project)` starts a session in a project (null: the form); `onAddProject()`.
   // `onPrompt(row, text)` types a prompt into a session, a promise that fails with what to say.
   // `onDetail(row)` reads the detail of a session (`session_detail`); `onOpenFile(file)` opens a
-  // file it kept with the system's app.
-  constructor(section, { onOpen, onAnswer, onType, onPrompt, onDetail, onOpenFile, onArtifacts, thumbnailOf, onNewSession, onAddProject }) {
+  // file it kept with the system's app. `onProjectFigures(tab)` reads what a project's head
+  // counts (`project_figures`); `onChanges(row)` and `onWorktrees(tab)` open their windows.
+  constructor(section, { onOpen, onAnswer, onType, onPrompt, onDetail, onOpenFile, onProjectFigures, onChanges, onWorktrees, onArtifacts, thumbnailOf, onNewSession, onAddProject }) {
     this.section = section;
+    this.onProjectFigures = onProjectFigures;
+    this.onChanges = onChanges;
+    this.onWorktrees = onWorktrees;
+    // What the head of the project shown counts: its tab id, then what `project_figures` gave.
+    this.projectFigures = null;
+    this.projectTimer = null;
     this.onOpen = onOpen;
     this.onAnswer = onAnswer;
     this.onType = onType;
@@ -248,6 +261,8 @@ export class Overview {
     if (tab?.directory) title.append(element("span", "control-directory", tab.directory));
     const actions = element("div", "control-actions");
     actions.append(button("primary", "+ new session", () => this.onNewSession(tab?.project ?? null)));
+    if (tab && this.projectFigures?.tabId !== tab.id) this.followProject(tab);
+    if (!tab && this.projectFigures) this.followProject(null);
     const targets = tab ? promptTargets(rows, tab.id, this.requests) : [];
     if (targets.length > 0) {
       actions.append(
@@ -258,6 +273,7 @@ export class Overview {
         }),
       );
     }
+    if (tab) actions.append(this.headFigures(tab, mine));
     head.append(title, this.summary(mine), actions);
     if (this.promptAll && targets.length > 0) head.append(this.promptAllBox(targets));
     const body = element("div", "control-body");
@@ -272,6 +288,61 @@ export class Overview {
     }
     const hint = element("footer", "overview-hint", "↑ ↓ picks a session · ⏎ types in its field · o opens it in a pane · a allows · d denies · n next request in any project · esc back");
     this.main.replaceChildren(head, body, hint);
+  }
+
+  // What a project's head counts is read on entering it, then every 30 s while it shows; leaving
+  // it for "all" stops that.
+  followProject(tab) {
+    clearInterval(this.projectTimer);
+    this.projectTimer = null;
+    if (!tab) {
+      this.projectFigures = null;
+      return;
+    }
+    this.projectFigures = { tabId: tab.id, data: null };
+    const read = async () => {
+      if (this.section.hidden || this.projectFigures?.tabId !== tab.id) return;
+      let data = null;
+      try {
+        data = await this.onProjectFigures(tab);
+      } catch {
+        // The head then shows no worktrees nor artifacts: nothing else depends on them.
+        data = null;
+      }
+      if (this.projectFigures?.tabId !== tab.id) return;
+      const changed = JSON.stringify(data) !== JSON.stringify(this.projectFigures.data);
+      this.projectFigures = { tabId: tab.id, data };
+      if (changed) this.redraw();
+    };
+    read();
+    this.projectTimer = setInterval(read, PROJECT_EVERY);
+  }
+
+  // "4 files changed", "3 worktrees", "12 artifacts [2 new]" on the right of the project's head;
+  // each opens its window, none when its count is 0.
+  headFigures(tab, rows) {
+    const box = element("div", "control-figures");
+    const { total, sessions } = changedOf(rows);
+    const changes = button("control-figure", figureText(total, "file changed", "files changed"), () => {
+      if (sessions.length === 1) this.onChanges(sessions[0]);
+    });
+    changes.title = sessions.length > 1 ? "changed by its sessions, each counted since it started: the N files of a row open its changes" : "changed by its sessions, each counted since it started";
+    changes.disabled = total === 0;
+    box.append(changes);
+    const data = this.projectFigures?.tabId === tab.id ? this.projectFigures.data : null;
+    if (data?.worktrees !== null && data?.worktrees !== undefined) {
+      const worktrees = button("control-figure", figureText(data.worktrees, "worktree", "worktrees"), () => this.onWorktrees(tab));
+      worktrees.disabled = data.worktrees === 0;
+      box.append(worktrees);
+    }
+    if (data) {
+      const fresh = rows.reduce((sum, row) => sum + this.artifactsOf(row.session_id).length, 0);
+      const artifacts = button("control-figure", figureText(data.artifacts, "artifact", "artifacts"), () => this.onArtifacts({ tab: tab.id }, tab.directory));
+      if (fresh > 0) artifacts.append(element("span", "figure-new", `${fresh} new`));
+      artifacts.disabled = data.artifacts === 0 && fresh === 0;
+      box.append(artifacts);
+    }
+    return box;
   }
 
   summary(rows) {
@@ -302,8 +373,11 @@ export class Overview {
     for (const group of groups) {
       const heading = element("h2", "control-group");
       heading.append(button("control-group-name", `${group.tab.name} ›`, () => this.show(group.tab.id)));
-      const fresh = group.rows.reduce((sum, row) => sum + this.artifactsOf(row.session_id).length, 0);
-      if (fresh > 0) heading.append(element("span", "control-group-note", fresh === 1 ? "1 new artifact" : `${fresh} new artifacts`));
+      // The whole project, those that need you included.
+      const mine = rows.filter((row) => row.tab === group.tab.id);
+      const fresh = mine.reduce((sum, row) => sum + this.artifactsOf(row.session_id).length, 0);
+      const note = groupNote(changedOf(mine).total, fresh);
+      if (note) heading.append(element("span", "control-group-note", note));
       body.append(heading, ...group.rows.map((row) => this.row(row, group.tab, false)));
     }
   }
@@ -335,6 +409,14 @@ export class Overview {
     const what = element("span", "row-doing");
     what.append(element("span", "row-doing-text", doing));
     if (row.unread > 0) what.append(element("span", "row-badge", `${row.unread} msg`));
+    if ((row.changed ?? 0) > 0 && row.short_id) {
+      what.append(
+        button("row-badge files", figureText(row.changed, "file", "files"), (event) => {
+          event.stopPropagation();
+          this.onChanges(row);
+        }),
+      );
+    }
     if ((this.requests.get(row.session_id) ?? []).some((request) => request.kind === "ask")) what.append(element("span", "row-badge keeps", "keeps working meanwhile"));
     line.append(element("span", "dot"), element("span", "row-name", row.label), what, this.kept(row, tab), this.context(row), element("span", "row-account", row.account));
     if (id === "paused") {

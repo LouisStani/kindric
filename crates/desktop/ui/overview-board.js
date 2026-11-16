@@ -109,6 +109,27 @@ export function sentText(results) {
   return [head, ...failed.map((result) => `${result.label}: ${result.error}`)].join(" · ");
 }
 
+// "1 worktree", "3 worktrees", "0 worktrees".
+export function figureText(count, singular, plural) {
+  return `${count} ${count === 1 ? singular : plural}`;
+}
+
+// The files the sessions of `rows` changed, each session counted since it started: the sum, and
+// the sessions that changed some. A file two sessions touched counts twice.
+export function changedOf(rows) {
+  const changing = rows.filter((row) => (row.changed ?? 0) > 0);
+  return { total: changing.reduce((sum, row) => sum + row.changed, 0), sessions: changing };
+}
+
+// What a project's group says on the right in "all": files changed and new artifacts, each only
+// when there are some.
+export function groupNote(changed, fresh) {
+  const parts = [];
+  if (changed > 0) parts.push(figureText(changed, "file changed", "files changed"));
+  if (fresh > 0) parts.push(figureText(fresh, "new artifact", "new artifacts"));
+  return parts.join(" · ");
+}
+
 // How long ago `seconds` (Unix) was, at `now` (Unix seconds): "now", "20 s ago", "4 min ago",
 // "2 h ago", "3 d ago".
 export function ageText(seconds, now) {
