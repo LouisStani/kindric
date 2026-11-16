@@ -202,10 +202,10 @@ pub struct Listed {
     pub modified: u64,
 }
 
-/// The files of one kind, unsorted first then by group, with their dates.
+/// The files of one kind, unsorted first then by group, the newest first in each, with their dates.
 pub fn entries(root: &Path, kind: Kind) -> Result<Vec<Listed>, String> {
     let folder = root.join(kind.folder());
-    list(root, kind)?
+    let mut listed = list(root, kind)?
         .into_iter()
         .map(|relative| {
             let modified = fs::metadata(folder.join(&relative))
@@ -215,9 +215,11 @@ pub fn entries(root: &Path, kind: Kind) -> Result<Vec<Listed>, String> {
                 .map_or(0, |since| since.as_secs());
             let name = relative.file_name().map_or_else(String::new, |name| name.to_string_lossy().into_owned());
             let group = relative.parent().filter(|parent| !parent.as_os_str().is_empty()).map(|parent| parent.to_string_lossy().into_owned());
-            Ok(Listed { group, name, modified })
+            Listed { group, name, modified }
         })
-        .collect()
+        .collect::<Vec<_>>();
+    listed.sort_by(|a, b| a.group.cmp(&b.group).then(b.modified.cmp(&a.modified)).then_with(|| a.name.cmp(&b.name)));
+    Ok(listed)
 }
 
 /// The groups of one kind, empty ones included, by name.
@@ -449,6 +451,26 @@ mod tests {
         assert_eq!(names(&root), [(None, "a.png".to_string()), (Some("logos".to_string()), "l.svg".to_string())]);
         assert!(entries(&root.join("store"), Kind::User).unwrap()[0].modified > 0);
         assert_eq!(groups(&root.join("store"), Kind::User).unwrap(), ["empty", "logos"]);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    fn dated(root: &Path, group: Option<&str>, name: &str, seconds: u64) {
+        let folder = root.join("store").join(Kind::User.folder());
+        let path = group.map_or_else(|| folder.join(name), |group| folder.join(group).join(name));
+        let file = OpenOptions::new().write(true).open(path).unwrap();
+        file.set_modified(UNIX_EPOCH + std::time::Duration::from_secs(seconds)).unwrap();
+    }
+
+    #[test]
+    fn the_newest_file_of_each_block_comes_first() {
+        let files = [(None, "old.png"), (None, "new.png"), (None, "same-b.png"), (None, "same-a.png"), (Some("logos"), "a.svg"), (Some("logos"), "b.svg")];
+        let root = store_with("newest", &files);
+        for (seconds, (group, name)) in [100, 300, 200, 200, 100, 200].into_iter().zip(files) {
+            dated(&root, group, name, seconds);
+        }
+        let unsorted = |name: &str| (None, name.to_string());
+        let logos = |name: &str| (Some("logos".to_string()), name.to_string());
+        assert_eq!(names(&root), [unsorted("new.png"), unsorted("same-a.png"), unsorted("same-b.png"), unsorted("old.png"), logos("b.svg"), logos("a.svg")]);
         fs::remove_dir_all(root).unwrap();
     }
 

@@ -841,7 +841,8 @@ struct ArtifactGroup {
     files: Vec<ArtifactFile>,
 }
 
-/// The unsorted files first, then every group by name, empty ones included.
+/// The unsorted files first, then every group by name, empty ones included; the newest file first
+/// in each.
 #[tauri::command(async)]
 fn artifacts_view(shared: State<'_, Shared>, project: Option<String>) -> Result<Vec<ArtifactGroup>, String> {
     let _span = shared.trace.span("artifacts_view");
