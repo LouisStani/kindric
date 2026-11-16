@@ -202,10 +202,11 @@ pub struct Listed {
     pub modified: u64,
 }
 
-/// The files of one kind, unsorted first then by group, with their dates.
+/// The files of one kind, unsorted first then by group, the latest kept first in each, with
+/// their dates. Files of the same date stay by name.
 pub fn entries(root: &Path, kind: Kind) -> Result<Vec<Listed>, String> {
     let folder = root.join(kind.folder());
-    list(root, kind)?
+    let mut listed = list(root, kind)?
         .into_iter()
         .map(|relative| {
             let modified = fs::metadata(folder.join(&relative))
@@ -217,7 +218,9 @@ pub fn entries(root: &Path, kind: Kind) -> Result<Vec<Listed>, String> {
             let group = relative.parent().filter(|parent| !parent.as_os_str().is_empty()).map(|parent| parent.to_string_lossy().into_owned());
             Ok(Listed { group, name, modified })
         })
-        .collect()
+        .collect::<Result<Vec<_>, String>>()?;
+    listed.sort_by(|a, b| a.group.cmp(&b.group).then(b.modified.cmp(&a.modified)));
+    Ok(listed)
 }
 
 /// The groups of one kind, empty ones included, by name.
@@ -449,6 +452,25 @@ mod tests {
         assert_eq!(names(&root), [(None, "a.png".to_string()), (Some("logos".to_string()), "l.svg".to_string())]);
         assert!(entries(&root.join("store"), Kind::User).unwrap()[0].modified > 0);
         assert_eq!(groups(&root.join("store"), Kind::User).unwrap(), ["empty", "logos"]);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    fn kept_at(root: &Path, group: Option<&str>, name: &str, seconds: u64) {
+        let path = file_path(&root.join("store"), Kind::User, group, name).unwrap();
+        let file = OpenOptions::new().write(true).open(path).unwrap();
+        file.set_modified(UNIX_EPOCH + std::time::Duration::from_secs(seconds)).unwrap();
+    }
+
+    #[test]
+    fn the_window_lists_the_latest_kept_first_in_each_block() {
+        let files = [(None, "a.png"), (None, "b.png"), (None, "c.png"), (Some("logos"), "l1.svg"), (Some("logos"), "l2.svg")];
+        let root = store_with("latest", &files);
+        for (seconds, (group, name)) in [3_000, 1_000, 2_000, 1_000, 5_000].into_iter().zip(files) {
+            kept_at(&root, group, name, seconds);
+        }
+        let expected = [(None, "a.png"), (None, "c.png"), (None, "b.png"), (Some("logos"), "l2.svg"), (Some("logos"), "l1.svg")];
+        let expected: Vec<(Option<String>, String)> = expected.into_iter().map(|(group, name)| (group.map(String::from), name.to_string())).collect();
+        assert_eq!(names(&root), expected);
         fs::remove_dir_all(root).unwrap();
     }
 
