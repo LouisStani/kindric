@@ -34,9 +34,9 @@ jobs:
         if: runner.os == 'Linux'
         with:
           node-version: 24
-      - name: Atlas tests (JavaScript, Linux)
+      - name: Atlas and overview tests (JavaScript, Linux)
         if: runner.os == 'Linux'
-        run: node --test crates/desktop/ui/atlas.test.js
+        run: node --test crates/desktop/ui/atlas.test.js crates/desktop/ui/overview.test.js
       - run: cargo build --locked --release -p kindric-accounts
       - name: kindric-accounts command-line tests (Linux)
         if: runner.os == 'Linux'
