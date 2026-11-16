@@ -318,7 +318,16 @@ impl<F: Fn() -> io::Result<Vec<SessionInfo>>> Server<F> {
             Kind::User => "the user, who finds it in kindric (Ctrl+Shift+A)",
             Kind::Claude => "you: list_artifacts gives it back",
         };
-        Ok(format!("Kept for {whose}: {}", kept.display()))
+        let done = format!("Kept for {whose}: {}", kept.display());
+        if kind == Kind::Claude {
+            return Ok(done);
+        }
+        // The file is kept either way: only kindric's mark of a new artifact can be missing.
+        let name = kept.file_name().map_or_else(String::new, |name| name.to_string_lossy().into_owned());
+        match artifacts::note_kept(&root, &self.identity.session_id, group, &name) {
+            Ok(()) => Ok(done),
+            Err(error) => Ok(format!("{done}\nkindric will not show it as new: {error}")),
+        }
     }
 
     fn list_artifacts(&self, arguments: &Value) -> Result<String, String> {
@@ -511,9 +520,12 @@ mod tests {
         assert_eq!(kept["isError"], false, "{}", text(&kept));
         let store = root.join("data").join("artifacts").join(artifacts::OTHER);
         assert!(store.join("user").join("slide.png").is_file());
+        let new: Vec<(String, String)> = artifacts::unseen(&store).into_iter().map(|kept| (kept.session_id, kept.name)).collect();
+        assert_eq!(new, [("bbbbbbbb-2222".to_string(), "slide.png".to_string())], "the session that kept it is noted");
         let absolute = root.join("work").join("make.py");
         let mine = call(&server, "keep_artifact", json!({ "path": absolute, "for": "claude", "group": "carrousel" }));
         assert_eq!(mine["isError"], false, "{}", text(&mine));
+        assert_eq!(artifacts::unseen(&store).len(), 1, "a file kept for Claude is not shown to the user");
         let listed = call(&server, "list_artifacts", json!({}));
         let first = format!("- {}", Path::new("carrousel").join("make.py").display());
         assert!(text(&listed).starts_with(&first), "{}", text(&listed));

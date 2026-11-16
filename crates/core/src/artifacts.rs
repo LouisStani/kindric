@@ -5,15 +5,19 @@
 use std::fs::{self, OpenOptions};
 use std::io::{ErrorKind, Write};
 use std::path::{Component, Path, PathBuf};
-use std::time::UNIX_EPOCH;
+use std::time::{SystemTime, UNIX_EPOCH};
 
-use serde::Deserialize;
+use kindric_accounts::files::write_atomic;
+use serde::{Deserialize, Serialize};
 
 /// The folder of the sessions of no project.
 pub const OTHER: &str = "other";
 const LONGEST_GROUP: usize = 64;
 /// `name-2.png` … at most this far before giving up.
 const MOST_COPIES: u32 = 10_000;
+/// Beside `user/` and `claude/`: the files sessions kept for the user and not yet seen, one JSON
+/// line each.
+const KEPT: &str = "kept.jsonl";
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Kind {
@@ -315,6 +319,75 @@ pub fn delete(root: &Path, kind: Kind, group: Option<&str>, name: &str) -> Resul
     fs::remove_file(&path).map_err(|error| format!("cannot delete {name}: {error}"))
 }
 
+/// A file a session kept for the user, as `kept.jsonl` notes it.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Kept {
+    pub session_id: String,
+    /// None for an unsorted file.
+    pub group: Option<String>,
+    pub name: String,
+    /// Milliseconds since 1970.
+    pub at: u64,
+}
+
+fn now_millis() -> u64 {
+    SystemTime::now().duration_since(UNIX_EPOCH).map_or(0, |since| u64::try_from(since.as_millis()).unwrap_or(u64::MAX))
+}
+
+/// Notes that `session_id` kept the user's file `name` of `group`: it is new until `mark_seen`.
+pub fn note_kept(root: &Path, session_id: &str, group: Option<&str>, name: &str) -> Result<(), String> {
+    let kept = Kept { session_id: session_id.to_string(), group: group.map(String::from), name: name.to_string(), at: now_millis() };
+    let mut line = serde_json::to_string(&kept).map_err(|error| format!("cannot note {name}: {error}"))?;
+    line.push('\n');
+    fs::create_dir_all(root).map_err(|error| format!("cannot create {}: {error}", root.display()))?;
+    let path = root.join(KEPT);
+    // One write of the whole line: sessions keeping files at the same time never mix their lines.
+    OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&path)
+        .and_then(|mut file| file.write_all(line.as_bytes()))
+        .map_err(|error| format!("cannot write {}: {error}", path.display()))
+}
+
+/// The notes of `kept.jsonl`, unreadable lines left out; none when it does not exist.
+fn read_kept(root: &Path) -> Vec<Kept> {
+    let Ok(text) = fs::read_to_string(root.join(KEPT)) else {
+        return Vec::new();
+    };
+    text.lines().filter_map(|line| serde_json::from_str(line).ok()).collect()
+}
+
+/// The files kept for the user since the window last opened and still where they were kept,
+/// each once (its latest note), oldest first.
+pub fn unseen(root: &Path) -> Vec<Kept> {
+    let mut fresh: Vec<Kept> = Vec::new();
+    for kept in read_kept(root) {
+        fresh.retain(|other| (&other.group, &other.name) != (&kept.group, &kept.name));
+        fresh.push(kept);
+    }
+    fresh.retain(|kept| file_path(root, Kind::User, kept.group.as_deref(), &kept.name).is_ok());
+    fresh
+}
+
+/// The user opened the artifacts window: every file kept until now is no longer new, its note
+/// goes. A file kept while `kept.jsonl` is written again (a few milliseconds) loses its mark,
+/// never the file itself.
+pub fn mark_seen(root: &Path) -> Result<(), String> {
+    let notes = read_kept(root);
+    if notes.is_empty() {
+        return Ok(());
+    }
+    let now = now_millis();
+    let mut left = String::new();
+    for kept in notes.iter().filter(|kept| kept.at > now) {
+        left.push_str(&serde_json::to_string(kept).map_err(|error| format!("cannot note {}: {error}", kept.name))?);
+        left.push('\n');
+    }
+    let path = root.join(KEPT);
+    write_atomic(&path, &left).map_err(|error| format!("cannot write {}: {error}", path.display()))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -522,5 +595,63 @@ mod tests {
         assert_eq!(Kind::parse("user"), Ok(Kind::User));
         assert_eq!(Kind::parse(" claude "), Ok(Kind::Claude));
         assert!(Kind::parse("llm").is_err());
+    }
+
+    fn unseen_names(store: &Path) -> Vec<(String, Option<String>, String)> {
+        unseen(store).into_iter().map(|kept| (kept.session_id, kept.group, kept.name)).collect()
+    }
+
+    fn owned(session: &str, group: Option<&str>, name: &str) -> (String, Option<String>, String) {
+        (session.to_string(), group.map(String::from), name.to_string())
+    }
+
+    #[test]
+    fn a_kept_file_is_new_until_the_window_opens() {
+        let root = store_with("unseen", &[(None, "a.png"), (Some("logos"), "l.svg")]);
+        let store = root.join("store");
+        note_kept(&store, "s1", None, "a.png").unwrap();
+        note_kept(&store, "s2", Some("logos"), "l.svg").unwrap();
+        assert_eq!(unseen_names(&store), [owned("s1", None, "a.png"), owned("s2", Some("logos"), "l.svg")]);
+        mark_seen(&store).unwrap();
+        assert!(unseen(&store).is_empty());
+        assert_eq!(fs::read_to_string(store.join(KEPT)).unwrap(), "", "the notes seen are dropped");
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn opening_the_window_keeps_a_note_written_after_it_and_skips_broken_lines() {
+        let root = store_with("after", &[(None, "old.png"), (None, "new.png")]);
+        let store = root.join("store");
+        let later = Kept { session_id: "s1".into(), group: None, name: "new.png".into(), at: u64::MAX };
+        fs::write(store.join(KEPT), format!("not json\n{}\n", serde_json::to_string(&later).unwrap())).unwrap();
+        note_kept(&store, "s1", None, "old.png").unwrap();
+        assert_eq!(unseen_names(&store), [owned("s1", None, "new.png"), owned("s1", None, "old.png")], "the broken line is left out");
+        mark_seen(&store).unwrap();
+        assert_eq!(unseen_names(&store), [owned("s1", None, "new.png")]);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn a_file_kept_twice_is_new_once_and_a_file_gone_is_not_new() {
+        let root = store_with("twice", &[(None, "a.png"), (None, "b.png"), (None, "c.png")]);
+        let store = root.join("store");
+        note_kept(&store, "s1", None, "a.png").unwrap();
+        note_kept(&store, "s1", None, "b.png").unwrap();
+        note_kept(&store, "s1", None, "c.png").unwrap();
+        note_kept(&store, "s2", None, "a.png").unwrap();
+        delete(&store, Kind::User, None, "b.png").unwrap();
+        move_to(&store, Kind::User, None, "c.png", Some("logos")).unwrap();
+        assert_eq!(unseen_names(&store), [owned("s2", None, "a.png")]);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn a_project_without_artifacts_has_nothing_new_and_gets_no_folder() {
+        let root = scratch("none");
+        let store = root.join("store");
+        assert!(unseen(&store).is_empty());
+        mark_seen(&store).unwrap();
+        assert!(!store.exists());
+        fs::remove_dir_all(root).unwrap();
     }
 }
