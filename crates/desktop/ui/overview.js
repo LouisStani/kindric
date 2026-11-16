@@ -8,6 +8,7 @@ import {
   accountCards,
   allView,
   answersInOneClick,
+  canPrompt,
   choicesAnswer,
   contextLevel,
   keptLabel,
@@ -17,7 +18,9 @@ import {
   permissionText,
   projectView,
   projectsOf,
+  promptTargets,
   requestsBySession,
+  sentText,
   standing,
   summaryOf,
 } from "./overview-board.js";
@@ -60,11 +63,13 @@ export class Overview {
   // `onArtifacts(row, project)` opens the artifacts window of a project (a folder, null for
   // "other"); `thumbnailOf(artifact)` gives the address of an image kept, or null.
   // `onNewSession(project)` starts a session in a project (null: the form); `onAddProject()`.
-  constructor(section, { onOpen, onAnswer, onType, onArtifacts, thumbnailOf, onNewSession, onAddProject }) {
+  // `onPrompt(row, text)` types a prompt into a session, a promise that fails with what to say.
+  constructor(section, { onOpen, onAnswer, onType, onPrompt, onArtifacts, thumbnailOf, onNewSession, onAddProject }) {
     this.section = section;
     this.onOpen = onOpen;
     this.onAnswer = onAnswer;
     this.onType = onType;
+    this.onPrompt = onPrompt;
     this.onArtifacts = onArtifacts;
     this.thumbnailOf = thumbnailOf;
     this.onNewSession = onNewSession;
@@ -94,6 +99,12 @@ export class Overview {
     this.chosen = new Map();
     this.others = new Set();
     this.sending = new Map();
+    // Prompts, apart from the requests whose keys go with them: session id (or "all") → the
+    // words being typed, and → what sending said ("sending…", "sent", or the error).
+    this.prompts = new Map();
+    this.promptNotes = new Map();
+    // "prompt all" of the project shown: null when closed, else whether it asks to confirm.
+    this.promptAll = null;
     this.last = null;
   }
 
@@ -165,6 +176,8 @@ export class Overview {
   show(shown) {
     this.shown = shown;
     this.selected = null;
+    this.promptAll = null;
+    this.promptNotes.delete("all");
     this.redraw();
     this.main.scrollTop = 0;
     this.section.focus();
@@ -212,8 +225,19 @@ export class Overview {
     title.append(element("h1", "", tab ? tab.name : "all projects"));
     if (tab?.directory) title.append(element("span", "control-directory", tab.directory));
     const actions = element("div", "control-actions");
-    actions.append(button("primary", "+ new session", () => this.onNewSession(tab?.directory ? tab : null)));
+    actions.append(button("primary", "+ new session", () => this.onNewSession(tab?.project ?? null)));
+    const targets = tab ? promptTargets(rows, tab.id, this.requests) : [];
+    if (targets.length > 0) {
+      actions.append(
+        button(this.promptAll ? "on" : "", `prompt all ${targets.length}`, () => {
+          this.promptAll = this.promptAll ? null : { confirm: false };
+          this.redraw();
+          this.section.querySelector('[data-key="prompt/all"]')?.focus();
+        }),
+      );
+    }
     head.append(title, this.summary(mine), actions);
+    if (this.promptAll && targets.length > 0) head.append(this.promptAllBox(targets));
     const body = element("div", "control-body");
     if (!view.loaded) {
       body.append(element("p", "overview-note", "loading…"));
@@ -224,7 +248,7 @@ export class Overview {
     } else {
       this.allBody(body, rows, tabs);
     }
-    const hint = element("footer", "overview-hint", "↑ ↓ picks a session · ⏎ opens it · a allows · d denies · n next request in any project · esc all projects");
+    const hint = element("footer", "overview-hint", "↑ ↓ picks a session · ⏎ types in its field · o opens it in a pane · a allows · d denies · n next request in any project · esc back");
     this.main.replaceChildren(head, body, hint);
   }
 
@@ -301,12 +325,91 @@ export class Overview {
     }
     article.append(line);
     for (const request of this.requests.get(row.session_id) ?? []) article.append(this.request(row, request));
-    // A session shown in a terminal outside kindric cannot be opened here.
-    if (row.short_id) {
-      article.classList.add("opens");
-      article.onclick = () => this.onOpen(row);
-    }
+    if (row.session_id === this.selected && canPrompt(row)) article.append(this.promptBox(row));
+    // A click picks the row, which opens its field.
+    article.onclick = () => {
+      if (this.selected !== row.session_id) this.pick(row.session_id, false);
+    };
     return article;
+  }
+
+  // The field of the row picked: what is typed goes to the session as the user's message.
+  promptBox(row) {
+    const box = element("div", "row-prompt");
+    box.onclick = (event) => event.stopPropagation();
+    const key = row.session_id;
+    const send = () => this.sendPrompt(row);
+    const actions = element("div", "request-actions answer");
+    actions.append(
+      this.field(`prompt/${key}`, "› prompt…", () => this.promptNotes.delete(key), send, this.prompts, key),
+      button("primary", "send ⏎", send),
+      button("", "open in a pane", () => this.onOpen(row)),
+    );
+    const note = this.promptNotes.get(key);
+    const said = note ?? "typed into the session while it works · it reads it at the end of its step";
+    box.append(actions, element("p", note && note !== "sending…" && note !== "sent" ? "request-note error" : "request-note", said));
+    return box;
+  }
+
+  async sendPrompt(row) {
+    const key = row.session_id;
+    const text = (this.prompts.get(key) ?? "").trim();
+    if (!text || this.promptNotes.get(key) === "sending…") return;
+    this.promptNotes.set(key, "sending…");
+    this.redraw();
+    try {
+      await this.onPrompt(row, text);
+      this.prompts.delete(key);
+      this.promptNotes.set(key, "sent");
+    } catch (error) {
+      this.promptNotes.set(key, `${error}`);
+    }
+    this.redraw();
+  }
+
+  // "prompt all": one field for every session of the project a prompt reaches. The first send
+  // asks to confirm, the second types it into each, one after the other.
+  promptAllBox(targets) {
+    const box = element("div", "prompt-all");
+    const send = () => this.sendToAll(targets);
+    const actions = element("div", "request-actions answer");
+    const label = this.promptAll.confirm ? `send to ${targets.length} sessions?` : "send ⏎";
+    actions.append(
+      this.field("prompt/all", `› prompt for ${targets.length} sessions…`, () => {
+        this.promptAll.confirm = false;
+        this.promptNotes.delete("all");
+      }, send, this.prompts, "all"),
+      button("primary", label, send),
+    );
+    box.append(actions);
+    const note = this.promptNotes.get("all");
+    if (note) box.append(element("p", note.includes(": ") ? "request-note error" : "request-note", note));
+    return box;
+  }
+
+  async sendToAll(targets) {
+    const text = (this.prompts.get("all") ?? "").trim();
+    if (!text || this.promptNotes.get("all") === "sending…") return;
+    if (!this.promptAll.confirm) {
+      this.promptAll.confirm = true;
+      this.redraw();
+      return;
+    }
+    this.promptNotes.set("all", "sending…");
+    this.redraw();
+    const results = [];
+    for (const row of targets) {
+      try {
+        await this.onPrompt(row, text);
+        results.push({ label: row.label, error: null });
+      } catch (error) {
+        results.push({ label: row.label, error: `${error}` });
+      }
+    }
+    this.prompts.delete("all");
+    if (this.promptAll) this.promptAll.confirm = false;
+    this.promptNotes.set("all", sentText(results));
+    this.redraw();
   }
 
   // "3 kept · 2 new": a click opens the artifacts window of its project; the latest new image
@@ -349,8 +452,9 @@ export class Overview {
     return box;
   }
 
-  // ↑ ↓ pick a row, Enter opens it, a / d answer its permission, n goes to the next session that
-  // asks, Escape goes back to every project. Fields keep their keys.
+  // ↑ ↓ pick a row, Enter goes into its field, o opens it in a pane, a / d answer its permission,
+  // n goes to the next session that asks, Escape goes back to every project. Fields keep their
+  // keys; Escape in a field comes back here.
   onKey(event) {
     if (event.ctrlKey || event.altKey || event.metaKey) return;
     if (event.target instanceof HTMLInputElement || event.target instanceof HTMLTextAreaElement) return;
@@ -366,9 +470,15 @@ export class Overview {
         this.pick(ids[at < 0 ? (step > 0 ? 0 : ids.length - 1) : Math.max(0, Math.min(ids.length - 1, at + step))]);
         break;
       }
-      case "Enter":
-        if (row()?.short_id) this.onOpen(row());
-        else return;
+      case "Enter": {
+        const field = this.selected && this.section.querySelector(`[data-key="${CSS.escape(`prompt/${this.selected}`)}"]`);
+        if (!field) return;
+        field.focus();
+        break;
+      }
+      case "o":
+        if (!row()?.short_id) return;
+        this.onOpen(row());
         break;
       case "a":
       case "d": {
@@ -406,11 +516,12 @@ export class Overview {
       .map((row) => row.session_id);
   }
 
-  pick(sessionId) {
+  // `scroll`: the arrows bring the row into view; a click leaves the page where it is.
+  pick(sessionId, scroll = true) {
     this.selected = sessionId;
     this.redraw();
     const picked = this.main.querySelector(`[data-session="${CSS.escape(sessionId)}"]`);
-    picked?.scrollIntoView({ block: "nearest" });
+    if (scroll) picked?.scrollIntoView({ block: "nearest" });
     this.section.focus();
   }
 
@@ -507,21 +618,26 @@ export class Overview {
     block.append(actions);
   }
 
-  // A text field whose words survive the renders; Enter sends.
-  field(key, placeholder, onText, onEnter) {
+  // A text field whose words survive the renders, kept in `drafts` under `draft`; Enter sends,
+  // Escape gives the keyboard back to the page.
+  field(key, placeholder, onText, onEnter, drafts = this.drafts, draft = key) {
     const input = element("input", "request-field");
     input.dataset.key = key;
     input.placeholder = placeholder;
     input.spellcheck = false;
-    input.value = this.drafts.get(key) ?? "";
+    input.value = drafts.get(draft) ?? "";
     input.oninput = () => {
-      this.drafts.set(key, input.value);
+      drafts.set(draft, input.value);
       onText(input.value);
     };
     input.onkeydown = (event) => {
       if (event.key === "Enter") {
         event.preventDefault();
         onEnter();
+      } else if (event.key === "Escape") {
+        event.preventDefault();
+        event.stopPropagation();
+        this.section.focus();
       }
     };
     return input;

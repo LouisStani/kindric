@@ -1188,13 +1188,32 @@ async fn type_answer(
     let root = overview_root()?;
     let typed = move || {
         let words = overview::typed_answer(&root, &session_id, &id, &text)?;
-        let key = SessionKey { account: account.clone(), short_id: short_id.clone() };
-        let _claim = claim::claim(&claims, &key)?;
-        typing::type_into(&attach_command(&account, &short_id, implicit), &words, &typing::TIMINGS)
-            .map_err(|error| format!("cannot type into {short_id}: {error}"))?;
+        type_as_user(&claims, &account, &short_id, implicit, &words)?;
         overview::settle(&root, &session_id, &id).map_err(|error| format!("cannot remove the request: {error}"))
     };
     tauri::async_runtime::spawn_blocking(typed).await.map_err(|error| error.to_string())?
+}
+
+/// Types `words` into a session no pane shows, then Enter, holding its claim meanwhile as a pane
+/// does. Blocks for a few seconds.
+fn type_as_user(claims: &Path, account: &str, short_id: &str, implicit: bool, words: &str) -> Result<(), String> {
+    let key = SessionKey { account: account.to_string(), short_id: short_id.to_string() };
+    let _claim = claim::claim(claims, &key)?;
+    typing::type_into(&attach_command(account, short_id, implicit), words, &typing::TIMINGS).map_err(|error| format!("cannot type into {short_id}: {error}"))
+}
+
+/// Types a prompt from the control center into a session no pane shows, as the user's message.
+/// Claude Code reads it even in the middle of a turn.
+#[tauri::command]
+async fn type_prompt(shared: State<'_, Shared>, account: String, short_id: String, text: String) -> Result<(), String> {
+    let _span = shared.trace.span("type_prompt");
+    let text = text.trim().to_string();
+    if text.is_empty() {
+        return Err("nothing to send".into());
+    }
+    let implicit = implicit_default(&account)?;
+    let claims = shared.claims_dir.clone()?;
+    tauri::async_runtime::spawn_blocking(move || type_as_user(&claims, &account, &short_id, implicit, &text)).await.map_err(|error| error.to_string())?
 }
 
 /// Counts the files the sessions of `to_count` changed, outside the lock of the list (git takes
@@ -1527,6 +1546,7 @@ fn main() -> ExitCode {
             answer_words,
             settle_request,
             type_answer,
+            type_prompt,
             project_worktrees,
             remove_worktree,
             add_account,

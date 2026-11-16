@@ -1924,12 +1924,27 @@ input:focus, select:focus {
   outline: none;
 }
 
-.control-row.opens {
+.control-row {
   cursor: pointer;
 }
 
-.control-row.opens:hover {
+.control-row:hover {
   border-color: var(--line-strong);
+}
+
+.row-prompt, .prompt-all {
+  display: grid;
+  gap: 6px;
+  cursor: default;
+}
+
+.prompt-all {
+  grid-column: 1 / -1;
+}
+
+.control-actions button.on {
+  border-color: var(--waiting);
+  color: var(--text-strong);
 }
 
 .control-row.is-need, .control-row.is-need:hover {
@@ -2152,16 +2167,18 @@ input:focus, select:focus {
   flex-wrap: nowrap;
 }
 
-.request button {
+.request button, .row-prompt button, .prompt-all button {
   padding: 4px 10px;
   border: var(--stroke) solid var(--line-strong);
   border-radius: var(--radius);
   background: transparent;
+  font: inherit;
+  white-space: nowrap;
   color: var(--text);
   cursor: pointer;
 }
 
-.request button.primary {
+.request button.primary, .row-prompt button.primary, .prompt-all button.primary {
   border-color: var(--active);
   background: var(--active);
   color: var(--on-active);

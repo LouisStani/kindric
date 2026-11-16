@@ -327,6 +327,17 @@ async function typeAnswer(row, request, text) {
   await invoke("settle_request", { sessionId: request.session_id, id: request.id });
 }
 
+// A prompt from the control center, typed as the user's message: in the pane of this window that
+// shows the session, else by kindric without a pane (`type_prompt`).
+async function typePrompt(row, text) {
+  const view = panes.viewShowing({ account: row.account, short_id: row.short_id });
+  if (!view) {
+    await invoke("type_prompt", { account: row.account, shortId: row.short_id, text });
+    return;
+  }
+  if (!view.say(text)) throw new Error("the pane of this session has ended: open it again");
+}
+
 // What the sessions ask, read every second: a hook writes a request at any time. The count in
 // the bar follows on every tab, the cards on the overview.
 async function readRequests() {
@@ -1251,6 +1262,7 @@ const overview = new Overview(document.getElementById("overview"), {
   onOpen: openSession,
   onAnswer: (request, answer) => invoke("answer_request", { sessionId: request.session_id, id: request.id, answer }),
   onType: typeAnswer,
+  onPrompt: typePrompt,
   onArtifacts: openArtifactsOf,
   thumbnailOf,
   onNewSession: (project) => openNewSession(project),
