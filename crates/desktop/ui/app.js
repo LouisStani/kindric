@@ -1,5 +1,5 @@
 import { DirectoryField } from "./directories.js";
-import { Panes, sameSession } from "./panes.js";
+import { imageType, Panes, sameSession } from "./panes.js";
 import { applyTheme, nextProjectTheme, nextTheme, THEMES } from "./themes.js";
 import { mark, note, startTrace, traced } from "./trace.js";
 import { askTrust } from "./helper.js";
@@ -11,6 +11,8 @@ import { WorktreesWindow } from "./worktrees.js";
 import { SettingsWindow } from "./settings.js";
 import { AtlasWindow } from "./atlas.js";
 import { expiresWithin, inHowLong, shortly, timeLeft } from "./expiry.js";
+import { Overview } from "./overview.js";
+import { summaryOf } from "./overview-board.js";
 
 const { invoke } = window.__TAURI__.core;
 const { listen } = window.__TAURI__.event;
@@ -78,7 +80,7 @@ function inBar(session) {
 // The sessions of the bar: those of the visible tab, its project's or, in "other", those of
 // no project. Rust sorts them, most urgent first.
 function barSessions() {
-  if (panes.state === null) return [];
+  if (panes.state === null || panes.state.overview) return [];
   const tab = panes.activeTab();
   return lastView.sessions.filter((session) => inBar(session) && session.tab === tab.id);
 }
@@ -125,6 +127,16 @@ function chip(session, index) {
     badge.addEventListener("click", (event) => {
       event.stopPropagation();
       openMessages(session);
+    });
+    item.append(badge);
+  }
+  const kept = overview.artifactsOf(session.session_id);
+  if (kept.length > 0) {
+    const badge = element("span", "badge kept", `◆ ${kept.length}`);
+    badge.title = `kept for you: ${kept.map((artifact) => artifact.name).join(", ")}`;
+    badge.addEventListener("click", (event) => {
+      event.stopPropagation();
+      openArtifactsOf(session, kept[0].project);
     });
     item.append(badge);
   }
@@ -189,7 +201,10 @@ function renderChips(view) {
   const chips = document.getElementById("chips");
   hideTip();
   const sessions = barSessions();
-  if (!view.loaded) {
+  if (panes.state?.overview) {
+    // The overview shows every session itself.
+    chips.replaceChildren();
+  } else if (!view.loaded) {
     chips.replaceChildren(element("li", "chip-note", "loading…"));
   } else if (sessions.length === 0) {
     chips.replaceChildren(element("li", "chip-note", `no sessions here · ${keyText("new-session")} starts one`));
@@ -208,6 +223,7 @@ function render(view) {
   renderStatus();
   panes.renderBar();
   panes.decorate();
+  renderOverview();
   mark("render sessions", start);
   restoreTab();
   if (document.getElementById("messages").open) loadMessages();
@@ -262,14 +278,100 @@ async function addMessagesServer() {
   return null;
 }
 
-// The welcome screen covers the panes while something is left to do and no pane of the
-// visible tab shows a session.
+// The sessions the bar would show, in every tab, and the tabs as the overview names them.
+function renderOverview() {
+  if (!panes.state?.overview) return;
+  const tabs = panes.state.tabs.map((tab) => ({ id: tab.id, name: tab.project ? tab.project.name : "other" }));
+  overview.render(lastView, lastView.sessions.filter(inBar), tabs, keyText("new-session"));
+}
+
+// The answer to a `kindric ask` of `row`, typed as the user's message with its question: in the
+// pane of this window that shows the session, else by kindric without a pane (`type_answer`).
+async function typeAnswer(row, request, text) {
+  const view = panes.viewShowing({ account: row.account, short_id: row.short_id });
+  if (!view) {
+    await invoke("type_answer", { account: row.account, shortId: row.short_id, sessionId: request.session_id, id: request.id, text });
+    return;
+  }
+  const words = await invoke("answer_words", { sessionId: request.session_id, id: request.id, text });
+  if (!view.say(words)) throw new Error("the pane of this session has ended: open it again");
+  await invoke("settle_request", { sessionId: request.session_id, id: request.id });
+}
+
+// What the sessions ask, read every second: a hook writes a request at any time. The count in
+// the bar follows on every tab, the cards on the overview.
+async function readRequests() {
+  try {
+    if (!overview.setRequests(await invoke("overview_requests"))) return;
+  } catch (error) {
+    setStatus(`requests of the overview not read: ${error}`);
+    return;
+  }
+  panes.renderBar();
+  renderOverview();
+}
+
+// The files sessions kept for the user and not yet seen (346), read every second too: a session
+// keeps one at any time. Its chip and its card show them.
+async function readNewArtifacts() {
+  let artifacts;
+  try {
+    artifacts = await invoke("new_artifacts");
+  } catch (error) {
+    setStatus(`new artifacts not read: ${error}`);
+    return;
+  }
+  if (!overview.setArtifacts(artifacts)) return;
+  forgetThumbnails(artifacts);
+  renderChips(lastView);
+  renderOverview();
+}
+
+// Thumbnails of the overview's cards, by "project/group/name": read once while the file is new.
+const thumbnails = new Map();
+
+function thumbnailKey(artifact) {
+  return `${artifact.project ?? ""}/${artifact.group ?? ""}/${artifact.name}`;
+}
+
+function thumbnailOf(artifact) {
+  const key = thumbnailKey(artifact);
+  if (!thumbnails.has(key)) {
+    const args = { project: artifact.project, group: artifact.group, name: artifact.name };
+    thumbnails.set(
+      key,
+      invoke("artifact_bytes", args).then(
+        (bytes) => URL.createObjectURL(new Blob([new Uint8Array(bytes)], { type: imageType(artifact.name) })),
+        () => null,
+      ),
+    );
+  }
+  return thumbnails.get(key);
+}
+
+function forgetThumbnails(artifacts) {
+  const still = new Set(artifacts.map(thumbnailKey));
+  for (const [key, url] of thumbnails) {
+    if (still.has(key)) continue;
+    thumbnails.delete(key);
+    url.then((address) => address && URL.revokeObjectURL(address));
+  }
+}
+
+// The artifacts window of `project` (a folder, null for "other"), from a session's chip or card.
+function openArtifactsOf(session, project) {
+  return artifactsWindow.open(project, panes.projectName(session.tab) ?? "other");
+}
+
+// The welcome screen covers the panes, or the overview, while something is left to do and no
+// pane of the visible tab shows a session.
 function placeWelcome() {
   const tab = panes.state === null ? null : panes.activeTab();
+  const onOverview = panes.state?.overview ?? false;
   const empty = tab !== null && panes.tabEmpty(tab);
-  const welcoming = hasToDo(welcome.lines) && empty;
+  const welcoming = hasToDo(welcome.lines) && (empty || onOverview);
   document.getElementById("welcome").hidden = !welcoming;
-  placeTabLaunch(tab, empty && !welcoming);
+  placeTabLaunch(tab, empty && !welcoming && !onOverview);
 }
 
 // A project's tab with no session shows the list of accounts over its panes, once the sessions
@@ -306,7 +408,7 @@ const restoring = new Set();
 // is known, if it is still there and still belongs to this tab; otherwise the tab stops
 // waiting for it.
 async function restoreTab() {
-  const tab = panes.state === null ? null : panes.activeTab();
+  const tab = panes.state === null || panes.state.overview ? null : panes.activeTab();
   if (!tab || !tab.restore || !lastView.loaded || restoring.has(tab.id) || !panes.tabEmpty(tab)) return;
   restoring.add(tab.id);
   try {
@@ -975,6 +1077,7 @@ const SHORTCUTS = [
   { group: "tabs", id: "previous-tab", keys: "ctrl+shift+h", help: "previous tab", run: () => panes.tabStep(-1) },
   { group: "tabs", id: "next-tab", keys: "ctrl+shift+l", help: "next tab", run: () => panes.tabStep(1) },
   { group: "tabs", id: "tab-n", keys: "ctrl+shift+#", help: "tab n", run: (digit) => panes.goTab(digit) },
+  { group: "tabs", id: "overview", keys: "ctrl+shift+0", help: "overview: every session, what needs you", run: () => panes.goTab(0) },
   { group: "app", id: "artifacts", keys: "ctrl+shift+a", help: "artifacts of this project", run: openArtifacts },
   { group: "app", id: "worktrees", keys: "ctrl+shift+b", help: "worktrees of this project: merged or not, remove", run: openWorktrees },
   { group: "app", id: "settings", keys: "ctrl+comma", help: "settings: accounts, memory, shortcuts", run: openSettings },
@@ -1115,7 +1218,15 @@ const tabLaunch = new AccountList(document.getElementById("quick"), {
   onTrust: askTrust,
 });
 
-const panes = new Panes(document.getElementById("panes"), document.getElementById("tabs"), {
+const overview = new Overview(document.getElementById("overview"), {
+  onOpen: openSession,
+  onAnswer: (request, answer) => invoke("answer_request", { sessionId: request.session_id, id: request.id, answer }),
+  onType: typeAnswer,
+  onArtifacts: openArtifactsOf,
+  thumbnailOf,
+});
+
+const panes = new Panes(document.getElementById("panes"), document.getElementById("tabs"), document.getElementById("overview"), {
   keyFilter: (event) => shortcutFor(event) === null,
   onChange: () => {
     render(lastView);
@@ -1125,6 +1236,7 @@ const panes = new Panes(document.getElementById("panes"), document.getElementByI
   titleOf,
   isFinished,
   markOf,
+  needsOf: () => summaryOf(lastView.sessions.filter(inBar), overview.requests).need,
   progressOf: (key) => rowOf(key)?.progress ?? null,
   changedOf: (key) => rowOf(key)?.changed ?? null,
   awayOf: (key) => {
@@ -1159,6 +1271,8 @@ const projectDirectory = directoryField("project-form");
 document.addEventListener("keydown", onKey);
 window.addEventListener("focus", checkOnReturn);
 new ResizeObserver(fitChips).observe(document.getElementById("chips"));
+// How many columns fit depends on the width.
+new ResizeObserver(renderOverview).observe(document.getElementById("overview"));
 document.getElementById("new-form").addEventListener("submit", startNewSession);
 document.getElementById("project-form").addEventListener("submit", addProject);
 document.getElementById("rename-form").addEventListener("submit", renameSession);
@@ -1221,6 +1335,9 @@ await listen("tauri://drag-drop", ({ payload }) => {
 });
 await panes.load();
 render(await invoke("current_list"));
+setInterval(readRequests, 1000);
+setInterval(readNewArtifacts, 1000);
+readNewArtifacts();
 readAccountStatuses();
 // Since the page started loading.
 mark("page ready", 0);

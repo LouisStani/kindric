@@ -12,6 +12,8 @@ pub mod launcher;
 pub mod mailbox;
 pub mod mcp;
 pub mod origins;
+pub mod overview;
+pub mod permission;
 pub mod progress;
 pub mod refresher;
 pub mod search;

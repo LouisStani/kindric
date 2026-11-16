@@ -298,6 +298,13 @@ ol, ul {
   background: var(--waiting);
 }
 
+/* Files the session kept for the user, not yet seen (346). */
+.badge.kept {
+  cursor: pointer;
+  color: var(--on-active);
+  background: var(--active);
+}
+
 .done {
   flex-shrink: 0;
   font-weight: 700;
@@ -749,7 +756,7 @@ ol, ul {
   left: 0;
   right: 0;
   z-index: 10;
-  height: 50%;
+  height: 35%;
   box-sizing: border-box;
   display: flex;
   gap: 8px;
@@ -1050,6 +1057,16 @@ input:focus, select:focus {
 .artifact-date {
   font-size: 11px;
   color: var(--faint);
+}
+
+.artifact-new {
+  flex: none;
+  padding: 0 6px;
+  border-radius: 9px;
+  font-size: 11px;
+  font-weight: 700;
+  color: var(--on-active);
+  background: var(--active);
 }
 
 .artifact-view img {
@@ -1581,3 +1598,325 @@ input:focus, select:focus {
   background: var(--raised);
 }
 .atlas-search[hidden] { display: none; }
+
+/* The overview (page B): number 0 in the bar, shown instead of the panes. */
+#panes[hidden], #overview[hidden] {
+  display: none;
+}
+
+#overview {
+  flex: 1;
+  min-width: 0;
+  overflow: auto;
+  padding: 18px 20px;
+  outline: none;
+}
+
+.overview-summary {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 22px;
+  margin-bottom: 22px;
+}
+
+.overview-count {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--muted);
+}
+
+.overview-count strong {
+  font-size: 18px;
+  color: var(--text-strong);
+}
+
+.overview-hint {
+  margin-left: auto;
+  color: var(--faint);
+}
+
+.overview-board {
+  display: grid;
+  grid-auto-flow: column;
+  grid-auto-columns: minmax(0, 1fr);
+  gap: 16px;
+  align-items: start;
+}
+
+.overview-note {
+  color: var(--muted);
+}
+
+.overview-column {
+  display: grid;
+  gap: 10px;
+  min-width: 0;
+}
+
+.overview-column h2 {
+  display: flex;
+  gap: 8px;
+  margin: 0 0 4px;
+  padding-bottom: 8px;
+  border-bottom: var(--stroke) solid var(--line);
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--faint);
+}
+
+.overview-column h2 .count {
+  color: var(--muted);
+}
+
+.overview-card {
+  display: grid;
+  gap: 8px;
+  min-width: 0;
+  padding: 12px 14px;
+  border: var(--stroke) solid var(--line);
+  border-radius: var(--radius-pane);
+  background: var(--surface);
+  outline: none;
+}
+
+.overview-card.opens {
+  cursor: pointer;
+}
+
+.overview-card.opens:hover, .overview-card:focus-visible {
+  border-color: var(--line-strong);
+}
+
+.overview-card.is-need, .overview-card.is-need:hover {
+  border-color: var(--waiting);
+}
+
+.card-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.card-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-weight: 700;
+  color: var(--text-strong);
+}
+
+.card-badge {
+  flex: none;
+  padding: 0 6px;
+  border: var(--stroke) solid var(--waiting);
+  border-radius: var(--radius);
+  font-size: 11px;
+  color: var(--waiting);
+}
+
+.card-where {
+  flex: none;
+  margin-left: auto;
+  font-size: 11px;
+  color: var(--faint);
+}
+
+.card-line {
+  margin: 0;
+  overflow-wrap: anywhere;
+  color: var(--muted);
+}
+
+.card-badge.keeps {
+  border-color: var(--done);
+  color: var(--done);
+}
+
+.kept-mark {
+  color: var(--active);
+}
+
+.card-kept {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  padding: 4px 8px;
+  border: var(--stroke) solid var(--line-strong);
+  border-radius: var(--radius);
+  cursor: pointer;
+  color: var(--text);
+}
+
+.card-kept:hover {
+  border-color: var(--active);
+}
+
+.card-kept-names {
+  flex: 1 1 0;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.card-kept-thumb {
+  flex: none;
+  width: 36px;
+  height: 36px;
+  object-fit: cover;
+  border-radius: 4px;
+}
+
+.card-kept-thumb[hidden] {
+  display: none;
+}
+
+.request {
+  display: grid;
+  gap: 8px;
+  cursor: default;
+}
+
+.request + .request {
+  padding-top: 10px;
+  border-top: var(--stroke) solid var(--line);
+}
+
+.request-command {
+  margin: 0;
+  padding: 8px 10px;
+  border: var(--stroke) solid var(--line);
+  border-radius: var(--radius);
+  background: var(--terminal);
+  font-family: var(--font);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  color: var(--terminal-text);
+}
+
+.request-command .prompt {
+  color: var(--waiting);
+}
+
+.request-question {
+  margin: 0;
+  font-weight: 700;
+  color: var(--text-strong);
+}
+
+.request-context {
+  margin: 0;
+  overflow-wrap: anywhere;
+  color: var(--muted);
+}
+
+.request-actions, .request-options {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.request-actions.answer {
+  flex-wrap: nowrap;
+}
+
+.request button {
+  padding: 4px 10px;
+  border: var(--stroke) solid var(--line-strong);
+  border-radius: var(--radius);
+  background: transparent;
+  color: var(--text);
+  cursor: pointer;
+}
+
+.request button.primary {
+  border-color: var(--active);
+  background: var(--active);
+  color: var(--on-active);
+}
+
+.request button:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.request button.option.on {
+  border-color: var(--waiting);
+  color: var(--text-strong);
+}
+
+.request button.other {
+  color: var(--faint);
+}
+
+.option-number {
+  color: var(--waiting);
+}
+
+.request-field {
+  flex: 1;
+  min-width: 0;
+  padding: 4px 10px;
+  border: var(--stroke) solid var(--line-strong);
+  border-radius: var(--radius);
+  background: var(--terminal);
+  font: inherit;
+  color: var(--text);
+}
+
+.request-field:focus {
+  outline: none;
+  border-color: var(--waiting);
+}
+
+.request-note {
+  margin: 0;
+  color: var(--faint);
+}
+
+.request-note.error {
+  color: var(--error);
+}
+
+.is-need .dot {
+  background: var(--waiting);
+}
+
+.is-working .dot {
+  background: conic-gradient(var(--working) 0 50%, transparent 0);
+  box-shadow: inset 0 0 0 var(--stroke) var(--working);
+}
+
+.is-done .dot {
+  background: var(--done);
+}
+
+.is-rest .dot {
+  background: var(--faint);
+}
+
+.is-elsewhere .dot {
+  border: var(--stroke) dashed var(--faint);
+}
+
+.tab-count {
+  min-width: 18px;
+  padding: 0 5px;
+  border-radius: 9px;
+  background: var(--waiting);
+  font-size: 11px;
+  font-weight: 700;
+  text-align: center;
+  color: var(--on-accent);
+}
+
+.tab.active .tab-count {
+  background: var(--on-active);
+  color: var(--active);
+}

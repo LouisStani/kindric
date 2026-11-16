@@ -45,6 +45,9 @@ export class ArtifactsWindow {
     this.choice = 0;
     this.naming = null;
     this.thumbnails = new Map();
+    // The names of the files new at this opening, read once: they stay marked while the window
+    // is open, moved or not, though Rust no longer counts them as new.
+    this.fresh = null;
     this.request = 0;
     // True while the system's file picker is open: a second press does not open another one.
     this.adding = false;
@@ -66,8 +69,20 @@ export class ArtifactsWindow {
     this.mode = "list";
     this.title.textContent = `artifacts · ${label}`;
     this.body.replaceChildren();
+    this.fresh = null;
     this.dialog.showModal();
     await this.reload(null);
+    await this.markSeen();
+  }
+
+  // What this opening shows as new is no longer new for the bar and the overview.
+  async markSeen() {
+    if (this.fresh === null || this.fresh.size === 0) return;
+    try {
+      await invoke("artifacts_seen", this.args({}));
+    } catch (error) {
+      this.onError(`artifacts still shown as new: ${error}`);
+    }
   }
 
   args(extra) {
@@ -95,6 +110,7 @@ export class ArtifactsWindow {
       return;
     }
     if (request !== this.request) return;
+    if (this.fresh === null) this.fresh = new Set(blocks.flatMap((block) => block.files.filter((file) => file.new).map((file) => file.name)));
     this.blocks = blocks;
     this.rows = blocks.flatMap((block) => [
       { type: "group", group: block.name, name: null, count: block.files.length },
@@ -146,7 +162,9 @@ export class ArtifactsWindow {
     row.classList.toggle("selected", index === this.selected);
     const thumb = element("span", "artifact-thumb", file.image ? "" : (file.name.split(".").pop() || "file").slice(0, 4));
     if (file.image) this.thumbnail(file).then((url) => url && thumb.replaceChildren(Object.assign(element("img"), { src: url, alt: "" })));
-    row.append(thumb, element("span", "artifact-name", file.name), element("span", "artifact-date", when(file.modified)));
+    row.append(thumb, element("span", "artifact-name", file.name));
+    if (this.fresh?.has(file.name)) row.append(element("span", "artifact-new", "new"));
+    row.append(element("span", "artifact-date", when(file.modified)));
     row.title = file.group ? `${file.group}/${file.name}` : file.name;
     row.onclick = () => {
       this.selected = index;
