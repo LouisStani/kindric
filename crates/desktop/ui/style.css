@@ -1710,6 +1710,118 @@ input:focus, select:focus {
   color: var(--muted);
 }
 
+.card-badge.keeps {
+  border-color: var(--done);
+  color: var(--done);
+}
+
+.request {
+  display: grid;
+  gap: 8px;
+  cursor: default;
+}
+
+.request + .request {
+  padding-top: 10px;
+  border-top: var(--stroke) solid var(--line);
+}
+
+.request-command {
+  margin: 0;
+  padding: 8px 10px;
+  border: var(--stroke) solid var(--line);
+  border-radius: var(--radius);
+  background: var(--terminal);
+  font-family: var(--font);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  color: var(--terminal-text);
+}
+
+.request-command .prompt {
+  color: var(--waiting);
+}
+
+.request-question {
+  margin: 0;
+  font-weight: 700;
+  color: var(--text-strong);
+}
+
+.request-context {
+  margin: 0;
+  overflow-wrap: anywhere;
+  color: var(--muted);
+}
+
+.request-actions, .request-options {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.request-actions.answer {
+  flex-wrap: nowrap;
+}
+
+.request button {
+  padding: 4px 10px;
+  border: var(--stroke) solid var(--line-strong);
+  border-radius: var(--radius);
+  background: transparent;
+  color: var(--text);
+  cursor: pointer;
+}
+
+.request button.primary {
+  border-color: var(--active);
+  background: var(--active);
+  color: var(--on-active);
+}
+
+.request button:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.request button.option.on {
+  border-color: var(--waiting);
+  color: var(--text-strong);
+}
+
+.request button.other {
+  color: var(--faint);
+}
+
+.option-number {
+  color: var(--waiting);
+}
+
+.request-field {
+  flex: 1;
+  min-width: 0;
+  padding: 4px 10px;
+  border: var(--stroke) solid var(--line-strong);
+  border-radius: var(--radius);
+  background: var(--terminal);
+  font: inherit;
+  color: var(--text);
+}
+
+.request-field:focus {
+  outline: none;
+  border-color: var(--waiting);
+}
+
+.request-note {
+  margin: 0;
+  color: var(--faint);
+}
+
+.request-note.error {
+  color: var(--error);
+}
+
 .is-need .dot {
   background: var(--waiting);
 }

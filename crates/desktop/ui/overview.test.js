@@ -1,9 +1,18 @@
 // Tests of the overview's board (decision 331, page B): `node --test crates/desktop/ui/overview.test.js`.
-// Rows have the shape of view.rs's SessionRow.
+// Rows have the shape of view.rs's SessionRow, requests that of overview.rs's Request.
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { columnsOf, lineOf, standing, summaryOf } from "./overview-board.js";
+import {
+  answersInOneClick,
+  choicesAnswer,
+  columnsOf,
+  lineOf,
+  permissionText,
+  requestsBySession,
+  standing,
+  summaryOf,
+} from "./overview-board.js";
 
 function row(label, tab, extra = {}) {
   return { label, tab, state: "waiting", finished: false, waiting_for: null, progress: null, ...extra };
@@ -58,4 +67,47 @@ test("a card says what the session last said, else what it waits for", () => {
   assert.equal(lineOf(row("a", 1, { ...working, progress: "running the tests" })), "running the tests");
   assert.equal(lineOf(row("a", 1, asking)), "waits for you: permission prompt");
   assert.equal(lineOf(row("a", 1)), "at rest");
+});
+
+function request(id, session_id, body) {
+  return { id, session_id, cwd: "/home/u/arcade", asked_at: 1, ...body };
+}
+
+test("a session with a request needs you, even one that keeps working on a kindric ask", () => {
+  const requests = requestsBySession([
+    request("1-1", "s-board", { kind: "ask", question: "UTC?", context: "Scores store UTC." }),
+    request("2-1", "s-board", { kind: "ask", question: "Keep the old board?", context: "Reset on Monday." }),
+  ]);
+  assert.deepEqual(requests.get("s-board").map((r) => r.id), ["1-1", "2-1"], "oldest first");
+  const board = row("leaderboard", 1, { ...working, session_id: "s-board" });
+  const other = row("notes", 1, { session_id: "s-notes" });
+  assert.equal(standing(board, requests), "need");
+  assert.equal(standing(other, requests), "rest");
+  assert.deepEqual(summaryOf([board, other], requests), { need: 1, working: 0, done: 0, rest: 1 });
+  const columns = columnsOf([other, board], [{ id: 1, name: "arcade" }], 4, requests);
+  assert.deepEqual(columns[0].cards.map((card) => card.row.label), ["leaderboard", "notes"]);
+});
+
+test("a permission shows the command alone, another tool what it touches", () => {
+  assert.deepEqual(permissionText({ tool: "Bash", input: { command: "cargo test", description: "Run the tests" } }), { prompt: "$", text: "cargo test" });
+  assert.deepEqual(permissionText({ tool: "Write", input: { file_path: "/w/a.txt", content: "x" } }), { prompt: "Write", text: "/w/a.txt" });
+  assert.deepEqual(permissionText({ tool: "mcp__x__y", input: { n: 1 } }), { prompt: "mcp__x__y", text: '{"n":1}' });
+});
+
+test("the answer to AskUserQuestion waits for every question, labels joined, Other typed", () => {
+  const questions = [
+    { question: "Red or blue?", header: "Color", options: [{ label: "Red" }, { label: "Blue" }], multiSelect: false },
+    { question: "Which toppings?", header: "Toppings", options: [{ label: "cheese" }, { label: "olives" }], multiSelect: true },
+  ];
+  const chosen = new Map([["Red or blue?", ["Blue"]]]);
+  assert.equal(choicesAnswer(questions, chosen), null);
+  chosen.set("Which toppings?", ["cheese", "olives"]);
+  assert.deepEqual(choicesAnswer(questions, chosen), { "Red or blue?": "Blue", "Which toppings?": "cheese, olives" });
+  chosen.set("Red or blue?", "  teal  ");
+  assert.equal(choicesAnswer(questions, chosen)["Red or blue?"], "teal");
+  chosen.set("Red or blue?", " ");
+  assert.equal(choicesAnswer(questions, chosen), null, "an empty Other is no answer");
+  assert.equal(answersInOneClick(questions), false);
+  assert.equal(answersInOneClick(questions.slice(0, 1)), true);
+  assert.equal(answersInOneClick(questions.slice(1)), false);
 });

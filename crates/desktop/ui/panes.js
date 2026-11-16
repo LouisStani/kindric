@@ -356,6 +356,14 @@ export class Panes {
     return this.view(this.layout().active);
   }
 
+  // The pane of any tab that shows `session` with its session still running, or null.
+  viewShowing(session) {
+    if (this.state === null) return null;
+    const leaf = this.allLeaves().find((node) => sameSession(node.session, session));
+    const view = leaf ? this.view(leaf.id) : null;
+    return view && view.current && !view.current.ended ? view : null;
+  }
+
   // Whether a pane of the visible tab shows `session`: opened from another tab, it moves.
   shows(session) {
     return this.state !== null && leaves(this.layout().root).some((leaf) => sameSession(leaf.session, session));
