@@ -60,7 +60,7 @@ The **progress line** is what a background session last said it is doing. Claude
 
 Chips that do not fit are counted in a **+N** chip that opens `Ctrl+P`. Errors and notices show at the right end of the bar.
 
-Clicking a chip opens the session in the active pane of its project's tab, moving there if needed. The pane says "connecting to <name>…" until the session first prints.
+Clicking a chip opens the session in the active pane of its project's tab, moving there if needed. Until the session first prints (about a quarter of a second, the time `claude attach` takes), the pane shows, dimmed, the last screen it had in this window at the same width; otherwise it says "connecting to <name>…".
 
 ## Panes
 
