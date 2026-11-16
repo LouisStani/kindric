@@ -29,14 +29,14 @@ jobs:
           sudo apt-get install -y libwebkit2gtk-4.1-dev build-essential curl wget file libxdo-dev libssl-dev libayatana-appindicator3-dev librsvg2-dev
       - run: cargo clippy --locked --workspace --all-targets -- -D warnings
       - run: cargo test --locked --workspace
-      # The atlas's scene is JavaScript (ui/atlas-scene.js); its tests need nothing but Node.
+      # The atlas's scene (ui/atlas-scene.js), the overview board (ui/overview-board.js) and the screen photos (ui/photos.js) are JavaScript; their tests need nothing but Node.
       - uses: actions/setup-node@v4
         if: runner.os == 'Linux'
         with:
           node-version: 24
-      - name: Atlas and overview tests (JavaScript, Linux)
+      - name: JavaScript tests (atlas, overview, screen photos; Linux)
         if: runner.os == 'Linux'
-        run: node --test crates/desktop/ui/atlas.test.js crates/desktop/ui/overview.test.js
+        run: node --test crates/desktop/ui/atlas.test.js crates/desktop/ui/overview.test.js crates/desktop/ui/photos.test.js
       - run: cargo build --locked --release -p kindric-accounts
       - name: kindric-accounts command-line tests (Linux)
         if: runner.os == 'Linux'
