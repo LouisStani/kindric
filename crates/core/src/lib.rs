@@ -11,6 +11,7 @@ pub mod images;
 pub mod launcher;
 pub mod mailbox;
 pub mod mcp;
+pub mod overview;
 pub mod progress;
 pub mod refresher;
 pub mod search;
