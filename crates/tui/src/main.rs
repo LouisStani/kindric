@@ -45,8 +45,9 @@ fn main() -> ExitCode {
             kindric_core::mailbox::run_unread_hook();
             Ok(())
         },
-        // The Stop hook of the sessions kindric-accounts starts, run in the background: wakes a session
-        // at rest when a message asks it to. Claude Code gives the session the error output of exit code 2.
+        // The Stop and SessionStart hook of the sessions kindric-accounts starts, run in the background:
+        // wakes a session at rest when a message asks it to. Claude Code gives the session the error
+        // output of exit code 2.
         ["wait-message"] => {
             if let Some(notice) = kindric_core::wake::run_wait_hook() {
                 eprintln!("{notice}");
