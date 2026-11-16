@@ -47,6 +47,9 @@ pub struct SessionInfo {
     pub isolated: bool,
     /// What the session last said it is doing (see `progress`); background sessions only.
     pub progress: Option<String>,
+    /// What the session waits for from the user, in Claude Code's words ("permission prompt",
+    /// "input needed"), while a question of Claude Code is on its screen.
+    pub waiting_for: Option<String>,
 }
 
 impl SessionInfo {
@@ -77,57 +80,62 @@ struct RawSession {
     cwd: Option<String>,
 }
 
-/// `only_shells(pid)` says whether the turn of that process is over with only background shells
-/// left running: `agents --json` reports that as `busy` too.
-fn state_of(raw: &RawSession, only_shells: &impl Fn(u32) -> bool) -> SessionState {
+/// `file` is what Claude Code's file for the process says: `agents --json` reports `busy` both
+/// for a turn running and for a turn over with only background shells left.
+fn state_of(raw: &RawSession, file: &SessionFile) -> SessionState {
     if raw.kind.as_deref() != Some("background") {
         return SessionState::Elsewhere;
     }
-    let Some(pid) = raw.pid else {
+    if raw.pid.is_none() {
         return SessionState::Paused;
-    };
+    }
     match raw.status.as_deref() {
-        Some("busy") if !only_shells(pid) => SessionState::Working,
+        Some("busy") if file.status.as_deref() != Some("shell") => SessionState::Working,
         _ => SessionState::Waiting,
     }
 }
 
 /// Parses the output of `claude agents --json` for one account.
 pub fn parse_agents(account: &str, json: &str) -> serde_json::Result<Vec<SessionInfo>> {
-    parse_agents_with(account, json, |_| false)
+    parse_agents_with(account, json, |_| SessionFile::default())
 }
 
-/// The `status` of Claude Code's file for a running process, `sessions/<pid>.json`.
-fn session_file_status(json: &str) -> Option<String> {
-    #[derive(Deserialize)]
-    struct SessionFile {
-        status: Option<String>,
-    }
-    serde_json::from_str::<SessionFile>(json).ok()?.status
+/// What Claude Code's own file for a running process, `sessions/<pid>.json`, says.
+/// - `status`: `busy` (a turn is running), `shell` (the turn is over, background shells still
+///   run: a server, a database, `docker compose up`), `idle`, or `waiting` (a question of
+///   Claude Code is on the screen).
+/// - `waitingFor`: only while waiting, what for ("permission prompt", "input needed").
+#[derive(Debug, Default, PartialEq, Eq, Deserialize)]
+struct SessionFile {
+    status: Option<String>,
+    #[serde(rename = "waitingFor")]
+    waiting_for: Option<String>,
 }
 
-/// Whether the process `pid` of the account in `account_dir` has ended its turn and only runs
-/// background shells now (a server, a database, `docker compose up`). `claude agents --json`
-/// says `busy` for both; Claude Code's own file for the process says `shell` for this one.
-/// A file that cannot be read counts as a turn still running, as `agents --json` says.
-fn only_shells_running(account_dir: &Path, pid: u32) -> bool {
+/// The file of the process `pid` of the account in `account_dir`. One that cannot be read says
+/// nothing: the session is then as `agents --json` says.
+fn read_session_file(account_dir: &Path, pid: u32) -> SessionFile {
     let file = account_dir.join("sessions").join(format!("{pid}.json"));
-    std::fs::read_to_string(file).is_ok_and(|json| session_file_status(&json).as_deref() == Some("shell"))
+    std::fs::read_to_string(file).ok().and_then(|json| serde_json::from_str(&json).ok()).unwrap_or_default()
 }
 
-fn parse_agents_with(account: &str, json: &str, only_shells: impl Fn(u32) -> bool) -> serde_json::Result<Vec<SessionInfo>> {
+fn parse_agents_with(account: &str, json: &str, session_file: impl Fn(u32) -> SessionFile) -> serde_json::Result<Vec<SessionInfo>> {
     let raw: Vec<RawSession> = serde_json::from_str(json)?;
     Ok(raw
         .into_iter()
-        .map(|raw| SessionInfo {
-            account: account.to_string(),
-            state: state_of(&raw, &only_shells),
-            short_id: raw.id,
-            session_id: raw.session_id,
-            name: raw.name.unwrap_or_default(),
-            cwd: raw.cwd.unwrap_or_default(),
-            isolated: false,
-            progress: None,
+        .map(|raw| {
+            let file = raw.pid.map(&session_file).unwrap_or_default();
+            SessionInfo {
+                account: account.to_string(),
+                state: state_of(&raw, &file),
+                short_id: raw.id,
+                session_id: raw.session_id,
+                name: raw.name.unwrap_or_default(),
+                cwd: raw.cwd.unwrap_or_default(),
+                isolated: false,
+                progress: None,
+                waiting_for: file.waiting_for,
+            }
         })
         .collect())
 }
@@ -313,7 +321,7 @@ fn account_sessions(paths: &Paths, account: &str, implicit_default: bool, includ
     }
     let json = String::from_utf8_lossy(&output.stdout);
     let mut sessions =
-        parse_agents_with(account, &json, |pid| only_shells_running(&dir, pid)).map_err(io::Error::other)?;
+        parse_agents_with(account, &json, |pid| read_session_file(&dir, pid)).map_err(io::Error::other)?;
     for session in &mut sessions {
         session.progress = session.short_id.as_deref().and_then(|short_id| progress::progress(&dir, short_id));
     }
@@ -539,7 +547,8 @@ mod tests {
     /// A turn that ended with a server left running in the background: `busy` in `agents --json`.
     #[test]
     fn a_turn_over_with_only_shells_left_is_not_working() {
-        let sessions = parse_agents_with("louis", AGENTS, |pid| pid == 170869).unwrap();
+        let shell = |pid| SessionFile { status: (pid == 170869).then(|| "shell".to_string()), waiting_for: None };
+        let sessions = parse_agents_with("louis", AGENTS, shell).unwrap();
         assert_eq!(sessions[0].state, SessionState::Waiting);
         assert_eq!(sessions[3].state, SessionState::Elsewhere);
     }
@@ -557,9 +566,27 @@ mod tests {
         };
         file(1892552, "shell");
         file(1770477, "busy");
-        assert!(only_shells_running(&root, 1892552));
-        assert!(!only_shells_running(&root, 1770477));
-        assert!(!only_shells_running(&root, 4242), "no file: as agents --json says");
+        assert_eq!(read_session_file(&root, 1892552).status.as_deref(), Some("shell"));
+        assert_eq!(read_session_file(&root, 1770477).status.as_deref(), Some("busy"));
+        assert_eq!(read_session_file(&root, 4242), SessionFile::default(), "no file: as agents --json says");
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    /// What Claude Code 2.1.325 wrote on 2026-11-16 for a session asking a permission, and for
+    /// one asking a question (AskUserQuestion): `waitingFor` is there only while it waits.
+    #[test]
+    fn a_session_waiting_for_the_user_says_what_for() {
+        let root = std::env::temp_dir().join(format!("kindric-waiting-for-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(root.join("sessions")).unwrap();
+        let write = |pid: u32, json: &str| std::fs::write(root.join("sessions").join(format!("{pid}.json")), json).unwrap();
+        write(170869, r#"{"pid":170869,"kind":"bg","status":"waiting","waitingFor":"permission prompt","statusUpdatedAt":1794832127865}"#);
+        write(190760, r#"{"pid":190760,"kind":"bg","status":"waiting","waitingFor":"input needed","statusUpdatedAt":1794832128000}"#);
+        write(188510, r#"{"pid":188510,"kind":"interactive","status":"busy","statusUpdatedAt":1794832126353}"#);
+        let sessions = parse_agents_with("louis", AGENTS, |pid| read_session_file(&root, pid)).unwrap();
+        let waiting: Vec<_> = sessions.iter().map(|s| s.waiting_for.as_deref()).collect();
+        assert_eq!(waiting, [Some("permission prompt"), None, Some("input needed"), None]);
+        assert_eq!(sessions[0].state, SessionState::Working, "agents --json says busy, the turn is not over");
         std::fs::remove_dir_all(root).unwrap();
     }
 
