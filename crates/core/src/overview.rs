@@ -11,6 +11,7 @@ use std::path::{Path, PathBuf};
 use kindric_accounts::files::{create_private_dir, write_atomic};
 use serde::{Deserialize, Serialize};
 
+use crate::away;
 use crate::mailbox::{data_dir, is_valid_session_id};
 
 const REQUEST: &str = "json";
@@ -134,6 +135,69 @@ pub fn settle(root: &Path, session: &str, id: &str) -> io::Result<()> {
     Ok(())
 }
 
+/// What `kindric overview-start`, the SessionStart hook of the sessions kindric-accounts starts,
+/// tells a session.
+pub const START: &str = "kindric shows the user an overview of their sessions, where they answer \
+questions without opening the session. When you need the user to decide something, prefer the shell \
+command `kindric ask \"<question>\" \"<context>\"` to AskUserQuestion: it does not stop you. Write a \
+single question that stands alone, and the context for someone who has not seen this session: what \
+you are doing, what you found, why you need them. Their answer comes later as a message from them.";
+
+/// What `kindric ask` tells the session once the question is sent.
+pub const SENT: &str = "Question sent to the user through kindric's overview. Their answer will come \
+later as a message from them. Until then, do only the work that does not depend on it; if none is \
+left, end your turn now. Do not guess the answer.";
+
+const HOW: &str = "usage: kindric ask \"<question>\" \"<context: what you are doing, what you found, \
+why you need the user>\"";
+
+/// `kindric ask`, run by the session `session` (from `CLAUDE_CODE_SESSION_ID`) in `cwd`: puts its
+/// question in the overview. Refused without a question and its context, and while the user is
+/// away from the session: it then decides alone, as it was told.
+pub fn ask_from_session(
+    root: &Path,
+    away_root: &Path,
+    session: Option<&str>,
+    cwd: &Path,
+    question: &str,
+    context: &str,
+    now_millis: u128,
+) -> Result<Request, String> {
+    let session = session.filter(|id| !id.is_empty()).ok_or_else(|| {
+        "kindric ask is run by a Claude Code session: CLAUDE_CODE_SESSION_ID is not set".to_string()
+    })?;
+    let (question, context) = (question.trim(), context.trim());
+    if question.is_empty() || context.is_empty() {
+        return Err(format!("a question and its context are both needed. {HOW}"));
+    }
+    if away::until(away_root, session).is_some_and(|until| until > away::now()) {
+        return Err("the user is away from this session: make the choice yourself, write it down \
+where the project keeps its decisions, and go on"
+            .to_string());
+    }
+    let request = Request {
+        id: new_id(now_millis, std::process::id()),
+        session_id: session.to_string(),
+        cwd: cwd.display().to_string(),
+        asked_at: i64::try_from(now_millis / 1000).unwrap_or(i64::MAX),
+        body: Body::Ask { question: question.to_string(), context: context.to_string() },
+    };
+    ask(root, &request).map_err(|error| format!("cannot write the question in {}: {error}", root.display()))?;
+    Ok(request)
+}
+
+/// `kindric ask <question> <context>` from the environment Claude Code gives a shell command.
+pub fn run_ask(question: &str, context: &str) -> Result<(), String> {
+    let root = default_root().map_err(|error| format!("cannot find kindric's data: {error}"))?;
+    let away_root = away::default_root().map_err(|error| format!("cannot find kindric's data: {error}"))?;
+    let cwd = std::env::current_dir().map_err(|error| format!("cannot read the current folder: {error}"))?;
+    let session = std::env::var("CLAUDE_CODE_SESSION_ID").ok();
+    let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default();
+    ask_from_session(&root, &away_root, session.as_deref(), &cwd, question, context, now.as_millis())?;
+    println!("{SENT}");
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -209,6 +273,43 @@ mod tests {
         assert_eq!(new_id(1_794_832_127_865, 4242), "1794832127865-4242");
         assert!(is_valid_request_id(&new_id(1, 2)));
         let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn a_session_asks_with_its_context() {
+        let (root, away_root) = (temp_root("ask"), temp_root("ask-away"));
+        let cwd = Path::new("/home/u/arcade");
+        let asked = ask_from_session(&root, &away_root, Some("aaaa-1111"), cwd, " UTC or local? ", "Scores store UTC.", 5_000).unwrap();
+        assert_eq!(asked.body, Body::Ask { question: "UTC or local?".into(), context: "Scores store UTC.".into() });
+        assert_eq!((asked.asked_at, asked.cwd.as_str()), (5, "/home/u/arcade"));
+        assert_eq!(pending(&root), [asked]);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn a_question_without_context_or_session_is_refused() {
+        let (root, away_root) = (temp_root("refused"), temp_root("refused-away"));
+        let cwd = Path::new("/w");
+        let no_context = ask_from_session(&root, &away_root, Some("aaaa-1111"), cwd, "UTC?", "  ", 1).unwrap_err();
+        assert!(no_context.contains("context are both needed") && no_context.contains("usage: kindric ask"), "{no_context}");
+        assert!(ask_from_session(&root, &away_root, Some("aaaa-1111"), cwd, "", "c", 1).is_err());
+        let outside = ask_from_session(&root, &away_root, None, cwd, "q", "c", 1).unwrap_err();
+        assert!(outside.contains("CLAUDE_CODE_SESSION_ID"), "{outside}");
+        away::set(&away_root, "aaaa-1111", away::now() + 3600).unwrap();
+        let away = ask_from_session(&root, &away_root, Some("aaaa-1111"), cwd, "q", "c", 1).unwrap_err();
+        assert!(away.contains("make the choice yourself"), "{away}");
+        assert!(pending(&root).is_empty());
+        let _ = fs::remove_dir_all(root);
+        fs::remove_dir_all(away_root).unwrap();
+    }
+
+    /// The words of the trial of 2026-11-16 (e10), after which the session asked, did the work
+    /// that did not depend on the answer, ended its turn, and finished once answered.
+    #[test]
+    fn the_session_is_told_to_go_on_without_guessing() {
+        assert!(SENT.contains("do only the work that does not depend on it"));
+        assert!(SENT.contains("end your turn now") && SENT.contains("Do not guess"));
+        assert!(START.contains(r#"kindric ask "<question>" "<context>""#) && START.contains("AskUserQuestion"));
     }
 
     #[test]

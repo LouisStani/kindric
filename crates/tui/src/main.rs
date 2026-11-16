@@ -25,7 +25,7 @@ use ratatui::layout::Rect;
 use crate::app::{App, Flow};
 use crate::pane::PaneKey;
 
-const USAGE: &str = "usage: kindric [mcp | unread | wait-message | away-hook | permission-hook | away done <session id> | --version]";
+const USAGE: &str = "usage: kindric [mcp | unread | wait-message | away-hook | permission-hook | overview-start | ask <question> <context> | away done <session id> | --version]";
 
 pub enum AppEvent {
     Input(Event),
@@ -65,6 +65,13 @@ fn main() -> ExitCode {
             kindric_core::permission::run_hook();
             Ok(())
         },
+        // The SessionStart hook of the sessions kindric-accounts starts: how to ask the user.
+        ["overview-start"] => {
+            println!("{}", kindric_core::overview::START);
+            Ok(())
+        },
+        // Run by a session that needs the user to decide something: it goes on meanwhile.
+        ["ask", question, context] => kindric_core::overview::run_ask(question, context).map_err(io::Error::other),
         // Run by a session told the user is away, once its task is done: it may stop again.
         ["away", "done", session] => kindric_core::away::default_root().and_then(|root| kindric_core::away::clear(&root, session)),
         ["--version" | "-V"] => {
