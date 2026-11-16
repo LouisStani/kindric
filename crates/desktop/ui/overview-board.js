@@ -1,38 +1,108 @@
-// What the overview shows, without the page: where each session goes and what the summary
-// counts. Tested by `node --test crates/desktop/ui/overview.test.js`.
+// What the control center shows (decision 343, mockups C2), without the page: where each session
+// goes, what the summary counts, the projects and accounts of the side. Tested by
+// `node --test crates/desktop/ui/overview.test.js`.
 
-// The summary's groups, in the order of the summary and of the cards in a column.
+// The summary's groups, in the order of the summary and of the rows of a project.
 export const STANDINGS = [
   { id: "need", label: "need you" },
   { id: "working", label: "working" },
   { id: "done", label: "done, not seen" },
   { id: "rest", label: "at rest" },
+  { id: "paused", label: "paused" },
 ];
 
 // Where a session of the list stands for the user. It needs them while a question of Claude
 // Code is on its screen, or while it has requests in the overview (`requests` by session id,
-// from `requestsBySession`). "elsewhere": shown in a terminal outside kindric, whose activity
-// kindric does not know; counted in no group.
+// from `requestsBySession`). "paused": stopped, no process. "elsewhere": shown in a terminal
+// outside kindric, whose activity kindric does not know; counted in no group.
 export function standing(row, requests = new Map()) {
   if (row.waiting_for || requests.has(row.session_id)) return "need";
   if (row.finished) return "done";
   if (row.state === "working") return "working";
   if (row.state === "waiting") return "rest";
+  if (row.state === "paused") return "paused";
   return "elsewhere";
 }
 
 const ORDER = new Map([...STANDINGS.map((group, index) => [group.id, index]), ["elsewhere", STANDINGS.length]]);
 
-// `cards` most urgent first; the list's own order within a group.
-function sorted(cards, requests) {
-  return cards
-    .map((card, index) => ({ card, index }))
-    .sort((a, b) => ORDER.get(standing(a.card.row, requests)) - ORDER.get(standing(b.card.row, requests)) || a.index - b.index)
-    .map(({ card }) => card);
+// `rows` most urgent first; the list's own order within a group.
+export function urgentFirst(rows, requests = new Map()) {
+  return rows
+    .map((row, index) => ({ row, index }))
+    .sort((a, b) => ORDER.get(standing(a.row, requests)) - ORDER.get(standing(b.row, requests)) || a.index - b.index)
+    .map(({ row }) => row);
 }
 
-function needs(column, requests) {
-  return column.cards.filter((card) => standing(card.row, requests) === "need").length;
+function needCount(rows, requests) {
+  return rows.filter((row) => standing(row, requests) === "need").length;
+}
+
+// The side's list: "all", then one entry per tab of `tabs` (`[{ id, name }]`, in the order of the
+// bar), each with the standing of its sessions, most urgent first, and how many need you.
+export function projectsOf(rows, tabs, requests = new Map()) {
+  const entry = (id, name, mine) => ({
+    id,
+    name,
+    standings: urgentFirst(mine, requests).map((row) => standing(row, requests)),
+    needs: needCount(mine, requests),
+  });
+  return [entry("all", "all", rows), ...tabs.map((tab) => entry(tab.id, tab.name, rows.filter((row) => row.tab === tab.id)))];
+}
+
+// The view of every project: the sessions that need you first, whatever their project, then a
+// group per tab with its other sessions; a tab with none is left out.
+export function allView(rows, tabs, requests = new Map()) {
+  const needing = (row) => standing(row, requests) === "need";
+  const groups = tabs
+    .map((tab) => ({ tab, rows: urgentFirst(rows.filter((row) => row.tab === tab.id && !needing(row)), requests) }))
+    .filter((group) => group.rows.length > 0);
+  return { needs: urgentFirst(rows.filter(needing), requests), groups };
+}
+
+// The view of one tab: its sessions most urgent first, the paused ones apart, at the bottom.
+export function projectView(rows, tabId, requests = new Map()) {
+  const mine = urgentFirst(rows.filter((row) => row.tab === tabId), requests);
+  const paused = (row) => standing(row, requests) === "paused";
+  return { active: mine.filter((row) => !paused(row)), paused: mine.filter(paused) };
+}
+
+// What a row says of the files its session kept for the user: `kept` in all, `fresh` of them not
+// seen yet. The new ones are noted apart, so for a moment they can outnumber the others.
+export function keptLabel(kept, fresh) {
+  const total = Math.max(kept, fresh);
+  if (total === 0) return "nothing kept";
+  return fresh > 0 ? `${total} kept · ${fresh} new` : `${total} kept`;
+}
+
+// From this share of its five hours, an account's card is framed (mockup C2).
+export const HOT_PERCENT = 80;
+
+// The accounts of the side: those of `accounts` (the registry's order), then any other a session
+// runs on; one is kept with sessions running or figures. `usages` as `control_figures` gives them.
+export function accountCards(rows, accounts, usages) {
+  const names = new Set([...accounts, ...rows.map((row) => row.account)]);
+  return [...names]
+    .map((name) => {
+      const usage = usages.find((candidate) => candidate.name === name) ?? null;
+      const sessions = rows.filter((row) => row.account === name && row.state !== "paused").length;
+      return { name, sessions, usage, hot: usage !== null && usage.five_hour >= HOT_PERCENT };
+    })
+    .filter((card) => card.sessions > 0 || card.usage !== null);
+}
+
+// How a context bar is coloured.
+export function contextLevel(percent) {
+  if (percent >= 80) return "high";
+  if (percent >= 60) return "mid";
+  return "low";
+}
+
+// The session `n` goes to: the one after `current` among `asking` (the ids of the sessions with a
+// request, in the order shown), round; null when none asks.
+export function nextAsking(asking, current) {
+  if (asking.length === 0) return null;
+  return asking[(asking.indexOf(current) + 1) % asking.length];
 }
 
 // The requests of `overview_requests` (oldest first) by session id, each list oldest first.
@@ -53,22 +123,6 @@ export function keptText(artifacts, most = 3) {
   return names.length > most ? `kept ${shown} +${names.length - most}` : `kept ${shown}`;
 }
 
-// The columns of the board: one per tab with sessions, `tabs` being `[{ id, name }]` in the
-// order of the bar. Those that need the user most come first, then the busiest. Past `most`
-// columns, the last one gathers the others, the smallest, and its cards then name their project.
-export function columnsOf(rows, tabs, most, requests = new Map()) {
-  const columns = tabs
-    .map((tab) => ({ names: [tab.name], cards: rows.filter((row) => row.tab === tab.id).map((row) => ({ row, project: null })) }))
-    .filter((column) => column.cards.length > 0)
-    .map((column) => ({ ...column, cards: sorted(column.cards, requests) }))
-    .sort((a, b) => needs(b, requests) - needs(a, requests) || b.cards.length - a.cards.length);
-  if (columns.length <= Math.max(most, 1)) return columns;
-  const kept = columns.slice(0, Math.max(most, 1) - 1);
-  const gathered = columns.slice(kept.length);
-  const cards = gathered.flatMap((column) => column.cards.map((card) => ({ ...card, project: column.names[0] })));
-  return [...kept, { names: gathered.flatMap((column) => column.names), cards: sorted(cards, requests) }];
-}
-
 // How many sessions are in each group of the summary.
 export function summaryOf(rows, requests = new Map()) {
   const counts = Object.fromEntries(STANDINGS.map((group) => [group.id, 0]));
@@ -79,18 +133,21 @@ export function summaryOf(rows, requests = new Map()) {
   return counts;
 }
 
-// The line under a card's name: what the session last said it does, else what it waits for.
+// What a row says the session does: what it last said, else what it waits for.
 export function lineOf(row, requests = new Map()) {
   if (row.progress) return row.progress;
   switch (standing(row, requests)) {
     case "need":
-      return `waits for you: ${row.waiting_for}`;
+      if (row.waiting_for) return `waits for you: ${row.waiting_for}`;
+      return (requests.get(row.session_id) ?? []).some((request) => request.kind === "permission") ? "waits for your permission" : "waits for your answer";
     case "working":
       return "working";
     case "done":
       return "finished a turn";
     case "rest":
       return "at rest";
+    case "paused":
+      return "paused";
     default:
       return "open in a terminal outside kindric";
   }

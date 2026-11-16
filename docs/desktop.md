@@ -4,6 +4,7 @@
 
 - [Setup checklist](#setup-checklist)
 - [Projects and tabs](#projects-and-tabs)
+- [Control center](#control-center)
 - [The session bar](#the-session-bar)
 - [Panes](#panes)
 - [Starting, naming and hiding sessions](#starting-naming-and-hiding-sessions)
@@ -34,6 +35,16 @@ Each tab is a project: a folder, and the sessions working in it, on any account.
 - Each tab has its own panes. Sessions in hidden tabs stay attached.
 - A tab with a session waiting for you carries a dot.
 - The app starts again on the tab you left. At its first visit, each tab opens the session of its active pane again, in a single pane (splits are not kept).
+
+## Control center
+
+Tab **0**, `Ctrl+Shift+0`, is the page the app opens on. It shows every session without opening any of them.
+
+- On the left, **all**, then each project with a dot per session and the number that need you. Below, each account with its 5 h and 7 day limits and when the 5 h window starts again; a frame marks one past 80%.
+- **all** lists the sessions that need you first, whatever their project, then a group per project. A project's name opens it.
+- A project lists its sessions, the paused ones last with **resume**.
+- Each row gives what the session does, the files it kept for you (`3 kept · 2 new`, a click opens the artifacts window), how full its context is, and its account. A permission, a question or a `kindric ask` is answered in the row.
+- `↑` `↓` pick a row, `Enter` opens it in a pane, `a` / `d` allow or deny its permission, `n` goes to the next session that asks, `Esc` goes back to **all**.
 
 ## The session bar
 

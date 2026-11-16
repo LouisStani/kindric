@@ -5,7 +5,7 @@
 
 use std::collections::BTreeMap;
 use std::fs;
-use std::path::{Component, Path};
+use std::path::{Component, Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
@@ -39,6 +39,19 @@ fn key(root: &Path, path: &Path) -> Option<String> {
 /// The origins of a project; none when the file is missing or cannot be read.
 pub fn read(root: &Path) -> Origins {
     fs::read_to_string(root.join(FILE)).ok().and_then(|text| serde_json::from_str(&text).ok()).unwrap_or_default()
+}
+
+/// How many files each session kept for the user in the projects of `roots`, by session id.
+pub fn kept_for_user(roots: &[PathBuf]) -> BTreeMap<String, usize> {
+    let mut counts = BTreeMap::new();
+    for root in roots {
+        for (key, origin) in read(root) {
+            if key.starts_with("user/") {
+                *counts.entry(origin.session_id).or_insert(0) += 1;
+            }
+        }
+    }
+    counts
 }
 
 /// Writes a hidden copy first, then renames it: a reader never sees half the file.
@@ -140,6 +153,21 @@ mod tests {
         fs::write(root.join(FILE), "{broken").unwrap();
         assert!(read(&root).is_empty());
         fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn the_files_kept_for_the_user_are_counted_by_session_across_projects() {
+        let first = scratch("count-a");
+        let second = scratch("count-b");
+        note(&first, &first.join("user").join("a.png"), origin("s1")).unwrap();
+        note(&first, &first.join("user").join("logos").join("l.svg"), origin("s1")).unwrap();
+        note(&first, &first.join("claude").join("make.py"), origin("s1")).unwrap();
+        note(&second, &second.join("user").join("b.png"), origin("s1")).unwrap();
+        note(&second, &second.join("user").join("c.png"), origin("s2")).unwrap();
+        let counts = kept_for_user(&[first.clone(), second.clone(), first.join("missing")]);
+        assert_eq!(counts.into_iter().collect::<Vec<_>>(), [("s1".to_string(), 3), ("s2".to_string(), 1)]);
+        fs::remove_dir_all(first).unwrap();
+        fs::remove_dir_all(second).unwrap();
     }
 
     #[test]
