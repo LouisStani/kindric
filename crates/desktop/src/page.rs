@@ -22,7 +22,7 @@ fn every_vendored_script_is_loaded_and_has_its_license() {
         scripts.push(name);
     }
     scripts.sort();
-    assert_eq!(scripts, ["addon-fit.js", "addon-unicode11.js", "addon-webgl.js", "xterm.js"]);
+    assert_eq!(scripts, ["addon-fit.js", "addon-serialize.js", "addon-unicode11.js", "addon-webgl.js", "xterm.js"]);
 }
 
 /// A command the page calls by name but Rust does not register fails only when it is used.

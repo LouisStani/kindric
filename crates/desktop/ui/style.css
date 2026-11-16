@@ -738,6 +738,11 @@ ol, ul {
   padding: 8px 10px;
 }
 
+/* The last screen seen of a session, until it draws again (panes.js, showPhoto). */
+.pane.stale .xterm {
+  opacity: 0.5;
+}
+
 .pane-images {
   position: absolute;
   top: 0;

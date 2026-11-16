@@ -2,6 +2,7 @@
 // command, and this module only draws what it gets back.
 
 import { mark, note, traced } from "./trace.js";
+import { ScreenPhotos, fits } from "./photos.js";
 
 const { invoke, Channel } = window.__TAURI__.core;
 
@@ -97,6 +98,8 @@ class PaneView {
     this.used = false;
     // Between opening a session and its first output: the pane says so instead of staying blank.
     this.waiting = false;
+    // Meanwhile the terminal shows the last screen seen of the session, dimmed (`showPhoto`).
+    this.stale = false;
     // The colors of the theme of its session's project, null for the window's (`paint`).
     this.colors = null;
     this.painted = "";
@@ -120,6 +123,8 @@ class PaneView {
     this.element.append(head, this.screen, this.placeholder);
     this.terminal = new Terminal(terminalOptions());
     loadUnicode11(this.terminal);
+    this.serializer = new SerializeAddon.SerializeAddon();
+    this.terminal.loadAddon(this.serializer);
     this.fit = new FitAddon.FitAddon();
     this.terminal.loadAddon(this.fit);
     this.terminal.attachCustomKeyEventHandler(keyFilter);
@@ -236,9 +241,32 @@ class PaneView {
     this.placeholder.hidden = false;
   }
 
+  // The screen of the session shown, to show while it attaches again; null when the terminal shows
+  // no live session (nothing yet, a photo, its end). The modes stay out: they change what keys send.
+  photo() {
+    if (!this.opened || !this.current || this.current.ended || this.waiting) return null;
+    return { text: this.serializer.serialize({ scrollback: 0, excludeModes: true }), columns: this.terminal.cols };
+  }
+
+  // Until the session draws, instead of "connecting to".
+  showPhoto(photo) {
+    this.waiting = true;
+    this.stale = true;
+    this.terminal.write(photo.text);
+    this.element.classList.add("stale");
+    this.placeholder.hidden = true;
+  }
+
   connected() {
     if (!this.waiting) return;
     this.waiting = false;
+    if (this.stale) {
+      this.stale = false;
+      this.element.classList.remove("stale");
+      // Through the queue of writes (ESC c resets the terminal): after the photo, even one that
+      // was not drawn yet.
+      this.terminal.write("\x1bc");
+    }
     this.placeholder.hidden = true;
     setText(this.placeholder, "select a session");
   }
@@ -287,6 +315,7 @@ export class Panes {
     this.colorsOf = colorsOf;
     this.state = null;
     this.views = new Map();
+    this.photos = new ScreenPhotos();
     // Tab id → its page and the shape it was built for.
     this.pages = new Map();
     this.tabDrag = false;
@@ -411,7 +440,7 @@ export class Panes {
       view.element.classList.toggle("active", leaf.id === tab.layout.active);
       // Emptied after its session opened (hidden, say): nothing is coming any more.
       if (leaf.session === null && view.current && view.current.generation !== null) view.connected();
-      view.placeholder.hidden = !view.waiting && (leaf.session !== null || view.used);
+      view.placeholder.hidden = view.stale || (!view.waiting && (leaf.session !== null || view.used));
     }
     built.page.hidden = tab.id !== this.state.active;
     return built.page;
@@ -639,6 +668,14 @@ export class Panes {
     if (index >= 0 && (this.state.overview || id !== this.state.active)) await this.goTab(index + 1);
   }
 
+  // The last screen seen of `session` at `columns` wide, or null. A pane that still shows it gives
+  // the screen as it is now: opened from another tab, the session leaves that pane.
+  photoOf(session, columns) {
+    const showing = [...this.views.values()].find((view) => sameSession(view.shown, session));
+    const photo = showing?.photo() ?? this.photos.get(session);
+    return fits(photo, columns) ? photo : null;
+  }
+
   // Shows `session` in the active pane. If another pane of this tab shows it already, Rust
   // gives that pane the focus instead; a pane of another tab gives it up.
   async open(session) {
@@ -656,6 +693,9 @@ export class Panes {
       this.render(opened.tabs);
       return;
     }
+    const photo = this.photoOf(session, view.terminal.cols);
+    const leaving = view.photo();
+    if (view.shown !== null && leaving !== null) this.photos.keep(view.shown, leaving);
     const output = new Channel();
     const opening = { output, generation: null, ended: false };
     view.current = opening;
@@ -668,7 +708,11 @@ export class Panes {
       shown = true;
     };
     view.terminal.reset();
-    view.connecting(this.titleOf(session));
+    if (photo === null) view.connecting(this.titleOf(session));
+    else {
+      view.showPhoto(photo);
+      mark("photo shown", start);
+    }
     let opened;
     try {
       opened = await invoke("open_session", { ...request, output });
