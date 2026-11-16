@@ -59,6 +59,12 @@ fn message_files(dir: &Path) -> io::Result<Vec<PathBuf>> {
     Ok(files)
 }
 
+/// Numbers padded to a fixed width, so that name order is the order of sending: unpadded,
+/// the 10th message of a second would sort before the 9th.
+fn file_stem(sent_at: u64, process: u32, sequence: u64) -> String {
+    format!("{sent_at:020}-{process}-{sequence:020}")
+}
+
 /// Where kindric keeps its files, next to the kindric-accounts data: `$XDG_DATA_HOME`
 /// (else `~/.local/share`) on Unix, the user's AppData on Windows, then `kindric`.
 pub fn data_dir() -> io::Result<PathBuf> {
@@ -123,8 +129,7 @@ impl Mailbox {
     pub fn send(&self, to_session: &str, message: &Message) -> io::Result<()> {
         let inbox = self.inbox(to_session)?;
         private_dir(&inbox)?;
-        let sequence = SEQUENCE.fetch_add(1, Ordering::Relaxed);
-        let stem = format!("{:020}-{}-{sequence}", message.sent_at, std::process::id());
+        let stem = file_stem(message.sent_at, std::process::id(), SEQUENCE.fetch_add(1, Ordering::Relaxed));
         let temporary = inbox.join(format!(".{stem}.tmp"));
         fs::write(&temporary, serde_json::to_vec(message).map_err(io::Error::other)?)?;
         fs::rename(&temporary, inbox.join(format!("{stem}.json")))
@@ -368,6 +373,13 @@ mod tests {
         assert_eq!(mailbox.unread_count("bbbb-2222").unwrap(), 0);
         assert!(mailbox.take_unread("bbbb-2222").unwrap().is_empty());
         fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn names_sort_in_the_order_of_sending_within_a_second() {
+        assert!(file_stem(5, 42, 9) < file_stem(5, 42, 10));
+        assert!(file_stem(5, 42, 99) < file_stem(5, 42, 100));
+        assert!(file_stem(5, 42, u64::MAX) < file_stem(6, 42, 0));
     }
 
     fn from(session: &str, text: &str, sent_at: u64) -> Message {
