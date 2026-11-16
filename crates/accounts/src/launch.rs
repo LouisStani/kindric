@@ -124,12 +124,13 @@ fn apply_theme(
     }
 }
 
-/// The hooks of kindric a session gets. An isolated account gets the one of the user being away
-/// alone (309): it reads only kindric's marks of absence, while messages and waking would let
-/// something cross from one account to another (039).
+/// The hooks of kindric a session gets. An isolated account gets those of the user being away
+/// (309) and of the overview (329): they only put its questions before the user and give back
+/// the user's answers, while messages and waking would let something cross from one account to
+/// another (039).
 fn hooks_for(isolated: bool, all: usage::KindricHooks) -> usage::KindricHooks {
     if isolated {
-        usage::KindricHooks { away: all.away, ..usage::KindricHooks::default() }
+        usage::KindricHooks { away: all.away, permission: all.permission, start: all.start, ..usage::KindricHooks::default() }
     } else {
         all
     }
@@ -226,14 +227,22 @@ mod tests {
     }
 
     #[test]
-    fn an_isolated_account_gets_the_away_hook_alone() {
+    fn an_isolated_account_gets_the_away_and_overview_hooks_alone() {
         let all = usage::KindricHooks {
             unread: Some("k unread".into()),
             away: Some("k away-hook".into()),
             wake: Some("k wait-message".into()),
+            permission: Some("k permission-hook".into()),
+            start: Some("k overview-start".into()),
         };
         let isolated = hooks_for(true, all.clone());
-        assert_eq!(isolated, usage::KindricHooks { away: Some("k away-hook".into()), ..usage::KindricHooks::default() });
+        let expected = usage::KindricHooks {
+            away: Some("k away-hook".into()),
+            permission: Some("k permission-hook".into()),
+            start: Some("k overview-start".into()),
+            ..usage::KindricHooks::default()
+        };
+        assert_eq!(isolated, expected, "no messages, no waking");
         assert_eq!(hooks_for(false, all.clone()), all, "a shared account gets them all");
         assert_eq!(hooks_for(true, usage::KindricHooks::default()), usage::KindricHooks::default(), "none when kindric has none");
     }
