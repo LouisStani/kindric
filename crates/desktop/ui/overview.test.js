@@ -9,6 +9,7 @@ import {
   accountCards,
   allView,
   answersInOneClick,
+  canPrompt,
   choicesAnswer,
   contextLevel,
   keptLabel,
@@ -18,7 +19,9 @@ import {
   permissionText,
   projectView,
   projectsOf,
+  promptTargets,
   requestsBySession,
+  sentText,
   standing,
   summaryOf,
 } from "./overview-board.js";
@@ -102,6 +105,25 @@ test("an account is shown with sessions running or figures, framed from 80% of i
     ["lystriq", 0, false],
     ["pro", 1, true],
   ], "the registry's order first; a paused session does not count; an account with neither is left out");
+});
+
+test("a prompt reaches the project's sessions kindric runs, not the paused ones nor those elsewhere", () => {
+  const rows = [
+    row("rest", 2, { short_id: "aaaa" }),
+    row("stopped", 2, { short_id: "bbbb", ...paused }),
+    row("terminal", 2, { short_id: null, ...working }),
+    row("working", 2, { short_id: "cccc", ...working }),
+    row("other project", 3, { short_id: "dddd" }),
+  ];
+  assert.deepEqual(labels(promptTargets(rows, 2)), ["working", "rest"], "most urgent first, as shown");
+  assert.equal(canPrompt(rows[1]), false);
+  assert.equal(canPrompt(rows[2]), false);
+});
+
+test("prompt all says how many it reached and why the others failed", () => {
+  assert.equal(sentText([{ label: "a", error: null }, { label: "b", error: null }]), "sent to 2 of 2");
+  assert.equal(sentText([{ label: "a", error: null }, { label: "pricing page", error: "busy elsewhere" }]), "sent to 1 of 2 · pricing page: busy elsewhere");
+  assert.equal(sentText([{ label: "a", error: "x" }]), "sent to 0 of 1 · a: x");
 });
 
 test("a context bar turns amber from 60%, red from 80%", () => {

@@ -91,6 +91,24 @@ export function accountCards(rows, accounts, usages) {
     .filter((card) => card.sessions > 0 || card.usage !== null);
 }
 
+// Whether a prompt can be typed into a session from here: one kindric runs in the background
+// (`short_id`), with a process.
+export function canPrompt(row) {
+  return Boolean(row.short_id) && row.state !== "paused";
+}
+
+// The sessions "prompt all" types into: those of the tab a prompt can reach, in the order shown.
+export function promptTargets(rows, tabId, requests = new Map()) {
+  return projectView(rows, tabId, requests).active.filter(canPrompt);
+}
+
+// What "prompt all" says once done: `results` are `{ label, error }`, `error` null when sent.
+export function sentText(results) {
+  const failed = results.filter((result) => result.error !== null);
+  const head = `sent to ${results.length - failed.length} of ${results.length}`;
+  return [head, ...failed.map((result) => `${result.label}: ${result.error}`)].join(" · ");
+}
+
 // How a context bar is coloured.
 export function contextLevel(percent) {
   if (percent >= 80) return "high";
