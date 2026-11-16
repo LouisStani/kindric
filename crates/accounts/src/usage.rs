@@ -362,8 +362,9 @@ const UNREAD_EVENTS: [(&str, Option<&str>); 2] = [("UserPromptSubmit", None), ("
 /// each question Claude Code would ask, to answer it in their place.
 const AWAY_EVENTS: [(&str, Option<&str>); 3] = [("Stop", None), ("PreToolUse", Some("Bash")), ("PermissionRequest", None)];
 
-/// The event the wait for a message that wakes a session starts on: when it ends a turn.
-const WAKE_EVENTS: [(&str, Option<&str>); 1] = [("Stop", None)];
+/// The events the wait for a message that wakes a session starts on: when it ends a turn, and when
+/// it starts or starts again, so that a session that has not ended a turn yet waits too.
+const WAKE_EVENTS: [(&str, Option<&str>); 2] = [("Stop", None), ("SessionStart", None)];
 
 /// The event of the overview's questions: each question Claude Code would ask on the screen.
 const PERMISSION_EVENTS: [(&str, Option<&str>); 1] = [("PermissionRequest", None)];
@@ -598,6 +599,7 @@ mod tests {
         assert_eq!(wait["asyncRewake"], true, "waits in the background");
         assert_eq!(wait["timeout"], 86_400);
         assert_eq!(value["hooks"]["Stop"].as_array().map(Vec::len), Some(2));
+        assert_eq!(&value["hooks"]["SessionStart"][0]["hooks"][0], wait, "a session that has not ended a turn waits too");
         assert_eq!(value["hooks"]["PreToolUse"][0]["matcher"], "Bash", "only shell commands are looked at");
         assert_eq!(value["hooks"]["PreToolUse"][0]["hooks"][0]["command"], "\"/bin/kindric\" away-hook");
         assert_eq!(value["hooks"]["PermissionRequest"][0]["hooks"][0]["command"], "\"/bin/kindric\" away-hook");

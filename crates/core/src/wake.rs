@@ -1,8 +1,9 @@
 //! A session at rest wakes when a message asks it to (`Message::wake`). `kindric wait-message` is
-//! a Stop hook Claude Code runs in the background (`asyncRewake`): it waits for such a message,
-//! then exits with code 2, and its error output goes to the session, which starts a turn. The hook
-//! starts again at the end of every turn: `wait/<session id>` in kindric's data holds the token of
-//! the latest wait, and an older one ends without a word.
+//! a Stop and SessionStart hook Claude Code runs in the background (`asyncRewake`): it waits for
+//! such a message, then exits with code 2, and its error output goes to the session, which starts
+//! a turn. The hook starts again at the end of every turn and each time the session starts:
+//! `wait/<session id>` in kindric's data holds the token of the latest wait, and an older one ends
+//! without a word.
 
 use std::fs;
 use std::io;
@@ -55,10 +56,12 @@ pub fn wait(mailbox: &Mailbox, root: &Path, session: &str, token: &str, mut paus
     }
 }
 
-/// The session of `input`, the JSON Claude Code gives a hook, when it is the end of a turn.
-pub fn stopped_session(input: &str) -> Option<String> {
+/// The session of `input`, the JSON Claude Code gives a hook, when a wait starts there: the end of
+/// a turn, or the start of the session (a new one, or one started again, whose wait ended with
+/// its former process).
+pub fn waiting_session(input: &str) -> Option<String> {
     let input: serde_json::Value = serde_json::from_str(input).ok()?;
-    if input.get("hook_event_name")?.as_str()? != "Stop" {
+    if !matches!(input.get("hook_event_name")?.as_str()?, "Stop" | "SessionStart") {
         return None;
     }
     Some(input.get("session_id")?.as_str()?.to_owned())
@@ -70,7 +73,7 @@ pub fn stopped_session(input: &str) -> Option<String> {
 pub fn run_wait_hook() -> Option<String> {
     let mut input = String::new();
     io::Read::read_to_string(&mut io::stdin(), &mut input).ok()?;
-    let session = stopped_session(&input)?;
+    let session = waiting_session(&input)?;
     let mailbox = Mailbox::new(mailbox::default_root().ok()?);
     let root = default_root().ok()?;
     let started = SystemTime::now().duration_since(UNIX_EPOCH).map_or(0, |elapsed| elapsed.as_nanos());
@@ -146,11 +149,14 @@ mod tests {
     }
 
     #[test]
-    fn only_the_end_of_a_turn_starts_a_wait() {
-        assert_eq!(stopped_session(r#"{"session_id":"bbbb-2222","hook_event_name":"Stop"}"#).as_deref(), Some("bbbb-2222"));
-        assert_eq!(stopped_session(r#"{"session_id":"bbbb-2222","hook_event_name":"SubagentStop"}"#), None);
-        assert_eq!(stopped_session(""), None, "the probe of kindric-accounts gives no input");
-        assert_eq!(stopped_session("{broken"), None);
+    fn the_end_of_a_turn_and_the_start_of_the_session_start_a_wait() {
+        assert_eq!(waiting_session(r#"{"session_id":"bbbb-2222","hook_event_name":"Stop"}"#).as_deref(), Some("bbbb-2222"));
+        let resumed = r#"{"session_id":"bbbb-2222","hook_event_name":"SessionStart","source":"resume"}"#;
+        assert_eq!(waiting_session(resumed).as_deref(), Some("bbbb-2222"), "a session started again waits at once");
+        assert_eq!(waiting_session(r#"{"session_id":"bbbb-2222","hook_event_name":"SubagentStop"}"#), None);
+        assert_eq!(waiting_session(r#"{"session_id":"bbbb-2222","hook_event_name":"UserPromptSubmit"}"#), None);
+        assert_eq!(waiting_session(""), None, "the probe of kindric-accounts gives no input");
+        assert_eq!(waiting_session("{broken"), None);
     }
 
     #[test]
