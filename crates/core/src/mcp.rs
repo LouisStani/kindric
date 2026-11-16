@@ -10,6 +10,7 @@ use serde_json::{Value, json};
 use crate::accounts::{self, SessionInfo};
 use crate::artifacts::{self, Kind};
 use crate::mailbox::{self, Mailbox, Message};
+use crate::origins::{self, Origin};
 
 const SERVER_NAME: &str = "kindric";
 const FALLBACK_PROTOCOL: &str = "2025-06-18";
@@ -318,7 +319,16 @@ impl<F: Fn() -> io::Result<Vec<SessionInfo>>> Server<F> {
             Kind::User => "the user, who finds it in kindric (Ctrl+Shift+A)",
             Kind::Claude => "you: list_artifacts gives it back",
         };
-        Ok(format!("Kept for {whose}: {}", kept.display()))
+        let origin = Origin {
+            session_id: self.identity.session_id.clone(),
+            account: self.identity.account.clone(),
+            kept_at: mailbox::now_secs(),
+        };
+        let unnoted = match origins::note(&root, &kept, origin) {
+            Ok(()) => String::new(),
+            Err(error) => format!(" (kindric will not show it under this session: {error})"),
+        };
+        Ok(format!("Kept for {whose}: {}{unnoted}", kept.display()))
     }
 
     fn list_artifacts(&self, arguments: &Value) -> Result<String, String> {
@@ -510,6 +520,8 @@ mod tests {
         assert_eq!(kept["isError"], false, "{}", text(&kept));
         let store = root.join("data").join("artifacts").join(artifacts::OTHER);
         assert!(store.join("user").join("slide.png").is_file());
+        let noted = origins::read(&store);
+        assert_eq!(noted.get("user/slide.png").map(|origin| (origin.session_id.as_str(), origin.account.as_str())), Some(("bbbbbbbb-2222", "lystriq")));
         let absolute = root.join("work").join("make.py");
         let mine = call(&server, "keep_artifact", json!({ "path": absolute, "for": "claude", "group": "carrousel" }));
         assert_eq!(mine["isError"], false, "{}", text(&mine));

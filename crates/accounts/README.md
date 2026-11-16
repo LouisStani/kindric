@@ -167,6 +167,7 @@ Each account gets its own `CLAUDE_CONFIG_DIR`.
 | MCP servers of the other accounts | Merged at launch and passed with `--mcp-config` |
 | Read rules of an isolated account | Added to the same `.shared-settings/<name>.json` |
 | Usage of the limits | `~/.local/share/kindric-accounts/.usage/<name>.json`, written by `kindric-accounts statusline` |
+| Context used by each session | `~/.local/share/kindric-accounts/.usage/context/<name>/<session id>.json`, written by `kindric-accounts statusline` |
 | Unread messages of kindric | Hooks added to the same `.shared-settings/<name>.json`, see below |
 | The user away, in kindric | A Stop hook added to the same `.shared-settings/<name>.json`, see below |
 | Claude Code theme of the sessions kindric starts | A copy of that file with `"theme": "custom:<theme>"`, `.shared-settings/<name>.<theme>.json`; `run` never writes it |
@@ -200,6 +201,7 @@ Claude Code tells how much of its limits an account used, over five hours and ov
 
 - Only sessions started by kindric-accounts, or by kindric, note figures. A `claude` started some other way does not.
 - An account billed by API key has no limits and notes nothing.
+- It also notes how full the context window of each session is, once the session has answered: `~/.local/share/kindric-accounts/.usage/context/<name>/<session id>.json`, with `used_percentage` and `updated_at`. A file untouched for 7 days is removed when the account writes a new one.
 - If kindric-accounts cannot be found in `PATH` at launch, sessions start with your settings as before, without figures.
 
 ## Messages of kindric

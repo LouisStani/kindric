@@ -61,6 +61,81 @@ pub fn read(paths: &Paths, name: &str) -> Option<Usage> {
     serde_json::from_str(&std::fs::read_to_string(usage_file(paths, name)).ok()?).ok()
 }
 
+/// How full the context window of one session was when its status line last ran.
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+pub struct Context {
+    pub used_percentage: f64,
+    /// Unix seconds.
+    pub updated_at: i64,
+}
+
+/// A context file untouched this long belongs to a session gone: it is removed when the account
+/// writes a new one.
+const CONTEXT_KEPT_SECONDS: i64 = 7 * 24 * 3600;
+
+/// A session id as Claude Code gives it, safe as a file name.
+fn is_session_id(id: &str) -> bool {
+    !id.is_empty() && id.len() <= 64 && id.chars().all(|c| c.is_ascii_alphanumeric() || c == '-')
+}
+
+fn context_dir(paths: &Paths, name: &str) -> PathBuf {
+    paths.data_root.join(".usage").join("context").join(name)
+}
+
+/// `None` for an id that cannot be a session's.
+pub fn context_file(paths: &Paths, name: &str, session_id: &str) -> Option<PathBuf> {
+    is_session_id(session_id).then(|| context_dir(paths, name).join(format!("{session_id}.json")))
+}
+
+/// The last context written down for a session of `name`; `None` when there is none.
+pub fn read_context(paths: &Paths, name: &str, session_id: &str) -> Option<Context> {
+    serde_json::from_str(&std::fs::read_to_string(context_file(paths, name, session_id)?).ok()?).ok()
+}
+
+/// The session and its context in the status line input; `None` while Claude Code gives no
+/// percentage, before the first answer.
+fn context_of(input: &[u8], now: i64) -> Option<(String, Context)> {
+    #[derive(Deserialize)]
+    struct Input {
+        session_id: Option<String>,
+        context_window: Option<ContextWindow>,
+    }
+    #[derive(Deserialize)]
+    struct ContextWindow {
+        used_percentage: Option<f64>,
+    }
+    let input = serde_json::from_slice::<Input>(input).ok()?;
+    let session = input.session_id.filter(|id| is_session_id(id))?;
+    let used = input.context_window?.used_percentage.filter(|used| used.is_finite())?.clamp(0.0, 100.0);
+    Some((session, Context { used_percentage: used, updated_at: now }))
+}
+
+/// Removes the context files of `dir` untouched for `CONTEXT_KEPT_SECONDS` at `now`.
+fn forget_old_contexts(dir: &Path, now: i64) {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let modified = entry
+            .metadata()
+            .and_then(|meta| meta.modified())
+            .ok()
+            .and_then(|time| time.duration_since(std::time::UNIX_EPOCH).ok())
+            .and_then(|since| i64::try_from(since.as_secs()).ok());
+        if modified.is_some_and(|modified| now - modified > CONTEXT_KEPT_SECONDS) {
+            // Another status line may have removed it first: gone all the same.
+            let _ = std::fs::remove_file(entry.path());
+        }
+    }
+}
+
+fn write_json(file: &Path, value: &impl Serialize) -> io::Result<()> {
+    if let Some(dir) = file.parent() {
+        files::create_private_dir(dir)?;
+    }
+    files::write_atomic(file, &serde_json::to_string(value).map_err(io::Error::other)?)
+}
+
 /// The figures of the input Claude Code gives a status line; `None` without `rate_limits`
 /// (an account billed by API key has none).
 fn usage_of(input: &[u8], now: i64) -> Option<Usage> {
@@ -99,17 +174,25 @@ fn account_of(paths: &Paths, config_dir: Option<&OsStr>) -> Option<String> {
     (listed && paths.account_dir(&name) == dir).then_some(name)
 }
 
-/// Writes down the figures of `input` for the account of `config_dir`. Nothing to write is not
-/// an error.
+/// Writes down the figures of `input` for the account of `config_dir`, and how full the context
+/// of its session is. Nothing to write is not an error.
 pub fn record(paths: &Paths, config_dir: Option<&OsStr>, input: &[u8], now: i64) -> io::Result<()> {
-    let (Some(name), Some(usage)) = (account_of(paths, config_dir), usage_of(input, now)) else {
+    let Some(name) = account_of(paths, config_dir) else {
         return Ok(());
     };
-    let file = usage_file(paths, &name);
-    if let Some(dir) = file.parent() {
-        files::create_private_dir(dir)?;
+    if let Some(usage) = usage_of(input, now) {
+        write_json(&usage_file(paths, &name), &usage)?;
     }
-    files::write_atomic(&file, &serde_json::to_string(&usage).map_err(io::Error::other)?)
+    if let Some((session, context)) = context_of(input, now)
+        && let Some(file) = context_file(paths, &name, &session)
+    {
+        let first = !file.exists();
+        write_json(&file, &context)?;
+        if first {
+            forget_old_contexts(&context_dir(paths, &name), now);
+        }
+    }
+    Ok(())
 }
 
 /// The command of the user's status line, in `~/.claude/settings.json`.
@@ -413,6 +496,33 @@ mod tests {
         assert!(version_of("kindric-accounts 2.10.3").is_some_and(|version| version >= STATUSLINE_SINCE));
         assert_eq!(version_of("claude 2.1.0"), None);
         assert_eq!(version_of("kindric-accounts 2.1"), None);
+    }
+
+    #[test]
+    fn the_context_of_the_session_is_read_from_the_status_line_input() {
+        let input = br#"{"session_id":"5af07e42-aa11","context_window":{"used_percentage":64.4,"context_window_size":200000}}"#;
+        assert_eq!(context_of(input, 9), Some(("5af07e42-aa11".to_string(), Context { used_percentage: 64.4, updated_at: 9 })));
+        assert_eq!(context_of(br#"{"session_id":"s1","context_window":{"context_window_size":200000}}"#, 0), None, "no answer yet");
+        assert_eq!(context_of(br#"{"session_id":"../up","context_window":{"used_percentage":1}}"#, 0), None);
+        assert_eq!(context_of(br#"{"context_window":{"used_percentage":1}}"#, 0), None);
+    }
+
+    #[test]
+    fn the_context_is_written_per_session_and_old_ones_go() {
+        let (root, paths) = setup("context", &["work"]);
+        let work = paths.account_dir("work").into_os_string();
+        let input = |session: &str, used: u32| format!(r#"{{"session_id":"{session}","context_window":{{"used_percentage":{used}}}}}"#);
+        record(&paths, Some(&work), input("gone", 90).as_bytes(), 1_000).unwrap();
+        let gone = context_file(&paths, "work", "gone").unwrap();
+        let week_ago = std::time::UNIX_EPOCH + std::time::Duration::from_secs(1_000);
+        fs::OpenOptions::new().write(true).open(&gone).unwrap().set_modified(week_ago).unwrap();
+        let later = 1_000 + CONTEXT_KEPT_SECONDS + 1;
+        record(&paths, Some(&work), input("s1", 12).as_bytes(), later).unwrap();
+        assert_eq!(read_context(&paths, "work", "s1"), Some(Context { used_percentage: 12.0, updated_at: later }));
+        assert!(!gone.exists(), "a session untouched for a week is forgotten");
+        assert_eq!(read(&paths, "work"), None, "no rate_limits: the limits are left alone");
+        assert_eq!(read_context(&paths, "work", "../s1"), None);
+        fs::remove_dir_all(root).unwrap();
     }
 
     #[test]

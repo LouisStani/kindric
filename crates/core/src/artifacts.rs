@@ -9,6 +9,8 @@ use std::time::UNIX_EPOCH;
 
 use serde::Deserialize;
 
+use crate::origins;
+
 /// The folder of the sessions of no project.
 pub const OTHER: &str = "other";
 const LONGEST_GROUP: usize = 64;
@@ -277,6 +279,7 @@ pub fn move_to(root: &Path, kind: Kind, group: Option<&str>, name: &str, to: Opt
             continue;
         }
         fs::rename(&source, &target).map_err(|error| format!("cannot move {name}: {error}"))?;
+        origins::moved(root, &source, &target).map_err(|error| format!("{name} moved, but the session that kept it is lost: {error}"))?;
         return Ok(target);
     }
     Err(format!("{} already holds {MOST_COPIES} files named after {name}", folder.display()))
@@ -296,7 +299,8 @@ pub fn rename_group(root: &Path, kind: Kind, from: &str, to: &str) -> Result<(),
     if target.exists() {
         return Err(format!("a group named {to} already exists"));
     }
-    fs::rename(&source, &target).map_err(|error| format!("cannot rename {from}: {error}"))
+    fs::rename(&source, &target).map_err(|error| format!("cannot rename {from}: {error}"))?;
+    origins::moved_folder(root, &source, &target).map_err(|error| format!("{from} renamed, but the sessions that kept its files are lost: {error}"))
 }
 
 /// Removes a group: its files go back to the unsorted ones, nothing is deleted.
@@ -311,7 +315,8 @@ pub fn remove_group(root: &Path, kind: Kind, group: &str) -> Result<(), String> 
 
 pub fn delete(root: &Path, kind: Kind, group: Option<&str>, name: &str) -> Result<(), String> {
     let path = file_path(root, kind, group, name)?;
-    fs::remove_file(&path).map_err(|error| format!("cannot delete {name}: {error}"))
+    fs::remove_file(&path).map_err(|error| format!("cannot delete {name}: {error}"))?;
+    origins::forget(root, &path).map_err(|error| format!("{name} deleted, but the session that kept it stays noted: {error}"))
 }
 
 #[cfg(test)]
@@ -471,6 +476,22 @@ mod tests {
         let unsorted = |name: &str| (None, name.to_string());
         let logos = |name: &str| (Some("logos".to_string()), name.to_string());
         assert_eq!(names(&root), [unsorted("new.png"), unsorted("same-a.png"), unsorted("same-b.png"), unsorted("old.png"), logos("b.svg"), logos("a.svg")]);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn the_session_that_kept_a_file_follows_it_through_the_window() {
+        let root = store_with("origins", &[(None, "s.png")]);
+        let store = root.join("store");
+        let origin = origins::Origin { session_id: "s1".into(), account: "louis".into(), kept_at: 1 };
+        origins::note(&store, &store.join("user").join("s.png"), origin).unwrap();
+        move_to(&store, Kind::User, None, "s.png", Some("slides")).unwrap();
+        rename_group(&store, Kind::User, "slides", "deck").unwrap();
+        assert_eq!(origins::read(&store).keys().collect::<Vec<_>>(), ["user/deck/s.png"]);
+        remove_group(&store, Kind::User, "deck").unwrap();
+        assert_eq!(origins::read(&store).keys().collect::<Vec<_>>(), ["user/s.png"]);
+        delete(&store, Kind::User, None, "s.png").unwrap();
+        assert!(origins::read(&store).is_empty());
         fs::remove_dir_all(root).unwrap();
     }
 
