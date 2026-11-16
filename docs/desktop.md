@@ -153,6 +153,7 @@ All in kindric's data folder, next to the mailbox: `~/.local/share/kindric/` on 
 | `sessions.json` | Short names and hidden sessions |
 | `settings.json` | The theme |
 | `theme.json` | Your custom theme, if you write one |
+| `artifacts/<project>/` | The files sessions kept (`user/`, `claude/`), and `origins.json`: the session that kept each one, followed when the artifacts window moves it |
 
 ## Signal
 
