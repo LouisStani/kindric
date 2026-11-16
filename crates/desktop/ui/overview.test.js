@@ -7,13 +7,16 @@ import assert from "node:assert/strict";
 import {
   HOT_PERCENT,
   accountCards,
+  ageText,
   allView,
   answersInOneClick,
   canPrompt,
   choicesAnswer,
   contextLevel,
+  extensionOf,
   keptLabel,
   keptText,
+  keptTime,
   lineOf,
   nextAsking,
   permissionText,
@@ -124,6 +127,31 @@ test("prompt all says how many it reached and why the others failed", () => {
   assert.equal(sentText([{ label: "a", error: null }, { label: "b", error: null }]), "sent to 2 of 2");
   assert.equal(sentText([{ label: "a", error: null }, { label: "pricing page", error: "busy elsewhere" }]), "sent to 1 of 2 · pricing page: busy elsewhere");
   assert.equal(sentText([{ label: "a", error: "x" }]), "sent to 0 of 1 · a: x");
+});
+
+test("the last screen says how long ago the session wrote", () => {
+  assert.equal(ageText(1000, 1003), "now");
+  assert.equal(ageText(1000, 1020), "20 s ago");
+  assert.equal(ageText(1000, 1000 + 4 * 60 + 30), "4 min ago");
+  assert.equal(ageText(1000, 1000 + 2 * 3600 + 5), "2 h ago");
+  assert.equal(ageText(1000, 1000 + 3 * 86400), "3 d ago");
+  assert.equal(ageText(1010, 1000), "now", "a clock a little ahead is not in the future");
+});
+
+test("a kept file says when: now, the time today, else the date", () => {
+  const at = (...parts) => new Date(...parts).getTime() / 1000;
+  const now = at(2026, 10, 16, 21, 30);
+  assert.equal(keptTime(now - 20, now), "now");
+  assert.equal(keptTime(at(2026, 10, 16, 14, 2), now), "14:02");
+  assert.equal(keptTime(at(2026, 10, 15, 23, 59), now), "15/11/2026");
+});
+
+test("a kept file shows its extension", () => {
+  assert.equal(extensionOf("control-center-c.PNG"), "png");
+  assert.equal(extensionOf("deck.html"), "html");
+  assert.equal(extensionOf("Makefile"), "file");
+  assert.equal(extensionOf(".env"), "file");
+  assert.equal(extensionOf("odd."), "file");
 });
 
 test("a context bar turns amber from 60%, red from 80%", () => {

@@ -36,7 +36,7 @@ pub fn transcript_of(account_dir: &Path, session_id: &str) -> Option<PathBuf> {
 }
 
 /// The end of `path`, whole lines only.
-fn tail(path: &Path) -> Option<String> {
+pub(crate) fn tail(path: &Path) -> Option<String> {
     let mut file = File::open(path).ok()?;
     let start = file.metadata().ok()?.len().saturating_sub(TRANSCRIPT_TAIL);
     file.seek(SeekFrom::Start(start)).ok()?;
@@ -55,7 +55,7 @@ fn flag(entry: &Value, name: &str) -> bool {
 
 /// What Louis typed: a user message of the main conversation that is not a tool result, a
 /// notification or a shell command (those start with a tag, `<task-notification>`…).
-fn is_prompt(entry: &Value) -> bool {
+pub(crate) fn is_prompt(entry: &Value) -> bool {
     if entry.get("type").and_then(Value::as_str) != Some("user") || flag(entry, "isMeta") || flag(entry, "isSidechain") {
         return false;
     }

@@ -109,6 +109,36 @@ export function sentText(results) {
   return [head, ...failed.map((result) => `${result.label}: ${result.error}`)].join(" · ");
 }
 
+// How long ago `seconds` (Unix) was, at `now` (Unix seconds): "now", "20 s ago", "4 min ago",
+// "2 h ago", "3 d ago".
+export function ageText(seconds, now) {
+  const age = Math.floor(now - seconds);
+  // A clock a little ahead gives a negative age: "now" too.
+  if (age < 5) return "now";
+  if (age < 60) return `${age} s ago`;
+  if (age < 3600) return `${Math.floor(age / 60)} min ago`;
+  if (age < 86400) return `${Math.floor(age / 3600)} h ago`;
+  return `${Math.floor(age / 86400)} d ago`;
+}
+
+const twoDigits = (number) => `${number}`.padStart(2, "0");
+
+// When a file was kept, at `now` (both Unix seconds), in the user's time: "now" within a minute,
+// "14:02" the same day, else "16/11/2026" as the artifacts window writes dates.
+export function keptTime(seconds, now) {
+  if (now - seconds < 60) return "now";
+  const kept = new Date(seconds * 1000);
+  const today = new Date(now * 1000);
+  if (kept.toDateString() === today.toDateString()) return `${twoDigits(kept.getHours())}:${twoDigits(kept.getMinutes())}`;
+  return `${twoDigits(kept.getDate())}/${twoDigits(kept.getMonth() + 1)}/${kept.getFullYear()}`;
+}
+
+// "png" for "logo.png"; "file" without an extension.
+export function extensionOf(name) {
+  const dot = name.lastIndexOf(".");
+  return dot > 0 && dot < name.length - 1 ? name.slice(dot + 1).toLowerCase() : "file";
+}
+
 // How a context bar is coloured.
 export function contextLevel(percent) {
   if (percent >= 80) return "high";
