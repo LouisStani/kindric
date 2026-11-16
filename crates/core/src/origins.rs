@@ -54,6 +54,36 @@ pub fn kept_for_user(roots: &[PathBuf]) -> BTreeMap<String, usize> {
     counts
 }
 
+/// A file one session kept for the user.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+pub struct KeptFile {
+    /// The project's folder, as the artifacts window names it; None for "other".
+    pub project: Option<String>,
+    /// None for an unsorted file.
+    pub group: Option<String>,
+    pub name: String,
+    /// Seconds since 1970.
+    pub kept_at: u64,
+}
+
+/// The files `session_id` kept for the user, in the projects of `roots` (each with its project
+/// folder, None for "other"), the latest kept first.
+pub fn kept_by(roots: &[(Option<String>, PathBuf)], session_id: &str) -> Vec<KeptFile> {
+    let mut files: Vec<KeptFile> = roots
+        .iter()
+        .flat_map(|(project, root)| {
+            read(root).into_iter().filter(|(_, origin)| origin.session_id == session_id).filter_map(move |(key, origin)| {
+                let mut parts: Vec<&str> = key.strip_prefix("user/")?.split('/').collect();
+                let name = parts.pop()?.to_string();
+                let group = (!parts.is_empty()).then(|| parts.join("/"));
+                Some(KeptFile { project: project.clone(), group, name, kept_at: origin.kept_at })
+            })
+        })
+        .collect();
+    files.sort_by(|a, b| b.kept_at.cmp(&a.kept_at).then_with(|| a.name.cmp(&b.name)));
+    files
+}
+
 /// Writes a hidden copy first, then renames it: a reader never sees half the file.
 fn write(root: &Path, origins: &Origins) -> Result<(), String> {
     let text = serde_json::to_string_pretty(origins).map_err(|error| error.to_string())?;
@@ -166,6 +196,28 @@ mod tests {
         note(&second, &second.join("user").join("c.png"), origin("s2")).unwrap();
         let counts = kept_for_user(&[first.clone(), second.clone(), first.join("missing")]);
         assert_eq!(counts.into_iter().collect::<Vec<_>>(), [("s1".to_string(), 3), ("s2".to_string(), 1)]);
+        fs::remove_dir_all(first).unwrap();
+        fs::remove_dir_all(second).unwrap();
+    }
+
+    #[test]
+    fn the_files_of_one_session_come_latest_first_from_every_project() {
+        let first = scratch("by-a");
+        let second = scratch("by-b");
+        let at = |session: &str, kept_at| Origin { session_id: session.into(), account: "louis".into(), kept_at };
+        note(&first, &first.join("user").join("old.png"), at("s1", 10)).unwrap();
+        note(&first, &first.join("user").join("logos").join("l.svg"), at("s1", 30)).unwrap();
+        note(&first, &first.join("claude").join("make.py"), at("s1", 40)).unwrap();
+        note(&first, &first.join("user").join("theirs.png"), at("s2", 50)).unwrap();
+        note(&second, &second.join("user").join("deck.html"), at("s1", 20)).unwrap();
+        let roots = [(None, first.clone()), (Some("/home/u/socials".to_string()), second.clone())];
+        let files = kept_by(&roots, "s1");
+        let seen: Vec<_> = files.iter().map(|file| (file.project.as_deref(), file.group.as_deref(), file.name.as_str(), file.kept_at)).collect();
+        assert_eq!(seen, [
+            (None, Some("logos"), "l.svg", 30),
+            (Some("/home/u/socials"), None, "deck.html", 20),
+            (None, None, "old.png", 10),
+        ], "another session's file and a file kept for Claude are left out");
         fs::remove_dir_all(first).unwrap();
         fs::remove_dir_all(second).unwrap();
     }

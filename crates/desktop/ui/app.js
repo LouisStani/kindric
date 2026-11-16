@@ -362,12 +362,13 @@ async function readNewArtifacts() {
     return;
   }
   if (!overview.setArtifacts(artifacts)) return;
-  forgetThumbnails(artifacts);
+  forgetThumbnails([...artifacts, ...overview.keptShown()]);
   renderChips(lastView);
   renderOverview();
 }
 
-// Thumbnails of the overview's cards, by "project/group/name": read once while the file is new.
+// Thumbnails of the control center, by "project/group/name": read once while the file is new or
+// in the detail of the session picked.
 const thumbnails = new Map();
 
 function thumbnailKey(artifact) {
@@ -1263,6 +1264,8 @@ const overview = new Overview(document.getElementById("overview"), {
   onAnswer: (request, answer) => invoke("answer_request", { sessionId: request.session_id, id: request.id, answer }),
   onType: typeAnswer,
   onPrompt: typePrompt,
+  onDetail: (row) => invoke("session_detail", { account: row.account, sessionId: row.session_id }),
+  onOpenFile: (file) => invoke("open_artifact", { project: file.project, group: file.group, name: file.name }).catch(setStatus),
   onArtifacts: openArtifactsOf,
   thumbnailOf,
   onNewSession: (project) => openNewSession(project),

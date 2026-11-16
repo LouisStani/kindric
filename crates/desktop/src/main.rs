@@ -27,7 +27,7 @@ use kindric_core::launcher::{self, Request, resolve_directory};
 use kindric_core::mailbox::Mailbox;
 use kindric_core::accounts::SessionInfo;
 use kindric_core::artifacts::{self, Kind};
-use kindric_core::{accounts, atlas, away, changes, checks, claude_theme, images, mailbox, origins, overview, refresher, worktrees};
+use kindric_core::{accounts, atlas, away, changes, checks, claude_theme, images, mailbox, origins, overview, refresher, steps, worktrees};
 use serde::Serialize;
 use serde::de::DeserializeOwned;
 use tauri::ipc::{Channel, InvokeResponseBody, Response};
@@ -239,6 +239,49 @@ struct ControlFigures {
     contexts: std::collections::BTreeMap<String, f64>,
     /// Session id → files it kept for the user, in every project.
     kept: std::collections::BTreeMap<String, usize>,
+}
+
+/// What the control center shows of the session picked: its last steps, when its transcript was
+/// last written, and the files it kept for the user.
+#[derive(Serialize)]
+struct SessionDetail {
+    steps: Vec<steps::Step>,
+    /// Unix seconds; None when the transcript cannot be found.
+    written_at: Option<u64>,
+    kept: Vec<KeptByDetail>,
+}
+
+#[derive(Serialize)]
+struct KeptByDetail {
+    #[serde(flatten)]
+    file: origins::KeptFile,
+    image: bool,
+}
+
+/// How many steps the detail shows.
+const DETAIL_STEPS: usize = 8;
+
+/// Reads the end of the session's transcript and the origins of every project: off the window's
+/// thread.
+#[tauri::command(async)]
+fn session_detail(shared: State<'_, Shared>, account: String, session_id: String) -> Result<SessionDetail, String> {
+    let _span = shared.trace.span("session_detail");
+    let paths = accounts::paths().map_err(|error| error.to_string())?;
+    let account_dir = accounts::dir_of(&paths, &account, implicit_default(&account)?);
+    let (steps, written_at) = steps::of_session(&account_dir, &session_id, DETAIL_STEPS);
+    let data = mailbox::data_dir().map_err(|error| error.to_string())?;
+    let projects = artifacts::read_projects(&data)?;
+    let roots: Vec<(Option<String>, PathBuf)> = projects
+        .iter()
+        .map(|project| Some(project.as_path()))
+        .chain(std::iter::once(None))
+        .map(|project| (project.map(|project| project.to_string_lossy().into_owned()), artifacts::root_of_project(&data, project)))
+        .collect();
+    let kept = origins::kept_by(&roots, &session_id)
+        .into_iter()
+        .map(|file| KeptByDetail { image: images::is_image_name(&file.name), file })
+        .collect();
+    Ok(SessionDetail { steps, written_at, kept })
 }
 
 /// Reads a few small files per account and per project, so off the window's thread.
@@ -1538,6 +1581,7 @@ fn main() -> ExitCode {
             account_statuses,
             account_usage,
             control_figures,
+            session_detail,
             session_changes,
             file_diff,
             set_away,

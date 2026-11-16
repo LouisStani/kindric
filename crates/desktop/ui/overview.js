@@ -6,13 +6,16 @@
 import {
   STANDINGS,
   accountCards,
+  ageText,
   allView,
   answersInOneClick,
   canPrompt,
   choicesAnswer,
   contextLevel,
+  extensionOf,
   keptLabel,
   keptText,
+  keptTime,
   lineOf,
   nextAsking,
   permissionText,
@@ -56,6 +59,12 @@ function bar(className, percent) {
 // At most this many dots for a project on the side.
 const MOST_DOTS = 12;
 
+// How often the detail of the session picked is read again, in ms.
+const DETAIL_EVERY = 3000;
+
+// How each step of the last screen starts, as Claude Code draws them.
+const STEP_MARKS = { prompt: "›", text: "●", tool: "●", result: "⎿", error: "⎿" };
+
 export class Overview {
   // `onOpen(row)` opens the session of a row. `onAnswer(request, answer)` answers a permission or
   // a question of AskUserQuestion; `onType(row, request, text)` types the answer to a `kindric ask`
@@ -64,12 +73,19 @@ export class Overview {
   // "other"); `thumbnailOf(artifact)` gives the address of an image kept, or null.
   // `onNewSession(project)` starts a session in a project (null: the form); `onAddProject()`.
   // `onPrompt(row, text)` types a prompt into a session, a promise that fails with what to say.
-  constructor(section, { onOpen, onAnswer, onType, onPrompt, onArtifacts, thumbnailOf, onNewSession, onAddProject }) {
+  // `onDetail(row)` reads the detail of a session (`session_detail`); `onOpenFile(file)` opens a
+  // file it kept with the system's app.
+  constructor(section, { onOpen, onAnswer, onType, onPrompt, onDetail, onOpenFile, onArtifacts, thumbnailOf, onNewSession, onAddProject }) {
     this.section = section;
     this.onOpen = onOpen;
     this.onAnswer = onAnswer;
     this.onType = onType;
     this.onPrompt = onPrompt;
+    this.onDetail = onDetail;
+    this.onOpenFile = onOpenFile;
+    // The detail of the session picked: its id, then what `session_detail` gave or the error.
+    this.detail = null;
+    this.detailTimer = null;
     this.onArtifacts = onArtifacts;
     this.thumbnailOf = thumbnailOf;
     this.onNewSession = onNewSession;
@@ -119,6 +135,11 @@ export class Overview {
 
   artifactsOf(sessionId) {
     return this.artifacts.get(sessionId) ?? [];
+  }
+
+  // The files the detail shows, whose thumbnails must stay.
+  keptShown() {
+    return this.detail?.data?.kept ?? [];
   }
 
   // What `control_figures` returned. Returns whether it changed.
@@ -176,6 +197,7 @@ export class Overview {
   show(shown) {
     this.shown = shown;
     this.selected = null;
+    this.followDetail();
     this.promptAll = null;
     this.promptNotes.delete("all");
     this.redraw();
@@ -325,12 +347,88 @@ export class Overview {
     }
     article.append(line);
     for (const request of this.requests.get(row.session_id) ?? []) article.append(this.request(row, request));
+    if (row.session_id === this.selected) article.append(this.detailBox(row));
     if (row.session_id === this.selected && canPrompt(row)) article.append(this.promptBox(row));
     // A click picks the row, which opens its field.
     article.onclick = () => {
       if (this.selected !== row.session_id) this.pick(row.session_id, false);
     };
     return article;
+  }
+
+  // The detail of the session picked is read at once, then every 3 s while it stays picked and
+  // the page shows; picking another session or none stops it.
+  followDetail() {
+    clearInterval(this.detailTimer);
+    this.detailTimer = null;
+    if (!this.selected) {
+      this.detail = null;
+      return;
+    }
+    if (this.detail?.sessionId !== this.selected) this.detail = { sessionId: this.selected, data: null, error: null };
+    this.readDetail();
+    this.detailTimer = setInterval(() => this.readDetail(), DETAIL_EVERY);
+  }
+
+  async readDetail() {
+    const sessionId = this.selected;
+    const row = this.last?.rows.find((each) => each.session_id === sessionId);
+    if (!row || this.section.hidden) return;
+    let data = null;
+    let error = null;
+    try {
+      data = await this.onDetail(row);
+    } catch (failure) {
+      error = `${failure}`;
+    }
+    // Picked another one meanwhile: this answer is no longer wanted.
+    if (this.selected !== sessionId) return;
+    const before = JSON.stringify(this.detail);
+    this.detail = { sessionId, data, error };
+    if (JSON.stringify(this.detail) !== before) this.redraw();
+  }
+
+  // Where the session is (its last steps) and what it made (the files it kept for the user).
+  detailBox(row) {
+    const box = element("div", "row-detail");
+    box.onclick = (event) => event.stopPropagation();
+    const detail = this.detail?.sessionId === row.session_id ? this.detail : null;
+    const now = Date.now() / 1000;
+    const screen = element("section", "detail-screen");
+    const written = detail?.data?.written_at;
+    screen.append(element("h3", "detail-title", written ? `last screen · ${ageText(written, now)}` : "last screen"));
+    const lines = element("ol", "detail-steps");
+    if (detail?.error) lines.append(element("li", "step is-error", detail.error));
+    else if (!detail?.data) lines.append(element("li", "step is-note", "reading…"));
+    else if (detail.data.steps.length === 0) lines.append(element("li", "step is-note", "nothing to show yet"));
+    else for (const step of detail.data.steps) lines.append(element("li", `step is-${step.kind}`, `${STEP_MARKS[step.kind] ?? ""} ${step.text}`));
+    screen.append(lines);
+    const kept = element("section", "detail-kept");
+    kept.append(element("h3", "detail-title", "kept by this session"));
+    const files = detail?.data?.kept ?? [];
+    if (files.length === 0) kept.append(element("p", "step is-note", detail?.data ? "nothing kept yet" : ""));
+    const fresh = this.artifactsOf(row.session_id);
+    const isFresh = (file) => fresh.some((each) => each.name === file.name && (each.group ?? null) === (file.group ?? null) && (each.project ?? null) === (file.project ?? null));
+    for (const file of files) kept.append(this.keptFile(file, isFresh(file), now));
+    box.append(screen, kept);
+    return box;
+  }
+
+  keptFile(file, fresh, now) {
+    const item = button(fresh ? "detail-file fresh" : "detail-file", "", () => this.onOpenFile(file));
+    item.title = `open ${file.name}`;
+    const badge = element("span", "detail-badge", extensionOf(file.name));
+    if (file.image) {
+      const thumb = element("img", "detail-thumb");
+      thumb.alt = "";
+      this.thumbnailOf(file).then((url) => {
+        if (!url) return;
+        thumb.src = url;
+        badge.replaceChildren(thumb);
+      });
+    }
+    item.append(badge, element("span", "detail-name", file.name), element("span", "detail-time", keptTime(file.kept_at, now)));
+    return item;
   }
 
   // The field of the row picked: what is typed goes to the session as the user's message.
@@ -519,6 +617,7 @@ export class Overview {
   // `scroll`: the arrows bring the row into view; a click leaves the page where it is.
   pick(sessionId, scroll = true) {
     this.selected = sessionId;
+    this.followDetail();
     this.redraw();
     const picked = this.main.querySelector(`[data-session="${CSS.escape(sessionId)}"]`);
     if (scroll) picked?.scrollIntoView({ block: "nearest" });

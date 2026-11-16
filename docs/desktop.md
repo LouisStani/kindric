@@ -44,6 +44,7 @@ Tab **0**, `Ctrl+Shift+0`, is the page the app opens on. It shows every session 
 - **all** lists the sessions that need you first, whatever their project, then a group per project. A project's name opens it.
 - A project lists its sessions, the paused ones last with **resume**.
 - Each row gives what the session does, the files it kept for you (`3 kept · 2 new`, a click opens the artifacts window), how full its context is, and its account. A permission, a question or a `kindric ask` is answered in the row.
+- A row picked shows where its session is, its last steps read from its transcript (tools, results, what Claude wrote), and the files it kept for you, the new ones framed; a click on one opens it with the system's app.
 - A click picks a row and opens its field: what you type there goes to the session as your message, even while it works (it reads it at the end of its step). **open in a pane** shows the session itself.
 - **prompt all N**, in a project, types the same message into each of its sessions; the first send asks to confirm.
 - `↑` `↓` pick a row, `Enter` goes into its field, `o` opens it in a pane, `a` / `d` allow or deny its permission, `n` goes to the next session that asks, `Esc` leaves the field, then goes back to **all**.
