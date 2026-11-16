@@ -217,11 +217,16 @@ pub struct KindricHooks {
     pub away: Option<String>,
     /// Wakes a session at rest when a message asks it to.
     pub wake: Option<String>,
+    /// Puts the questions Claude Code asks on a session's screen in kindric's overview, and gives
+    /// back the user's answer from there.
+    pub permission: Option<String>,
+    /// Tells a session, when it starts, how to ask the user through the overview.
+    pub start: Option<String>,
 }
 
 impl KindricHooks {
     fn is_empty(&self) -> bool {
-        self.unread.is_none() && self.away.is_none() && self.wake.is_none()
+        [&self.unread, &self.away, &self.wake, &self.permission, &self.start].iter().all(|hook| hook.is_none())
     }
 }
 
@@ -254,6 +259,14 @@ pub fn with_additions(settings: Option<&str>, statusline: Option<&str>, hooks: &
         add_hook(&mut settings, &WAKE_EVENTS, &hook);
         allow_tool(&mut settings, READ_MESSAGES_TOOL);
     }
+    if let Some(command) = &hooks.permission {
+        // Waits for the user's answer: as long as a day, as for the wait above.
+        let hook = serde_json::json!({ "type": "command", "command": command, "timeout": WAIT_SECONDS });
+        add_hook(&mut settings, &PERMISSION_EVENTS, &hook);
+    }
+    if let Some(command) = &hooks.start {
+        add_hook(&mut settings, &START_EVENTS, &serde_json::json!({ "type": "command", "command": command }));
+    }
     let text = serde_json::to_string_pretty(&Value::Object(settings)).unwrap_or_default();
     (text, problem)
 }
@@ -268,6 +281,12 @@ const AWAY_EVENTS: [(&str, Option<&str>); 3] = [("Stop", None), ("PreToolUse", S
 
 /// The event the wait for a message that wakes a session starts on: when it ends a turn.
 const WAKE_EVENTS: [(&str, Option<&str>); 1] = [("Stop", None)];
+
+/// The event of the overview's questions: each question Claude Code would ask on the screen.
+const PERMISSION_EVENTS: [(&str, Option<&str>); 1] = [("PermissionRequest", None)];
+
+/// The event of the overview's instruction: when a session starts.
+const START_EVENTS: [(&str, Option<&str>); 1] = [("SessionStart", None)];
 
 /// How long a session at rest waits for such a message, in seconds: a day. Claude Code stops the
 /// wait after it; the next turn starts a new one.
@@ -318,7 +337,8 @@ const KINDRIC_NAMES: [&str; 2] = ["kindric.exe", "kindric"];
 #[cfg(not(windows))]
 const KINDRIC_NAMES: [&str; 1] = ["kindric"];
 
-/// kindric's hooks for a session: `"<kindric>" unread`, `away-hook` and `wait-message`, each when
+/// kindric's hooks for a session: `"<kindric>" unread`, `away-hook`, `wait-message`,
+/// `permission-hook` and `overview-start`, each when
 /// the `kindric` in `PATH` has it. An older one would answer with its usage and exit code 2, which
 /// Claude Code shows to Claude after every tool: each is tried once, with no input, and must exit 0.
 pub fn kindric_hooks() -> KindricHooks {
@@ -332,7 +352,13 @@ pub fn kindric_hooks() -> KindricHooks {
         let answers = probe.status().is_ok_and(|status| status.success());
         answers.then(|| format!("\"{}\" {subcommand}", kindric.display()))
     };
-    KindricHooks { unread: answering("unread"), away: answering("away-hook"), wake: answering("wait-message") }
+    KindricHooks {
+        unread: answering("unread"),
+        away: answering("away-hook"),
+        wake: answering("wait-message"),
+        permission: answering("permission-hook"),
+        start: answering("overview-start"),
+    }
 }
 
 /// The settings file of a session of `name`, written to `.shared-settings/<name>.json`: `base`
@@ -447,6 +473,7 @@ mod tests {
             unread: Some("\"/bin/kindric\" unread".into()),
             away: Some("\"/bin/kindric\" away-hook".into()),
             wake: Some("\"/bin/kindric\" wait-message".into()),
+            ..KindricHooks::default()
         };
         let (text, problem) = with_additions(Some(settings), None, &hooks);
         let value: Value = serde_json::from_str(&text).unwrap();
@@ -471,9 +498,34 @@ mod tests {
         assert_eq!(serde_json::from_str::<Value>(&odd).unwrap()["hooks"], "not hooks", "left as it is");
     }
 
+    /// The hook of absence answers at once while the user is away; the overview's waits for the
+    /// user otherwise. Claude Code runs both on each question.
+    #[test]
+    fn the_overview_hooks_come_after_the_away_hook() {
+        let hooks = KindricHooks {
+            away: Some("k away-hook".into()),
+            permission: Some("k permission-hook".into()),
+            start: Some("k overview-start".into()),
+            ..KindricHooks::default()
+        };
+        let settings = r#"{"hooks":{"SessionStart":[{"hooks":[{"type":"command","command":"mine"}]}]}}"#;
+        let (text, _) = with_additions(Some(settings), None, &hooks);
+        let value: Value = serde_json::from_str(&text).unwrap();
+        let asked = &value["hooks"]["PermissionRequest"];
+        assert_eq!(asked[0]["hooks"][0]["command"], "k away-hook");
+        assert_eq!(asked[1]["hooks"][0]["command"], "k permission-hook");
+        assert_eq!(asked[1]["hooks"][0]["timeout"], 86_400, "waits for the user up to a day");
+        assert!(asked[1].get("matcher").is_none(), "every question, AskUserQuestion included");
+        assert_eq!(value["hooks"]["SessionStart"][0]["hooks"][0]["command"], "mine");
+        assert_eq!(value["hooks"]["SessionStart"][1]["hooks"][0]["command"], "k overview-start");
+        assert!(value.get("permissions").is_none(), "nothing allowed by them");
+        let start_only = KindricHooks { start: Some("k overview-start".into()), ..KindricHooks::default() };
+        assert!(!start_only.is_empty(), "enough for a settings file");
+    }
+
     #[test]
     fn a_session_that_can_be_woken_reads_its_messages_without_asking() {
-        let wake = KindricHooks { unread: None, away: None, wake: Some("k wait-message".into()) };
+        let wake = KindricHooks { wake: Some("k wait-message".into()), ..KindricHooks::default() };
         let settings = r#"{"permissions":{"allow":["Bash(ls)"],"deny":["Read(//secret/**)"],"defaultMode":"acceptEdits"}}"#;
         let (text, _) = with_additions(Some(settings), None, &wake);
         let permissions = &serde_json::from_str::<Value>(&text).unwrap()["permissions"];
@@ -488,7 +540,7 @@ mod tests {
 
     #[test]
     fn without_the_wake_nothing_is_allowed() {
-        let hooks = KindricHooks { unread: Some("k unread".into()), away: Some("k away-hook".into()), wake: None };
+        let hooks = KindricHooks { unread: Some("k unread".into()), away: Some("k away-hook".into()), ..KindricHooks::default() };
         let (text, _) = with_additions(None, None, &hooks);
         assert!(serde_json::from_str::<Value>(&text).unwrap().get("permissions").is_none(), "an isolated account gets no wake either");
         let wake = KindricHooks { wake: Some("k wait-message".into()), ..hooks };
@@ -500,7 +552,7 @@ mod tests {
     fn the_hook_alone_is_enough_for_a_settings_file() {
         let (root, paths) = setup("hook-only", &["work"]);
         let mut warnings = Vec::new();
-        let hooks = KindricHooks { unread: Some("k unread".into()), away: None, wake: None };
+        let hooks = KindricHooks { unread: Some("k unread".into()), ..KindricHooks::default() };
         let file = settings_file(&paths, "work", None, None, &hooks, &mut warnings).unwrap();
         let value: Value = serde_json::from_str(&fs::read_to_string(file).unwrap()).unwrap();
         assert_eq!(value["hooks"]["UserPromptSubmit"][0]["hooks"][0]["command"], "k unread");

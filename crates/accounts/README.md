@@ -227,9 +227,21 @@ In kindric, you can say you are away for a while from a session. kindric-account
 A session that has finished runs `kindric away done <session id>` and stops.
 
 - The hook comes after your own hooks, and does nothing for a session you are not away from: Claude Code decides and asks as usual.
-- An isolated account gets this hook too, and no other hook of kindric's: it reads only kindric's marks of absence, nothing of another account.
+- An isolated account gets this hook too, with those of the overview (below) and no other hook of kindric's: it reads only kindric's marks of absence, nothing of another account.
 - It is added only when the `kindric` in `PATH` knows `away-hook`.
 - Claude Code reads the settings when a session starts: only sessions started after kindric is installed have it.
+
+## Overview, in kindric
+
+kindric shows what your sessions are doing on one page, where you answer their questions without opening them. kindric-accounts adds two hooks for it to the sessions it starts:
+
+- PermissionRequest, `kindric permission-hook` (timeout 24 h): each question Claude Code would ask on the screen of a session, whether a tool may run or a question of AskUserQuestion, is also put in the overview. Your answer there is given back to Claude Code. The question stays on the session's screen meanwhile: answer it there and the hook ends without a word.
+- SessionStart, `kindric overview-start`: tells the session to ask you with `kindric ask "<question>" "<context>"` rather than AskUserQuestion. That command puts the question in the overview and does not stop the session, which goes on with what does not depend on your answer. The answer comes later as a message from you.
+
+- The hooks come after your own hooks, and after the hook of absence: while you are away from a session, that one answers and the overview stays out of it.
+- An isolated account gets them too: they put its questions before you and give back your answers, nothing of another account.
+- Each is added only when the `kindric` in `PATH` knows it (`permission-hook`, `overview-start`).
+- Claude Code reads the settings when a session starts: only sessions started after kindric is installed have them.
 
 ## Isolated accounts
 
