@@ -1,6 +1,7 @@
 //! The tabs of the window, each with its own tree of panes: "other" first, then one per
-//! project. Hidden tabs keep their sessions attached; pane ids are unique across tabs. The
-//! active tab and the session of each come back at the next launch (`Saved`).
+//! project. Before them, number 0, the overview of every session shows instead of a tab. Hidden
+//! tabs keep their sessions attached; pane ids are unique across tabs. The active tab, whether
+//! the overview shows, and the session of each tab come back at the next launch (`Saved`).
 
 use std::path::{Path, PathBuf};
 
@@ -21,12 +22,25 @@ pub struct Tab {
     restore: Option<SessionKey>,
 }
 
-/// What `workspace.json` keeps: the active tab and the session each tab showed, tabs named
-/// by their project's folder (None for "other").
-#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+/// What `workspace.json` keeps: the active tab, whether the overview showed, and the session
+/// each tab showed, tabs named by their project's folder (None for "other").
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Saved {
     active: Option<PathBuf>,
+    /// The app opens on the overview, unless it was left on a tab.
+    #[serde(default = "opens_on_the_overview")]
+    overview: bool,
     shown: Vec<SavedTab>,
+}
+
+fn opens_on_the_overview() -> bool {
+    true
+}
+
+impl Default for Saved {
+    fn default() -> Self {
+        Self { active: None, overview: opens_on_the_overview(), shown: Vec::new() }
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -39,6 +53,8 @@ struct SavedTab {
 pub struct Tabs {
     tabs: Vec<Tab>,
     active: PaneId,
+    /// The overview shows instead of the active tab, which comes back when it closes.
+    overview: bool,
     #[serde(skip)]
     ids: Ids,
 }
@@ -47,7 +63,7 @@ impl Default for Tabs {
     fn default() -> Self {
         let mut ids = Ids::default();
         let all = Tab { id: ids.take(), layout: Layout::new(&mut ids), project: None, restore: None };
-        Self { active: all.id, tabs: vec![all], ids }
+        Self { active: all.id, tabs: vec![all], overview: false, ids }
     }
 }
 
@@ -83,8 +99,12 @@ impl Tabs {
         &mut self.tabs[index].layout
     }
 
-    /// The session being looked at: the one in the active pane of the visible tab.
+    /// The session being looked at: the one in the active pane of the visible tab; none while
+    /// the overview shows.
     pub fn watched(&self) -> Option<&SessionKey> {
+        if self.overview {
+            return None;
+        }
         self.tabs[self.index()].layout.active_session()
     }
 
@@ -101,6 +121,7 @@ impl Tabs {
             return Err(format!("{} is already a project", project.directory.display()));
         }
         self.push(project);
+        self.overview = false;
         Ok(())
     }
 
@@ -150,10 +171,12 @@ impl Tabs {
         Some(closed.layout.leaves())
     }
 
-    /// Moves to the tab `step` places forward (or back if negative), wrapping around.
+    /// Moves to the tab `step` places forward (or back if negative), wrapping around. The
+    /// overview is place 0, before "other".
     pub fn step(&mut self, step: i64) {
-        let length = self.tabs.len() as i64;
-        self.active = self.tabs[(self.index() as i64 + step).rem_euclid(length) as usize].id;
+        let place = if self.overview { 0 } else { self.index() as i64 + 1 };
+        let next = (place + step).rem_euclid(self.tabs.len() as i64 + 1);
+        self.go(next as usize);
     }
 
     /// Moves tab `from` to place `to`, both counted from 1. Only project tabs move, and only
@@ -168,10 +191,16 @@ impl Tabs {
         Ok(())
     }
 
-    /// Moves to tab `number`, counted from 1; nothing happens if there is no such tab.
+    /// Moves to tab `number`, counted from 1, or to the overview with 0; nothing happens if
+    /// there is no such tab.
     pub fn go(&mut self, number: usize) {
-        if let Some(tab) = number.checked_sub(1).and_then(|index| self.tabs.get(index)) {
+        let Some(index) = number.checked_sub(1) else {
+            self.overview = true;
+            return;
+        };
+        if let Some(tab) = self.tabs.get(index) {
             self.active = tab.id;
+            self.overview = false;
         }
     }
 
@@ -195,6 +224,7 @@ impl Tabs {
         }
         self.tabs[index].restore = None;
         let shown = self.tabs[index].layout.show(pane, session)?;
+        self.overview = false;
         Some((shown, left))
     }
 
@@ -216,7 +246,7 @@ impl Tabs {
                 Some(SavedTab { project: folder(tab), session: session.clone() })
             })
             .collect();
-        Saved { active: folder(&self.tabs[self.index()]), shown }
+        Saved { active: folder(&self.tabs[self.index()]), overview: self.overview, shown }
     }
 
     /// Back to the tab and sessions of `saved`; tabs of projects since removed are ignored.
@@ -225,6 +255,7 @@ impl Tabs {
         if let Some(tab) = self.tabs.iter().find(|tab| folder(tab) == saved.active) {
             self.active = tab.id;
         }
+        self.overview = saved.overview;
         for kept in &saved.shown {
             if let Some(tab) = self.tabs.iter_mut().find(|tab| folder(tab) == kept.project) {
                 tab.restore = Some(kept.session.clone());
@@ -360,18 +391,70 @@ mod tests {
         assert_eq!(tabs.owner_tab(Path::new("/home/u")), all);
     }
 
+    /// The place in the bar: 0 for the overview, then the tabs from 1.
+    fn place(tabs: &Tabs) -> usize {
+        if tabs.overview { 0 } else { tabs.index() + 1 }
+    }
+
     #[test]
-    fn steps_wrap_around() {
+    fn steps_wrap_around_through_the_overview() {
         let mut tabs = Tabs::default();
         add(&mut tabs);
         add(&mut tabs);
-        assert_eq!(tabs.index(), 2);
+        assert_eq!(place(&tabs), 3);
         tabs.step(1);
-        assert_eq!(tabs.index(), 0);
+        assert_eq!(place(&tabs), 0);
+        tabs.step(1);
+        assert_eq!(place(&tabs), 1);
         tabs.step(-1);
-        assert_eq!(tabs.index(), 2);
+        assert_eq!(place(&tabs), 0);
         tabs.step(-1);
-        assert_eq!(tabs.index(), 1);
+        assert_eq!(place(&tabs), 3);
+        tabs.step(-1);
+        assert_eq!(place(&tabs), 2);
+    }
+
+    #[test]
+    fn the_overview_shows_over_the_active_tab_and_watches_nothing() {
+        let mut tabs = Tabs::default();
+        add(&mut tabs);
+        let pane = active_tab(&tabs).layout.active();
+        tabs.show(pane, key("aaa"));
+        tabs.go(0);
+        assert_eq!((place(&tabs), tabs.index()), (0, 1), "the tab under it stays active");
+        assert_eq!(tabs.watched(), None);
+        tabs.go(9);
+        assert_eq!(place(&tabs), 0, "no tab 9");
+        tabs.go(2);
+        assert_eq!(tabs.watched(), Some(&key("aaa")));
+    }
+
+    #[test]
+    fn opening_a_session_or_adding_a_project_leaves_the_overview() {
+        let mut tabs = Tabs::default();
+        tabs.go(0);
+        let pane = active_tab(&tabs).layout.active();
+        tabs.show(pane, key("aaa"));
+        assert_eq!(place(&tabs), 1);
+        tabs.go(0);
+        add(&mut tabs);
+        assert_eq!(place(&tabs), 2);
+        let json = serde_json::to_value(&tabs).unwrap_or_default();
+        assert_eq!(json["overview"], false, "the page reads it");
+    }
+
+    #[test]
+    fn the_app_opens_on_the_overview_unless_left_on_a_tab() {
+        let mut tabs = Tabs::with_projects(vec![Project::new("/home/u/api".into())]);
+        tabs.restore(&Saved::default());
+        assert_eq!(place(&tabs), 0, "first launch");
+        tabs.restore(&serde_json::from_str(r#"{"active":"/home/u/api","shown":[]}"#).unwrap());
+        assert_eq!(place(&tabs), 0, "a workspace.json from before the overview");
+        tabs.go(2);
+        let json = serde_json::to_string(&tabs.saved()).unwrap();
+        let mut again = Tabs::with_projects(vec![Project::new("/home/u/api".into())]);
+        again.restore(&serde_json::from_str(&json).unwrap());
+        assert_eq!(place(&again), 2);
     }
 
     fn folders(tabs: &Tabs) -> Vec<String> {

@@ -324,11 +324,19 @@ impl<F: Fn() -> io::Result<Vec<SessionInfo>>> Server<F> {
             account: self.identity.account.clone(),
             kept_at: mailbox::now_secs(),
         };
-        let unnoted = match origins::note(&root, &kept, origin) {
-            Ok(()) => String::new(),
-            Err(error) => format!(" (kindric will not show it under this session: {error})"),
-        };
-        Ok(format!("Kept for {whose}: {}{unnoted}", kept.display()))
+        // The file is kept either way: only kindric's notes of who kept it and that it is new can be missing.
+        let mut done = format!("Kept for {whose}: {}", kept.display());
+        if let Err(error) = origins::note(&root, &kept, origin) {
+            done.push_str(&format!("\nkindric will not show it under this session: {error}"));
+        }
+        if kind == Kind::Claude {
+            return Ok(done);
+        }
+        let name = kept.file_name().map_or_else(String::new, |name| name.to_string_lossy().into_owned());
+        if let Err(error) = artifacts::note_kept(&root, &self.identity.session_id, group, &name) {
+            done.push_str(&format!("\nkindric will not show it as new: {error}"));
+        }
+        Ok(done)
     }
 
     fn list_artifacts(&self, arguments: &Value) -> Result<String, String> {
@@ -388,6 +396,7 @@ mod tests {
             state: SessionState::Waiting,
             isolated: false,
             progress: None,
+            waiting_for: None,
         }
     }
 
@@ -522,9 +531,12 @@ mod tests {
         assert!(store.join("user").join("slide.png").is_file());
         let noted = origins::read(&store);
         assert_eq!(noted.get("user/slide.png").map(|origin| (origin.session_id.as_str(), origin.account.as_str())), Some(("bbbbbbbb-2222", "lystriq")));
+        let new: Vec<(String, String)> = artifacts::unseen(&store).into_iter().map(|kept| (kept.session_id, kept.name)).collect();
+        assert_eq!(new, [("bbbbbbbb-2222".to_string(), "slide.png".to_string())], "the session that kept it is noted");
         let absolute = root.join("work").join("make.py");
         let mine = call(&server, "keep_artifact", json!({ "path": absolute, "for": "claude", "group": "carrousel" }));
         assert_eq!(mine["isError"], false, "{}", text(&mine));
+        assert_eq!(artifacts::unseen(&store).len(), 1, "a file kept for Claude is not shown to the user");
         let listed = call(&server, "list_artifacts", json!({}));
         let first = format!("- {}", Path::new("carrousel").join("make.py").display());
         assert!(text(&listed).starts_with(&first), "{}", text(&listed));

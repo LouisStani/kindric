@@ -294,9 +294,13 @@ function leaves(node, found = []) {
 }
 
 export class Panes {
-  constructor(container, bar, { keyFilter, onChange, onError, titleOf, isFinished, markOf, progressOf, changedOf, awayOf, onChangedClick, imagesOf, colorsOf }) {
+  // `overview` is the page shown instead of the tabs at number 0; `needsOf()` how many sessions
+  // need the user there.
+  constructor(container, bar, overview, { keyFilter, onChange, onError, titleOf, isFinished, markOf, needsOf, progressOf, changedOf, awayOf, onChangedClick, imagesOf, colorsOf }) {
     this.container = container;
     this.bar = bar;
+    this.overview = overview;
+    this.needsOf = needsOf;
     this.keyFilter = keyFilter;
     this.onChange = onChange;
     this.onError = onError;
@@ -381,6 +385,14 @@ export class Panes {
     return this.view(this.layout().active);
   }
 
+  // The pane of any tab that shows `session` with its session still running, or null.
+  viewShowing(session) {
+    if (this.state === null) return null;
+    const leaf = this.allLeaves().find((node) => sameSession(node.session, session));
+    const view = leaf ? this.view(leaf.id) : null;
+    return view && view.current && !view.current.ended ? view : null;
+  }
+
   // Whether a pane of the visible tab shows `session`: opened from another tab, it moves.
   shows(session) {
     return this.state !== null && leaves(this.layout().root).some((leaf) => sameSession(leaf.session, session));
@@ -455,9 +467,12 @@ export class Panes {
     if (pages.length !== shown.length || pages.some((page, index) => page !== shown[index])) {
       this.container.replaceChildren(...pages);
     }
+    // Hidden like a tab that is not visible: the terminals keep receiving output.
+    this.container.hidden = state.overview;
+    this.overview.hidden = !state.overview;
     // xterm measures its cells when opened, so only panes on screen are opened; every pane
     // is created in the active tab.
-    for (const leaf of leaves(this.layout().root)) this.view(leaf.id).openOnce();
+    if (!state.overview) for (const leaf of leaves(this.layout().root)) this.view(leaf.id).openOnce();
     for (const view of this.moved) {
       if (view.opened) view.terminal.refresh(0, view.terminal.rows - 1);
     }
@@ -483,11 +498,24 @@ export class Panes {
     }
   }
 
-  // "n name" per tab, which carries the dot of its most urgent session.
+  // "0 overview" with how many sessions need the user.
+  overviewButton() {
+    const button = element("button", "tab overview-tab");
+    button.append(element("span", "pos", "0"), element("span", "tab-name", "overview"));
+    button.title = "every session: what needs you, what works";
+    const needs = this.needsOf();
+    if (needs > 0) button.append(element("span", "tab-count", `${needs}`));
+    button.classList.toggle("active", this.state.overview);
+    button.onclick = () => this.goTab(0);
+    return button;
+  }
+
+  // "0 overview", then "n name" per tab, which carries the dot of its most urgent session.
   renderBar() {
     // A tab being dragged keeps the bar as it is until it is dropped.
     if (this.state === null || this.tabDrag) return;
     this.bar.replaceChildren(
+      this.overviewButton(),
       ...this.state.tabs.map((tab, index) => {
         const button = element("button", "tab");
         button.append(element("span", "pos", `${index + 1}`), element("span", "tab-name", tab.project ? tab.project.name : "other"));
@@ -504,7 +532,7 @@ export class Panes {
           button.classList.add(mark);
           button.append(element("span", "dot", mark === "finished" ? "✓" : ""));
         }
-        button.classList.toggle("active", tab.id === this.state.active);
+        button.classList.toggle("active", !this.state.overview && tab.id === this.state.active);
         // The click that ends a drag is not a click on the tab.
         button.onclick = () => performance.now() - this.tabDropped > 300 && this.goTab(index + 1);
         if (tab.project) button.onmousedown = (event) => this.dragTab(event, button, index);
@@ -514,7 +542,9 @@ export class Panes {
   }
 
   focus() {
-    if (!document.querySelector("dialog[open]")) this.active().terminal.focus();
+    if (document.querySelector("dialog[open]")) return;
+    if (this.state.overview) this.overview.focus();
+    else this.active().terminal.focus();
   }
 
   // Files dropped from outside the window, at (x, y) in the page: their paths go to the session of
@@ -534,8 +564,8 @@ export class Panes {
     view.terminal.focus();
   }
 
-  // A project tab follows the mouse along the bar, among the other project tabs: "other"
-  // stays first. A press that does not move is a click. Rust gets the new place on release.
+  // A project tab follows the mouse along the bar, among the other project tabs: the overview
+  // and "other" stay first. A press that does not move is a click. Rust gets the new place on release.
   dragTab(event, button, from) {
     if (event.button !== 0) return;
     const startX = event.clientX;
@@ -544,13 +574,14 @@ export class Panes {
       if (!this.tabDrag && Math.abs(moved.clientX - startX) < 5) return;
       this.tabDrag = true;
       button.classList.add("dragging");
-      const others = [...this.bar.children].slice(1).filter((other) => other !== button);
+      const others = [...this.bar.children].slice(2).filter((other) => other !== button);
       const before = others.find((other) => {
         const box = other.getBoundingClientRect();
         return moved.clientX < box.left + box.width / 2;
       });
       this.bar.insertBefore(button, before ?? null);
-      to = [...this.bar.children].indexOf(button);
+      // The overview's button comes before the tabs.
+      to = [...this.bar.children].indexOf(button) - 1;
     };
     const release = async () => {
       document.removeEventListener("mousemove", move);
@@ -634,7 +665,7 @@ export class Panes {
 
   async goTabId(id) {
     const index = this.state.tabs.findIndex((tab) => tab.id === id);
-    if (index >= 0 && id !== this.state.active) await this.goTab(index + 1);
+    if (index >= 0 && (this.state.overview || id !== this.state.active)) await this.goTab(index + 1);
   }
 
   // The last screen seen of `session` at `columns` wide, or null. A pane that still shows it gives
