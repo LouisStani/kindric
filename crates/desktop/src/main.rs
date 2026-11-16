@@ -1075,6 +1075,13 @@ fn answer_request(shared: State<'_, Shared>, session_id: String, id: String, ans
     overview::answer(&overview_root()?, &session_id, &id, &answer).map_err(|error| error.to_string())
 }
 
+/// What the page types into the pane that shows the session for `text`, the user's answer to
+/// its `kindric ask`; `settle_request` once typed.
+#[tauri::command]
+fn answer_words(session_id: String, id: String, text: String) -> Result<String, String> {
+    overview::typed_answer(&overview_root()?, &session_id, &id, &text)
+}
+
 /// The page typed the answer to a `kindric ask` in the pane that shows the session.
 #[tauri::command]
 fn settle_request(shared: State<'_, Shared>, session_id: String, id: String) -> Result<(), String> {
@@ -1082,8 +1089,9 @@ fn settle_request(shared: State<'_, Shared>, session_id: String, id: String) -> 
     overview::settle(&overview_root()?, &session_id, &id).map_err(|error| format!("cannot remove the request: {error}"))
 }
 
-/// Types the answer to a `kindric ask` into a session no pane shows, as the user's message, then
-/// removes the request. Holds the session's claim meanwhile, as a pane does.
+/// Types the answer to a `kindric ask` into a session no pane shows, as the user's message with
+/// its question (`overview::answer_words`), then removes the request. Holds the session's claim
+/// meanwhile, as a pane does.
 #[tauri::command]
 async fn type_answer(
     shared: State<'_, Shared>,
@@ -1098,12 +1106,10 @@ async fn type_answer(
     let claims = shared.claims_dir.clone()?;
     let root = overview_root()?;
     let typed = move || {
-        if !overview::pending(&root).iter().any(|request| request.session_id == session_id && request.id == id) {
-            return Err("this request is already settled".to_string());
-        }
+        let words = overview::typed_answer(&root, &session_id, &id, &text)?;
         let key = SessionKey { account: account.clone(), short_id: short_id.clone() };
         let _claim = claim::claim(&claims, &key)?;
-        typing::type_into(&attach_command(&account, &short_id, implicit), &text, &typing::TIMINGS)
+        typing::type_into(&attach_command(&account, &short_id, implicit), &words, &typing::TIMINGS)
             .map_err(|error| format!("cannot type into {short_id}: {error}"))?;
         overview::settle(&root, &session_id, &id).map_err(|error| format!("cannot remove the request: {error}"))
     };
@@ -1434,6 +1440,7 @@ fn main() -> ExitCode {
             set_away,
             overview_requests,
             answer_request,
+            answer_words,
             settle_request,
             type_answer,
             project_worktrees,

@@ -186,6 +186,25 @@ where the project keeps its decisions, and go on"
     Ok(request)
 }
 
+/// What is typed into the session for the user's answer to its `kindric ask`: the question
+/// comes back with it, so that a session that asked twice knows which one this answers.
+pub fn answer_words(question: &str, answer: &str) -> String {
+    format!("Answer to your question \"{question}\": {}", answer.trim())
+}
+
+/// The words to type for `answer` to the request `id` of `session`, while it waits. Only a
+/// `kindric ask` is answered by typing.
+pub fn typed_answer(root: &Path, session: &str, id: &str, answer: &str) -> Result<String, String> {
+    let request = pending(root)
+        .into_iter()
+        .find(|request| request.session_id == session && request.id == id)
+        .ok_or("this request is already settled")?;
+    match request.body {
+        Body::Ask { question, .. } => Ok(answer_words(&question, answer)),
+        _ => Err("only the answer to kindric ask is typed into the session".to_string()),
+    }
+}
+
 /// `kindric ask <question> <context>` from the environment Claude Code gives a shell command.
 pub fn run_ask(question: &str, context: &str) -> Result<(), String> {
     let root = default_root().map_err(|error| format!("cannot find kindric's data: {error}"))?;
@@ -301,6 +320,21 @@ mod tests {
         assert!(pending(&root).is_empty());
         let _ = fs::remove_dir_all(root);
         fs::remove_dir_all(away_root).unwrap();
+    }
+
+    #[test]
+    fn a_typed_answer_says_which_question_it_answers() {
+        let root = temp_root("typed");
+        let first = Body::Ask { question: "UTC or local time?".into(), context: "Scores store UTC only.".into() };
+        let second = Body::Ask { question: "Keep the old board?".into(), context: "Reset on Monday.".into() };
+        ask(&root, &request("aaaa-1111", "100-7", 100, first)).unwrap();
+        ask(&root, &request("aaaa-1111", "101-7", 101, second)).unwrap();
+        ask(&root, &request("aaaa-1111", "102-7", 102, permission())).unwrap();
+        assert_eq!(typed_answer(&root, "aaaa-1111", "101-7", " no \n").unwrap(), "Answer to your question \"Keep the old board?\": no");
+        assert_eq!(typed_answer(&root, "aaaa-1111", "100-7", "UTC").unwrap(), "Answer to your question \"UTC or local time?\": UTC");
+        assert!(typed_answer(&root, "aaaa-1111", "102-7", "yes").unwrap_err().contains("only the answer to kindric ask"));
+        assert!(typed_answer(&root, "aaaa-1111", "999-7", "yes").unwrap_err().contains("already settled"));
+        fs::remove_dir_all(root).unwrap();
     }
 
     /// The words of the trial of 2026-11-16 (e10), after which the session asked, did the work
