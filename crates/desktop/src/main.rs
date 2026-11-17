@@ -1110,7 +1110,7 @@ fn publish(app: &AppHandle, update: refresher::Update) -> bool {
         view::propose_images(&mut next, &current, |session| proposed_images(session, implicit_default));
         let to_count = view::to_count(&next, &current);
         view::carry_changed(&mut next, &current, &HashMap::new());
-        mark_asking(&mut next);
+        mark_asking(&mut next, implicit_default);
         view::assign(&mut next, &tabs, &prefs);
         mark_away(&mut next);
         mark_activity(&mut next, implicit_default);
@@ -1146,10 +1146,17 @@ fn mark_away(view: &mut view::ListView) {
 }
 
 /// Which sessions of `view` wait for an answer, with the requests they left in the overview; a
-/// folder that cannot be found leaves only the questions of Claude Code.
-fn mark_asking(view: &mut view::ListView) {
-    let requested: HashSet<String> =
-        overview::default_root().map(|root| overview::pending(&root).into_iter().map(|request| request.session_id).collect()).unwrap_or_default();
+/// folder that cannot be found leaves only the questions of Claude Code. A `kindric ask` the user
+/// answered by typing into its session goes first (decision 363).
+fn mark_asking(view: &mut view::ListView, implicit_default: bool) {
+    let paths = accounts::paths().ok();
+    let account_dir = |session: &str| {
+        let row = view.sessions.iter().find(|row| row.session_id == session)?;
+        Some(accounts::dir_of(paths.as_ref()?, &row.account, implicit_default))
+    };
+    let requested: HashSet<String> = overview::default_root()
+        .map(|root| overview::pending_after_typed_answers(&root, account_dir).into_iter().map(|request| request.session_id).collect())
+        .unwrap_or_default();
     view::mark_asking(view, &requested);
 }
 
