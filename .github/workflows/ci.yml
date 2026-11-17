@@ -36,7 +36,7 @@ jobs:
           node-version: 24
       - name: JavaScript tests (atlas, overview, screen photos; Linux)
         if: runner.os == 'Linux'
-        run: node --test crates/desktop/ui/atlas.test.js crates/desktop/ui/overview.test.js crates/desktop/ui/photos.test.js
+        run: node --test crates/desktop/ui/atlas.test.js crates/desktop/ui/launcher.test.js crates/desktop/ui/overview.test.js crates/desktop/ui/photos.test.js
       - run: cargo build --locked --release -p kindric-accounts
       - name: kindric-accounts command-line tests (Linux)
         if: runner.os == 'Linux'

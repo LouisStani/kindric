@@ -1,6 +1,7 @@
 // Quick launch (decision 272): in a project, a list of the accounts; Enter or a click starts a
 // session in the project's folder at once, with no name. The last line opens the full form.
 // The same list is shown in a dialog (Ctrl+N) and over the panes of a project with no session.
+// In the full form it only picks the account (decision 348): nothing starts before the form is sent.
 
 const FORM = "other folder or name…";
 
@@ -20,7 +21,9 @@ export function launchOrder(accounts, preferred) {
 export class AccountList {
   // `labelsOf(accounts)` gives a Map of each account to its line; `onStart(account, project)`
   // starts the session and throws to say why it could not; `onForm()` opens the full form.
-  constructor(root, { labelsOf, onStart, onForm, onTrust }) {
+  // With `onEnter` instead of them, the list only picks: a click picks the account, Enter calls
+  // `onEnter()`, and there is no line to the form.
+  constructor(root, { labelsOf, onStart, onForm, onTrust, onEnter }) {
     this.root = root;
     this.list = root.querySelector(".launch-list");
     this.message = root.querySelector(".launch-message");
@@ -28,6 +31,7 @@ export class AccountList {
     this.onStart = onStart;
     this.onForm = onForm;
     this.onTrust = onTrust;
+    this.onEnter = onEnter;
     this.project = null;
     this.accounts = [];
     this.labels = new Map();
@@ -43,16 +47,17 @@ export class AccountList {
     });
   }
 
-  // Draws the list for `project`; the same project and accounts keep the selection and message.
+  // Draws the list for `project`, or for no project; the same project and accounts keep the
+  // selection and message.
   async show(project, accounts) {
-    const order = launchOrder(accounts, project.account);
-    const shownFor = JSON.stringify([project.directory, order]);
+    const order = launchOrder(accounts, project?.account);
+    const shownFor = JSON.stringify([project?.directory ?? null, order]);
     if (shownFor === this.shownFor) return;
     this.shownFor = shownFor;
     this.project = project;
     this.accounts = order;
     this.selected = 0;
-    this.message.replaceChildren();
+    this.message?.replaceChildren();
     this.render();
     const labels = await this.labelsOf(order);
     if (this.shownFor !== shownFor) return;
@@ -65,8 +70,18 @@ export class AccountList {
     this.shownFor = "";
   }
 
+  // The account picked, or "" when there is none.
+  picked() {
+    return this.accounts[this.selected] ?? "";
+  }
+
+  picksOnly() {
+    return this.onEnter !== undefined;
+  }
+
   rows() {
-    return [...this.accounts.map((account) => ({ account, label: this.labels.get(account) ?? account })), { form: true, label: FORM }];
+    const accounts = this.accounts.map((account) => ({ account, label: this.labels.get(account) ?? account }));
+    return this.picksOnly() ? accounts : [...accounts, { form: true, label: FORM }];
   }
 
   render() {
@@ -77,7 +92,8 @@ export class AccountList {
         item.classList.toggle("selected", index === this.selected);
         item.onclick = () => {
           this.selected = index;
-          this.choose();
+          if (this.picksOnly()) this.render();
+          else this.choose();
         };
         return item;
       }),
@@ -85,12 +101,13 @@ export class AccountList {
   }
 
   onKey(key) {
-    const last = this.accounts.length;
+    const last = this.rows().length - 1;
     if (key === "ArrowDown" || key === "ArrowUp") {
       const step = key === "ArrowDown" ? 1 : -1;
-      this.selected = Math.min(Math.max(this.selected + step, 0), last);
+      this.selected = Math.min(Math.max(this.selected + step, 0), Math.max(last, 0));
       this.render();
-    } else if (key === "Enter") this.choose();
+    } else if (key === "Enter" && this.picksOnly()) this.onEnter();
+    else if (key === "Enter") this.choose();
     else return false;
     return true;
   }
