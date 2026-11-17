@@ -693,6 +693,40 @@ class QuestionFirstInTheBar(Journey):
         self.assertEqual(self.titles()[0], "asks-one")
 
 
+OVERVIEW = os.path.join(HOME, ".local/share/kindric/overview")
+
+
+def overview_requests() -> list[str]:
+    """The requests waiting in kindric's overview, as files."""
+    return [name for _, _, files in os.walk(OVERVIEW) for name in files if name.endswith(".json")]
+
+
+class AskAnsweredInTheSession(Journey):
+    """A `kindric ask` answered by typing into the session itself, not through kindric (363): the
+    request leaves the overview and the "?" leaves the bar."""
+
+    started = [("asks-in-session", "a short task work:1")]
+
+    def test_typed_answer_clears_the_question(self) -> None:
+        driver = self.driver
+        wait_until("the finished turn", lambda: chip_state(driver, "asks-in-session") == "finished", timeout=30)
+        session = next(session for session in fake_sessions() if session.get("name") == "asks-in-session")
+        asked = subprocess.run(["kindric", "ask", "Keep the old routes?", "Asked by the end-to-end journey."],
+                               cwd=PROJECT, capture_output=True, text=True, timeout=10,
+                               env={**os.environ, "CLAUDE_CODE_SESSION_ID": session["sessionId"]})
+        self.assertEqual(asked.returncode, 0, asked.stderr)
+        wait_until("the question in the bar", lambda: dot_sign(driver, "asks-in-session") == "?", timeout=10)
+        self.assertEqual(len(overview_requests()), 1)
+
+        # A message of the same second as the question does not count as its answer.
+        time.sleep(1.1)
+        typed = subprocess.run(["kindric-accounts", "run", ACCOUNT, "attach", session["id"]], input="keep them work:1\n",
+                               cwd=PROJECT, capture_output=True, text=True, timeout=30)
+        self.assertEqual(typed.returncode, 0, typed.stderr)
+        wait_until("the question gone from the overview", lambda: not overview_requests(), timeout=10)
+        wait_until("the turn finished, no question left", lambda: dot_sign(driver, "asks-in-session") == "✓", timeout=30)
+
+
 ISOLATED = "solo"
 
 
