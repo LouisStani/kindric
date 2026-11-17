@@ -1,11 +1,13 @@
 // The settings window (Ctrl+,). The accounts of kindric-accounts: their state, adding one,
 // logging one in, taking one off the list. The memory: the size above which a session is warned
-// about what it opens at startup. The shortcuts: a new key for one, or its own back.
+// about what it opens at startup. The sessions: purging those idle for more than 31 or 7 days.
+// The shortcuts: a new key for one, or its own back.
 // One category shows at a time; typing in the search shows what matches in all of them. Rust does each change and reads
 // the accounts back (accounts.rs); the session list sees the change by itself (refresher.rs).
 
 import { expiresWithin, inHowLong, timeLeft } from "./expiry.js";
 import { logIn } from "./helper.js";
+import { purgeQuestion, purgeResult, refusalLine } from "./purge.js";
 
 // A login that expires within this many days can be renewed from its row.
 const RENEW_DAYS = 7;
@@ -36,12 +38,84 @@ function plural(count, word) {
   return `${count} ${word}${count === 1 ? "" : "s"}`;
 }
 
+// The purge of old sessions (decisions 361, 362): a limit chosen, the count asked from Rust and
+// shown for a yes, then the purge, which can take a while (Claude Code stops and removes them one by one).
+class PurgeSection {
+  constructor(node, onTabs) {
+    this.onTabs = onTabs;
+    this.choices = node.querySelector(".purge-choices");
+    this.confirmLine = node.querySelector(".purge-confirm");
+    this.question = node.querySelector(".purge-question");
+    this.message = node.querySelector(".purge-message");
+    this.refused = node.querySelector(".purge-refused");
+    // The limit waiting for a yes, or null.
+    this.days = null;
+    for (const choice of node.querySelectorAll("[data-days]")) {
+      choice.addEventListener("click", () => this.ask(Number(choice.dataset.days)));
+    }
+    node.querySelector(".purge-go").addEventListener("click", () => this.run());
+    node.querySelector(".purge-cancel").addEventListener("click", () => this.reset());
+  }
+
+  reset() {
+    this.days = null;
+    this.confirmLine.hidden = true;
+    this.choices.hidden = false;
+    this.message.textContent = "";
+    this.refused.replaceChildren();
+  }
+
+  async ask(days) {
+    this.reset();
+    let counts;
+    try {
+      counts = await invoke("purge_preview", { days });
+    } catch (error) {
+      this.message.textContent = `${error}`;
+      return;
+    }
+    const question = purgeQuestion(counts, days);
+    if (question === null) {
+      this.message.textContent = `no session idle for more than ${days} days.`;
+      return;
+    }
+    this.days = days;
+    this.question.textContent = question;
+    this.choices.hidden = true;
+    this.confirmLine.hidden = false;
+    this.confirmLine.querySelector(".purge-go").focus();
+  }
+
+  async run() {
+    const days = this.days;
+    if (days === null) return;
+    this.reset();
+    this.choices.hidden = true;
+    this.message.textContent = "purging…";
+    let purged;
+    try {
+      purged = await invoke("purge_sessions", { days });
+    } catch (error) {
+      this.reset();
+      this.message.textContent = `${error}`;
+      return;
+    }
+    this.choices.hidden = false;
+    this.message.textContent = purgeResult(purged.report);
+    this.refused.replaceChildren(...purged.report.refused.map((refused) => element("li", "", refusalLine(refused))));
+    this.onTabs(purged.tabs);
+  }
+}
+
 export class SettingsWindow {
   // `onAccounts(accounts)`: the accounts each time they are read, for the rest of the app.
   // `onAtlas()`: opens the memory atlas, once the settings are closed.
-  constructor(dialog, { shortcuts, onAccounts, onAtlas }) {
+  // `onTabs(tabs)`: the tabs after a purge, whose panes may have emptied.
+  constructor(dialog, { shortcuts, onAccounts, onAtlas, onTabs }) {
     this.dialog = dialog;
     this.onAccounts = onAccounts;
+    this.onTabs = onTabs;
+    this.purge = new PurgeSection(dialog.querySelector(".purge"), (tabs) => this.onTabs?.(tabs));
     dialog.querySelector(".memory-atlas-open").addEventListener("click", () => {
       dialog.close();
       onAtlas();
@@ -101,6 +175,7 @@ export class SettingsWindow {
     this.message.textContent = "";
     this.name.value = "";
     this.memoryMessage.textContent = "";
+    this.purge.reset();
     this.capturing = null;
     this.shortcutMessage.textContent = "";
     this.search.value = "";

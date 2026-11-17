@@ -311,6 +311,19 @@ pub fn filter(view: &ListView, tab: PaneId, query: &str) -> Vec<SessionRow> {
     view.sessions.iter().filter(|row| row.tab == tab && matches_with(&row.info, &row.label, query)).cloned().collect()
 }
 
+/// The sessions a purge of those idle for more than `days` at `now` (Unix seconds) removes
+/// (decisions 361, 362): background sessions only, which `claude rm` knows, in the bar or hidden;
+/// never one that works or waits for an answer; never one whose last activity is unknown, which
+/// may have just started without a prompt.
+pub fn purgeable(view: &ListView, now: i64, days: u32) -> Vec<&SessionRow> {
+    let oldest = now - i64::from(days) * 24 * 60 * 60;
+    view.sessions
+        .iter()
+        .filter(|row| row.short_id.is_some() && row.info.state != SessionState::Working && !row.asks)
+        .filter(|row| row.last_active.is_some_and(|active| active < oldest))
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use std::collections::HashMap;
@@ -413,6 +426,42 @@ mod tests {
         assert_eq!(asked, [("louis".to_string(), louis.join(" ")), ("pro".to_string(), ids[0].clone())]);
         let active: Vec<_> = view.sessions.iter().map(|row| row.last_active).collect();
         assert_eq!(active, [None, Some(1_700), None], "a session without a transcript has no time");
+    }
+
+    #[test]
+    fn a_purge_takes_the_idle_background_sessions_older_than_the_limit() {
+        const DAY: i64 = 24 * 60 * 60;
+        let now = 100 * DAY;
+        let state = |name: &str, state: SessionState| SessionInfo { state, ..session("louis", name, false) };
+        let interactive = SessionInfo { short_id: None, ..state("interactive", SessionState::Elsewhere) };
+        let sessions = vec![
+            state("old-paused", SessionState::Paused),
+            state("old-waiting", SessionState::Waiting),
+            state("old-working", SessionState::Working),
+            state("old-asking", SessionState::Waiting),
+            interactive,
+            state("recent", SessionState::Paused),
+            state("unknown", SessionState::Paused),
+            state("just-over", SessionState::Paused),
+        ];
+        let mut view = apply(&ListView::default(), Ok((snapshot(sessions), HashMap::new())), None);
+        for row in &mut view.sessions {
+            row.last_active = match row.title.as_str() {
+                "recent" => Some(now - 6 * DAY),
+                "unknown" => None,
+                "just-over" => Some(now - 7 * DAY),
+                _ => Some(now - 40 * DAY),
+            };
+            row.asks = row.title == "old-asking";
+            row.hidden = row.title == "old-paused";
+        }
+        let mut purged: Vec<&str> = purgeable(&view, now, 7).iter().map(|row| row.title.as_str()).collect();
+        purged.sort_unstable();
+        assert_eq!(purged, ["old-paused", "old-waiting"], "hidden or not; exactly 7 days is not more than 7");
+        let mut longer: Vec<&str> = purgeable(&view, now, 31).iter().map(|row| row.title.as_str()).collect();
+        longer.sort_unstable();
+        assert_eq!(longer, ["old-paused", "old-waiting"]);
+        assert!(purgeable(&view, now, 41).is_empty());
     }
 
     #[test]
