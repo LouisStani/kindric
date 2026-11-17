@@ -7,11 +7,14 @@ use std::collections::BTreeMap;
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
+use std::time::UNIX_EPOCH;
 
 use kindric_accounts::files::{create_private_dir, write_atomic};
 use serde::{Deserialize, Serialize};
 
 use crate::away;
+use crate::changes::unix_seconds;
+use crate::images::{is_prompt, tail, transcript_of};
 use crate::mailbox::{data_dir, is_valid_session_id};
 
 const REQUEST: &str = "json";
@@ -119,6 +122,46 @@ pub fn answer(root: &Path, session: &str, id: &str, answer: &Answer) -> io::Resu
 /// The answer to the request `id` of `session`, once the user gave one.
 pub fn answer_of(root: &Path, session: &str, id: &str) -> Option<Answer> {
     serde_json::from_str(&fs::read_to_string(file(root, session, id, ANSWER).ok()?).ok()?).ok()
+}
+
+/// Whether the user typed a message into the session after `request`, a `kindric ask`: the answer
+/// reached it without kindric (decision 363). `transcript_tail` is the end of the session's
+/// transcript; a message of the same second as the question does not count.
+pub fn answered_in_session(request: &Request, transcript_tail: &str) -> bool {
+    if !matches!(request.body, Body::Ask { .. }) {
+        return false;
+    }
+    transcript_tail
+        .lines()
+        .filter_map(|line| serde_json::from_str::<serde_json::Value>(line).ok())
+        .filter(is_prompt)
+        .filter_map(|entry| entry.get("timestamp")?.as_str().and_then(unix_seconds))
+        .any(|typed_at| typed_at > request.asked_at)
+}
+
+fn written_after(path: &Path, at: i64) -> bool {
+    let written = fs::metadata(path).and_then(|meta| meta.modified()).ok().and_then(|time| time.duration_since(UNIX_EPOCH).ok());
+    written.is_some_and(|written| i64::try_from(written.as_secs()).unwrap_or(i64::MAX) > at)
+}
+
+/// The requests still waiting, once those of `kindric ask` the user answered by typing into their
+/// session are settled (decision 363). `account_dir(session id)` is the folder of the session's
+/// account, `None` for a session kindric does not know. A transcript is read only when it was
+/// written after the question.
+pub fn pending_after_typed_answers(root: &Path, account_dir: impl Fn(&str) -> Option<PathBuf>) -> Vec<Request> {
+    let mut waiting = Vec::new();
+    for request in pending(root) {
+        let answered = matches!(request.body, Body::Ask { .. })
+            && account_dir(&request.session_id)
+                .and_then(|dir| transcript_of(&dir, &request.session_id))
+                .filter(|path| written_after(path, request.asked_at))
+                .and_then(|path| tail(&path))
+                .is_some_and(|transcript| answered_in_session(&request, &transcript));
+        if !(answered && settle(root, &request.session_id, &request.id).is_ok()) {
+            waiting.push(request);
+        }
+    }
+    waiting
 }
 
 /// Removes the request and its answer, then the folder of the session once empty. Nothing to
@@ -233,6 +276,57 @@ mod tests {
 
     fn permission() -> Body {
         Body::Permission { tool: "Bash".into(), input: serde_json::json!({ "command": "cargo test", "description": "Run tests" }) }
+    }
+
+    /// A line of a transcript, as Claude Code writes it.
+    fn entry(kind: &str, at: &str, content: serde_json::Value) -> String {
+        serde_json::json!({ "type": kind, "timestamp": at, "message": { "role": kind, "content": content } }).to_string()
+    }
+
+    #[test]
+    fn a_question_is_answered_by_a_message_typed_after_it() {
+        // 2026-11-17T21:46:40Z.
+        let asked = request("aaaa-1111", "1794952000000-7", 1_794_952_000, Body::Ask { question: "keep them?".into(), context: "c".into() });
+        let before = [
+            entry("user", "2026-11-17T21:40:00.000Z", serde_json::json!("look at the titles")),
+            entry("assistant", "2026-11-17T21:46:39.000Z", serde_json::json!([{ "type": "text", "text": "I ask" }])),
+            entry("user", "2026-11-17T21:46:40.500Z", serde_json::json!("same second as the question")),
+        ];
+        assert!(!answered_in_session(&asked, &before.join("\n")), "nothing typed after the question");
+        let tool_result = entry("user", "2026-11-17T21:47:00.000Z", serde_json::json!([{ "type": "tool_result", "content": "sent" }]));
+        let notification = entry("user", "2026-11-17T21:48:00.000Z", serde_json::json!("<task-notification>done</task-notification>"));
+        let not_typed = [before.join("\n"), tool_result, notification, "{broken".into()].join("\n");
+        assert!(!answered_in_session(&asked, &not_typed), "neither a tool result nor a notification is the user");
+        let typed = [not_typed, entry("user", "2026-11-17T21:50:07.760Z", serde_json::json!("oui"))].join("\n");
+        assert!(answered_in_session(&asked, &typed));
+        assert!(!answered_in_session(&request("aaaa-1111", "1794952000000-7", 1_794_952_000, permission()), &typed), "a hook waits for the others");
+    }
+
+    #[test]
+    fn a_question_answered_in_the_session_leaves_and_the_others_wait() {
+        let root = temp_root("answered-in-session");
+        let account = temp_root("answered-in-session-account");
+        let ask_body = || Body::Ask { question: "keep them?".into(), context: "c".into() };
+        // Asked long before the transcripts below are written (now), at 2026-11-17T21:46:40Z.
+        let answered = request("aaaa-1111", "1794952000000-7", 1_794_952_000, ask_body());
+        let unanswered = request("bbbb-2222", "1794952000000-8", 1_794_952_000, ask_body());
+        let hook = request("aaaa-1111", "1794952000000-9", 1_794_952_000, permission());
+        let unknown = request("cccc-3333", "1794952000000-10", 1_794_952_000, ask_body());
+        for request in [&answered, &unanswered, &hook, &unknown] {
+            ask(&root, request).unwrap();
+        }
+        let folder = account.join("projects").join("-home-u-arcade");
+        fs::create_dir_all(&folder).unwrap();
+        let typed = entry("user", "2026-11-17T21:50:07.760Z", serde_json::json!("oui"));
+        fs::write(folder.join("aaaa-1111.jsonl"), &typed).unwrap();
+        fs::write(folder.join("bbbb-2222.jsonl"), entry("user", "2026-11-17T21:40:00.000Z", serde_json::json!("before"))).unwrap();
+        let known = |session: &str| (session != "cccc-3333").then(|| account.clone());
+
+        let waiting: Vec<String> = pending_after_typed_answers(&root, known).into_iter().map(|request| request.id).collect();
+        assert_eq!(waiting, ["1794952000000-10", "1794952000000-8", "1794952000000-9"]);
+        assert_eq!(pending(&root).len(), 3, "the answered one is gone from the folder too");
+        fs::remove_dir_all(root).unwrap();
+        fs::remove_dir_all(account).unwrap();
     }
 
     #[test]
