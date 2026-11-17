@@ -103,6 +103,10 @@ class Driver:
         """Runs a function body in the page; its return value comes back."""
         return self._command("POST", "/execute/sync", {"script": body, "args": list(args)})
 
+    def resize(self, width: int, height: int) -> None:
+        """Sets the size of the app's window, in CSS pixels."""
+        self._command("POST", "/window/rect", {"width": width, "height": height})
+
     def screenshot(self, path: str) -> None:
         png = base64.b64decode(str(self._command("GET", "/screenshot")))
         with open(path, "wb") as out:

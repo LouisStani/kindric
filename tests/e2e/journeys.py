@@ -489,6 +489,48 @@ class ControlCenter(Journey):
         self.assertEqual(fake_detail("beta"), "waiting for you")
 
 
+class NarrowControlCenter(Journey):
+    """In a narrow window, a row of the control center keeps what its session does readable, on a
+    line of its own, and nothing comes out of its card; in a wide one, the row is a single line."""
+
+    started = [("long-running", "a task that works for a long time work:300"), ("finished-one", "a short task work:0")]
+
+    # For each row: the width of what the session does, whether it sits under the name, and the
+    # parts that come out of the card on the right.
+    MEASURE = """return [...document.querySelectorAll('article.control-row')].map((row) => {
+      const right = row.getBoundingClientRect().right;
+      const doing = row.querySelector('.row-doing').getBoundingClientRect();
+      return {
+        doing: doing.width,
+        under: doing.top >= row.querySelector('.row-name').getBoundingClientRect().bottom,
+        out: [...row.querySelectorAll('*')].filter((node) => node.getBoundingClientRect().right > right + 1).map((node) => node.className || node.tagName),
+      };
+    });"""
+
+    def rows_at(self, width: int) -> list[dict[str, Any]]:
+        self.driver.resize(width, 860)
+        wait_until(f"the window at {width} px", lambda: self.driver.script("return window.innerWidth") == width)
+        rows: list[dict[str, Any]] = self.driver.script(self.MEASURE)
+        return rows
+
+    def test_rows_fit_the_window(self) -> None:
+        driver = self.driver
+        carry_messages(driver)
+        driver.press(CONTROL, SHIFT, "0")
+        wait_until("the control center", lambda: not overview_hidden(driver))
+        wait_until("a row per session", lambda: sorted(texts(driver, "article.control-row .row-name")) == ["finished-one", "long-running"])
+
+        for row in self.rows_at(900):
+            self.assertEqual(row["out"], [], "nothing comes out of the card")
+            self.assertTrue(row["under"], "what it does goes under the name")
+            self.assertGreaterEqual(row["doing"], 150, "what it does stays readable")
+        driver.screenshot(os.path.join(OUT, f"{type(self).__name__}-900.png"))
+
+        for row in self.rows_at(1400):
+            self.assertEqual(row["out"], [], "nothing comes out of the card")
+            self.assertFalse(row["under"], "a wide row is a single line")
+
+
 ISOLATED = "solo"
 
 
