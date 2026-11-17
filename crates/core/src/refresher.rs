@@ -9,8 +9,10 @@ use std::time::Duration;
 
 use crate::accounts::{self, Found, SessionInfo, Snapshot};
 use crate::mailbox::{self, Mailbox};
+use crate::overview;
 use crate::progress;
 use crate::watcher::{self, ChangeWatcher, Wake};
+use kindric_accounts::files::create_private_dir;
 
 /// Every account is queried again this often when some folder could not be watched.
 const FALLBACK: Duration = Duration::from_secs(30);
@@ -25,8 +27,9 @@ const WITHOUT_WATCHER: Duration = Duration::from_secs(10);
 /// The session list with unread message counts by session id, or why it could not be read.
 pub type Update = Result<(Snapshot, HashMap<String, usize>), String>;
 
-/// What to read again: every account, or only those written to. A write in the mailbox
-/// alone queries none: the unread counts are always counted again.
+/// What to read again: every account, or only those written to. A write in the mailbox or in the
+/// requests of the overview alone queries none: the unread counts and the requests are always
+/// read again.
 #[derive(Debug, PartialEq, Eq)]
 enum Change {
     Full,
@@ -50,16 +53,16 @@ fn job_written(in_account: &Path) -> Option<String> {
     parts.next().map(|_| id)
 }
 
-/// The accounts the written `paths` belong to. A path of no account and not in the
-/// mailbox, or no path at all, queries everything: better slow than stale.
-fn classify(paths: &[PathBuf], account_dirs: &[(String, PathBuf)], mailbox_root: Option<&Path>) -> Change {
+/// The accounts the written `paths` belong to. A path of no account and in none of the
+/// `quiet_roots`, or no path at all, queries everything: better slow than stale.
+fn classify(paths: &[PathBuf], account_dirs: &[(String, PathBuf)], quiet_roots: &[&Path]) -> Change {
     if paths.is_empty() {
         return Change::Full;
     }
     let mut query = BTreeSet::new();
     let mut jobs: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
     for path in paths {
-        if mailbox_root.is_some_and(|root| path.starts_with(root)) {
+        if quiet_roots.iter().any(|root| path.starts_with(root)) {
             continue;
         }
         let Some((account, dir)) = account_dirs.iter().find(|(_, dir)| path.starts_with(dir)) else {
@@ -105,6 +108,8 @@ fn reread_progress(sessions: &mut [SessionInfo], dir: &Path, ids: &BTreeSet<Stri
 struct Refresher {
     watcher: Result<ChangeWatcher, String>,
     mailbox: Result<Mailbox, String>,
+    /// Where the requests of the overview are written: one that comes or goes changes the list.
+    requests: Result<PathBuf, String>,
     /// What each account gave when it was last queried.
     known: BTreeMap<String, Found>,
     account_dirs: Vec<(String, PathBuf)>,
@@ -114,6 +119,14 @@ struct Refresher {
     include_stopped: bool,
     /// Whether the last refresh watched every folder it should.
     watching_all: bool,
+}
+
+/// The folders whose writes query no account: the mailbox and the requests of the overview,
+/// those that could be made.
+fn quiet_roots<'a>(mailbox: &'a Result<Mailbox, String>, requests: &'a Result<PathBuf, String>) -> Vec<&'a Path> {
+    let mailbox = mailbox.as_ref().ok().map(Mailbox::root);
+    let requests = requests.as_ref().ok().map(PathBuf::as_path);
+    mailbox.into_iter().chain(requests).collect()
 }
 
 /// How long to wait for a change before querying everything again.
@@ -127,9 +140,14 @@ impl Refresher {
             mailbox.create_root()?;
             Ok(mailbox)
         });
+        let requests = overview::default_root().and_then(|root| {
+            create_private_dir(&root)?;
+            Ok(root)
+        });
         Self {
             watcher: ChangeWatcher::new().map_err(|error| format!("file watching unavailable: {error}")),
             mailbox: mailbox.map_err(|error| format!("messages: {error}")),
+            requests: requests.map_err(|error| format!("requests of the overview: {error}")),
             known: BTreeMap::new(),
             account_dirs: Vec::new(),
             default_logged_in: false,
@@ -143,10 +161,10 @@ impl Refresher {
     /// are queried, so that a state written meanwhile is not missed.
     fn watch(&mut self, registry_dir: &Path) -> Vec<String> {
         let dirs = self.dirs();
-        let (Ok(watcher), Ok(mailbox)) = (&mut self.watcher, &self.mailbox) else {
+        let Ok(watcher) = &mut self.watcher else {
             return Vec::new();
         };
-        watcher.ensure(&watcher::targets(&dirs, mailbox.root(), registry_dir))
+        watcher.ensure(&watcher::targets(&dirs, &quiet_roots(&self.mailbox, &self.requests), registry_dir))
     }
 
     /// The progress lines of `ids` in `account`, read again from its files; false if the account
@@ -228,10 +246,7 @@ impl Refresher {
             return Change::Full;
         };
         match watcher.wait(fallback(self.watching_all), SETTLE, MAX_SETTLE, &self.dirs()) {
-            Wake::Changed(paths) => {
-                let mailbox_root = self.mailbox.as_ref().ok().map(Mailbox::root);
-                classify(&paths, &self.account_dirs, mailbox_root)
-            },
+            Wake::Changed(paths) => classify(&paths, &self.account_dirs, &quiet_roots(&self.mailbox, &self.requests)),
             Wake::TimedOut => Change::Full,
             Wake::Closed => {
                 thread::sleep(WITHOUT_WATCHER);
@@ -291,21 +306,29 @@ mod tests {
     #[test]
     fn a_message_queries_no_account() {
         let paths = [PathBuf::from("/m/inbox/abc/1.json")];
-        assert_eq!(classify(&paths, &dirs(), Some(Path::new("/m"))), changed(&[]));
+        assert_eq!(classify(&paths, &dirs(), &[Path::new("/m")]), changed(&[]));
+    }
+
+    #[test]
+    fn a_request_of_the_overview_queries_no_account() {
+        let paths = [PathBuf::from("/o/abc/1-2.json"), PathBuf::from("/m/inbox/abc/1.json")];
+        assert_eq!(classify(&paths, &dirs(), &[Path::new("/m"), Path::new("/o")]), changed(&[]));
+        let paths = [PathBuf::from("/o/abc/1-2.json"), PathBuf::from("/a/pro/sessions/1.json")];
+        assert_eq!(classify(&paths, &dirs(), &[Path::new("/m"), Path::new("/o")]), changed(&["pro"]));
     }
 
     #[test]
     fn a_write_queries_only_its_account() {
         let paths = [PathBuf::from("/a/pro/jobs/abc/state.json"), PathBuf::from("/a/pro/sessions/1.json")];
-        assert_eq!(classify(&paths, &dirs(), Some(Path::new("/m"))), changed(&["pro"]));
+        assert_eq!(classify(&paths, &dirs(), &[Path::new("/m")]), changed(&["pro"]));
         let paths = [PathBuf::from("/a/louis/daemon/roster.json"), PathBuf::from("/m/x"), PathBuf::from("/a/lou/jobs/y")];
-        assert_eq!(classify(&paths, &dirs(), Some(Path::new("/m"))), changed(&["lou", "louis"]));
+        assert_eq!(classify(&paths, &dirs(), &[Path::new("/m")]), changed(&["lou", "louis"]));
     }
 
     #[test]
     fn an_account_is_not_mistaken_for_one_whose_name_it_starts() {
         let paths = [PathBuf::from("/a/louis/sessions/1.json")];
-        assert_eq!(classify(&paths, &dirs(), None), changed(&["louis"]));
+        assert_eq!(classify(&paths, &dirs(), &[]), changed(&["louis"]));
     }
 
     #[test]
@@ -315,11 +338,11 @@ mod tests {
             PathBuf::from("/a/pro/jobs/abc/state.json.tmp.1"),
             PathBuf::from("/a/pro/jobs/def/timeline.jsonl"),
         ];
-        assert_eq!(classify(&paths, &dirs(), None), jobs_written("pro", &["abc", "def"]));
+        assert_eq!(classify(&paths, &dirs(), &[]), jobs_written("pro", &["abc", "def"]));
         // A job that appeared, or a write elsewhere in the account, needs the query.
-        assert_eq!(classify(&[PathBuf::from("/a/pro/jobs/abc")], &dirs(), None), changed(&["pro"]));
+        assert_eq!(classify(&[PathBuf::from("/a/pro/jobs/abc")], &dirs(), &[]), changed(&["pro"]));
         let paths = [PathBuf::from("/a/pro/jobs/abc/state.json"), PathBuf::from("/a/pro/daemon/roster.json")];
-        assert_eq!(classify(&paths, &dirs(), None), changed(&["pro"]));
+        assert_eq!(classify(&paths, &dirs(), &[]), changed(&["pro"]));
         assert_eq!(to_query(&jobs_written("pro", &["abc"]), &registry(), &known(&["louis", "pro"])), ["new"]);
     }
 
@@ -349,10 +372,10 @@ mod tests {
     #[test]
     fn an_unknown_path_or_none_queries_everything() {
         let paths = [PathBuf::from("/a/pro/jobs/x"), PathBuf::from("/elsewhere/file")];
-        assert_eq!(classify(&paths, &dirs(), Some(Path::new("/m"))), Change::Full);
-        assert_eq!(classify(&[], &dirs(), Some(Path::new("/m"))), Change::Full);
+        assert_eq!(classify(&paths, &dirs(), &[Path::new("/m")]), Change::Full);
+        assert_eq!(classify(&[], &dirs(), &[Path::new("/m")]), Change::Full);
         // Without a mailbox, its paths belong to nothing known.
-        assert_eq!(classify(&[PathBuf::from("/m/inbox/1.json")], &dirs(), None), Change::Full);
+        assert_eq!(classify(&[PathBuf::from("/m/inbox/1.json")], &dirs(), &[]), Change::Full);
     }
 
     #[test]

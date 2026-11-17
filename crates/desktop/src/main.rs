@@ -16,7 +16,7 @@ mod trace;
 mod typing;
 mod view;
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 use std::sync::{Mutex, MutexGuard, PoisonError};
@@ -1110,6 +1110,7 @@ fn publish(app: &AppHandle, update: refresher::Update) -> bool {
         view::propose_images(&mut next, &current, |session| proposed_images(session, implicit_default));
         let to_count = view::to_count(&next, &current);
         view::carry_changed(&mut next, &current, &HashMap::new());
+        mark_asking(&mut next);
         view::assign(&mut next, &tabs, &prefs);
         mark_away(&mut next);
         mark_activity(&mut next, implicit_default);
@@ -1142,6 +1143,14 @@ fn publish(app: &AppHandle, update: refresher::Update) -> bool {
 fn mark_away(view: &mut view::ListView) {
     let root = away::default_root().ok();
     view::mark_away(view, |session| root.as_deref().and_then(|root| away::until(root, session)));
+}
+
+/// Which sessions of `view` wait for an answer, with the requests they left in the overview; a
+/// folder that cannot be found leaves only the questions of Claude Code.
+fn mark_asking(view: &mut view::ListView) {
+    let requested: HashSet<String> =
+        overview::default_root().map(|root| overview::pending(&root).into_iter().map(|request| request.session_id).collect()).unwrap_or_default();
+    view::mark_asking(view, &requested);
 }
 
 /// When each session of `view` was last active, from its transcript; none when the accounts'

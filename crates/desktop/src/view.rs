@@ -45,6 +45,10 @@ pub struct SessionRow {
     pub unread: usize,
     /// Claude finished a turn here and it has not been looked at since.
     pub finished: bool,
+    /// The session waits for an answer of the user: a question of Claude Code on its screen
+    /// (`waiting_for`), or a request it left in the overview (`kindric ask`). Set by `apply`,
+    /// then by `mark_asking`.
+    pub asks: bool,
     /// The image files Claude's last turn proposed, shown in the pane until the next prompt.
     pub images: Vec<String>,
     /// How many files the session changed in its repositories (see `changes`), counted when its
@@ -78,9 +82,12 @@ fn shows(key: &SessionKey, session: &SessionInfo) -> bool {
 }
 
 /// Waiting now after working at the last refresh, or already marked; never the session
-/// being looked at.
+/// being looked at, nor one whose turn is not over but waits for a question to be answered.
 fn finished(previous: &ListView, session: &SessionInfo, watched: Option<&SessionKey>) -> bool {
-    if session.state != SessionState::Waiting || watched.is_some_and(|key| shows(key, session)) {
+    if session.state != SessionState::Waiting
+        || session.waiting_for.is_some()
+        || watched.is_some_and(|key| shows(key, session))
+    {
         return false;
     }
     previous
@@ -107,6 +114,7 @@ fn row(position: usize, session: &SessionInfo, unread: usize, finished: bool) ->
         tab: 0,
         unread,
         finished,
+        asks: session.waiting_for.is_some(),
         images: Vec::new(),
         changed: None,
         away_until: None,
@@ -116,27 +124,30 @@ fn row(position: usize, session: &SessionInfo, unread: usize, finished: bool) ->
     }
 }
 
-/// Where a session goes in the bar: what needs you first, then what runs, then what sleeps.
-/// Sessions running in another terminal cannot be opened here: after those. Hidden ones come
-/// last of all, for Ctrl+P.
+/// Where a session goes in the bar: what needs you first, a question before all, then what
+/// runs, then what sleeps. Sessions running in another terminal cannot be opened here: after
+/// those. Hidden ones come last of all, for Ctrl+P.
 fn rank(row: &SessionRow) -> u8 {
     if row.hidden {
-        return 6;
+        return 7;
     }
     if row.short_id.is_none() {
-        return 5;
+        return 6;
     }
-    if row.unread > 0 {
+    if row.asks {
         return 0;
     }
-    if row.finished {
+    if row.unread > 0 {
         return 1;
     }
+    if row.finished {
+        return 2;
+    }
     match row.info.state {
-        SessionState::Waiting => 2,
-        SessionState::Working => 3,
-        SessionState::Paused => 4,
-        SessionState::Elsewhere => 5,
+        SessionState::Waiting => 3,
+        SessionState::Working => 4,
+        SessionState::Paused => 5,
+        SessionState::Elsewhere => 6,
     }
 }
 
@@ -194,6 +205,14 @@ pub fn propose_images(next: &mut ListView, previous: &ListView, lookup: impl Fn(
             (SessionState::Waiting, Some(SessionState::Waiting)) => before.map(|before| before.images.clone()).unwrap_or_default(),
             _ => Vec::new(),
         };
+    }
+}
+
+/// Which sessions wait for an answer: a question of Claude Code on their screen, or one of the
+/// `requested` session ids, which have a request in the overview. Before `assign`, which orders.
+pub fn mark_asking(view: &mut ListView, requested: &HashSet<String>) {
+    for row in &mut view.sessions {
+        row.asks = row.waiting_for.is_some() || requested.contains(&row.session_id);
     }
 }
 
@@ -513,6 +532,51 @@ mod tests {
         let unread = HashMap::from([("louis-mail".to_string(), 1)]);
         let view = apply(&previous, Ok((snapshot(sessions), unread)), None);
         assert_eq!(titles(&view.sessions), ["mail", "done", "waits", "busy", "asleep", "other-terminal"]);
+    }
+
+    fn asking(account: &str, name: &str, state: SessionState) -> SessionInfo {
+        SessionInfo { waiting_for: Some("permission prompt".into()), ..in_state(account, name, state) }
+    }
+
+    #[test]
+    fn a_question_comes_before_messages_and_finished_turns() {
+        let before = vec![in_state("louis", "done", SessionState::Working), in_state("louis", "perm", SessionState::Working)];
+        let previous = refresh(&ListView::default(), before, None);
+        let sessions = vec![
+            in_state("louis", "busy", SessionState::Working),
+            in_state("louis", "done", SessionState::Waiting),
+            in_state("louis", "mail", SessionState::Working),
+            in_state("louis", "ask", SessionState::Working),
+            asking("louis", "perm", SessionState::Waiting),
+        ];
+        let unread = HashMap::from([("louis-mail".to_string(), 1)]);
+        let mut view = apply(&previous, Ok((snapshot(sessions), unread)), None);
+        mark_asking(&mut view, &HashSet::from(["louis-ask".to_string()]));
+        assign(&mut view, &Tabs::default(), &Prefs::default());
+        assert_eq!(titles(&view.sessions), ["ask", "perm", "mail", "done", "busy"]);
+        let asks: Vec<bool> = view.sessions.iter().map(|row| row.asks).collect();
+        assert_eq!(asks, [true, true, false, false, false]);
+    }
+
+    #[test]
+    fn a_question_on_the_screen_is_not_a_finished_turn() {
+        let working = refresh(&ListView::default(), vec![in_state("louis", "a", SessionState::Working)], None);
+        let asked = refresh(&working, vec![asking("louis", "a", SessionState::Waiting)], None);
+        assert_eq!(marks(&asked), [false]);
+        assert!(asked.sessions[0].asks, "Claude Code's question alone makes it ask");
+        let answered = refresh(&asked, vec![in_state("louis", "a", SessionState::Working)], None);
+        assert!(!answered.sessions[0].asks);
+        let done = refresh(&answered, vec![in_state("louis", "a", SessionState::Waiting)], None);
+        assert_eq!(marks(&done), [true]);
+    }
+
+    #[test]
+    fn a_request_answered_no_longer_asks() {
+        let mut view = refresh(&ListView::default(), vec![in_state("louis", "a", SessionState::Working)], None);
+        mark_asking(&mut view, &HashSet::from(["louis-a".to_string()]));
+        assert!(view.sessions[0].asks);
+        mark_asking(&mut view, &HashSet::new());
+        assert!(!view.sessions[0].asks);
     }
 
     #[test]
