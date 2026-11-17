@@ -310,7 +310,7 @@ fn find(haystack: &[u8], needle: &[u8]) -> Option<usize> {
 }
 
 /// `2026-11-10T10:40:12.822Z` (the form Claude Code writes, UTC) in Unix seconds.
-fn unix_seconds(iso: &str) -> Option<i64> {
+pub(crate) fn unix_seconds(iso: &str) -> Option<i64> {
     let bytes = iso.as_bytes();
     let separators = [(4, b'-'), (7, b'-'), (10, b'T'), (13, b':'), (16, b':')];
     if bytes.len() < 19 || separators.iter().any(|&(at, separator)| bytes[at] != separator) {
