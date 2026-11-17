@@ -1,4 +1,4 @@
-//! The commands that show a background session in a terminal or stop it, the same for every
+//! The commands that show a background session in a terminal, stop it or remove it, the same for every
 //! interface, and the one that lets Claude Code ask whether a folder is trusted.
 
 use std::path::{Path, PathBuf};
@@ -81,16 +81,28 @@ pub fn login_command(account: &str) -> AttachCommand {
 /// `kindric-accounts run <account> stop <short_id>`, or `claude stop <short_id>` on the
 /// implicit `default`: the session stops and keeps its conversation; `attach` starts it again.
 pub fn stop_command(account: &str, short_id: &str, implicit_default: bool) -> Command {
+    session_command(account, "stop", short_id, implicit_default)
+}
+
+/// `kindric-accounts run <account> rm <short_id>`, or `claude rm <short_id>` on the implicit
+/// `default`: the session stops if it runs, leaves Claude Code's list, its folder `jobs/<id>/`
+/// goes, its conversation stays for `claude --resume`. Claude Code refuses while its worktree
+/// holds commits not pushed.
+pub fn remove_command(account: &str, short_id: &str, implicit_default: bool) -> Command {
+    session_command(account, "rm", short_id, implicit_default)
+}
+
+fn session_command(account: &str, verb: &str, short_id: &str, implicit_default: bool) -> Command {
     if implicit_default {
         let mut command = Command::new("claude");
         for variable in default_removed_env() {
             command.env_remove(variable);
         }
-        command.args(["stop", short_id]);
+        command.args([verb, short_id]);
         return command;
     }
     let mut command = Command::new(LAUNCHER);
-    command.args(["run", account, "stop", short_id]);
+    command.args(["run", account, verb, short_id]);
     command
 }
 
@@ -162,5 +174,15 @@ mod tests {
         assert_eq!(command.get_args().collect::<Vec<_>>(), ["stop", "378ce649"]);
         let removed: Vec<_> = command.get_envs().filter(|(_, value)| value.is_none()).map(|(name, _)| name).collect();
         assert!(removed.contains(&std::ffi::OsStr::new("CLAUDE_CONFIG_DIR")));
+    }
+
+    #[test]
+    fn removes_like_it_stops() {
+        let command = remove_command("lystriq", "378ce649", false);
+        assert_eq!(command.get_program(), "kindric-accounts");
+        assert_eq!(command.get_args().collect::<Vec<_>>(), ["run", "lystriq", "rm", "378ce649"]);
+        let default = remove_command("default", "378ce649", true);
+        assert_eq!(default.get_program(), "claude");
+        assert_eq!(default.get_args().collect::<Vec<_>>(), ["rm", "378ce649"]);
     }
 }
