@@ -1807,8 +1807,8 @@ input:focus, select:focus {
 
 .control-head {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) auto;
-  grid-template-areas: "title summary" "actions actions";
+  grid-template-columns: minmax(0, 1fr);
+  grid-template-areas: "title" "summary" "actions";
   gap: 12px 16px;
   align-items: baseline;
   padding-bottom: 14px;
@@ -1848,7 +1848,12 @@ input:focus, select:focus {
 .control-actions {
   grid-area: actions;
   display: flex;
+  flex-wrap: wrap;
   gap: 8px;
+}
+
+.control-actions button {
+  white-space: nowrap;
 }
 
 .control-actions button, .row-resume {
@@ -1933,7 +1938,9 @@ input:focus, select:focus {
 }
 
 .control-row {
+  container: row / inline-size;
   display: grid;
+  grid-template-columns: minmax(0, 1fr);
   gap: 10px;
   min-width: 0;
   padding: 12px 14px;
@@ -2077,6 +2084,7 @@ input:focus, select:focus {
 
 .control-figures {
   display: flex;
+  flex-wrap: wrap;
   gap: 8px;
   margin-left: auto;
 }
@@ -2242,6 +2250,97 @@ input:focus, select:focus {
 .row-resume {
   grid-column: 7;
   padding: 4px 10px;
+}
+
+/* A narrow row: what the session does would get under 150 px on one line, so it takes a line
+   of its own, under the name, with its badges and what it kept. The short columns stay on the
+   first line, aligned from row to row. */
+@container row (width < 890px) {
+  .row-line {
+    grid-template-columns: 10px minmax(0, 1fr) 150px 70px 76px;
+    grid-template-areas:
+      "dot name ctx account resume"
+      ". doing doing kept kept";
+    row-gap: 6px;
+  }
+
+  .row-line > .dot {
+    grid-area: dot;
+  }
+
+  .row-name {
+    grid-area: name;
+  }
+
+  /* Badges that do not fit beside the text go under it. */
+  .row-doing {
+    grid-area: doing;
+    flex-wrap: wrap;
+    row-gap: 4px;
+  }
+
+  .row-kept {
+    grid-area: kept;
+  }
+
+  .row-ctx {
+    grid-area: ctx;
+  }
+
+  .row-account {
+    grid-area: account;
+  }
+
+  .row-resume {
+    grid-area: resume;
+  }
+}
+
+/* Narrower still: the context keeps its number, without its bar; what it kept and resume go on
+   a third line, and "nothing kept" goes away. */
+@container row (width < 500px) {
+  .row-line {
+    grid-template-columns: 10px minmax(0, 1fr) 72px 76px;
+    grid-template-areas:
+      "dot name ctx account"
+      ". doing doing doing"
+      ". kept kept resume";
+    row-gap: 0;
+  }
+
+  /* Spaced by margins, not by the grid's gap: an empty third line takes no room. */
+  .row-doing, .row-kept, .row-resume {
+    margin-top: 6px;
+  }
+
+  .row-kept {
+    justify-self: start;
+  }
+
+  .row-kept.none {
+    display: none;
+  }
+
+  .row-ctx {
+    grid-template-columns: auto 36px;
+  }
+
+  .row-ctx .bar {
+    display: none;
+  }
+
+  .row-ctx-none {
+    grid-column: 2;
+  }
+
+  /* An answer or a prompt: the field on its line, the buttons under it. */
+  .control-row .request-actions.answer {
+    flex-wrap: wrap;
+  }
+
+  .request-actions.answer .request-field {
+    flex-basis: 100%;
+  }
 }
 
 .control-row .request.is-permission {
