@@ -1288,6 +1288,7 @@ const settingsWindow = new SettingsWindow(document.getElementById("settings"), {
   shortcuts: shortcutSettings,
   onAccounts: (accounts) => (accountStatuses = accounts),
   onAtlas: () => atlasWindow.open(),
+  onTabs: (tabs) => panes.render(tabs),
 });
 
 // The settings show which logins to renew: the lasting notice has said what it had to.
