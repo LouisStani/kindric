@@ -836,6 +836,22 @@ input:focus, select:focus {
   border-color: var(--active);
 }
 
+#new-account {
+  display: grid;
+  gap: 4px;
+  outline: none;
+}
+
+#new-account > span {
+  font-size: 12px;
+  color: var(--muted);
+}
+
+/* The active colour says the list has the keys, as for a field. */
+#new-account:focus .selected {
+  border-color: var(--active);
+}
+
 #new-form button, #project-form button, #rename-form button, #away-form button, #hide-form button[type="submit"] {
   justify-self: end;
   font-weight: 700;

@@ -43,7 +43,10 @@
   <dialog id="new-session">
     <form id="new-form">
       <h1>new session</h1>
-      <label>account <select name="account"></select></label>
+      <div id="new-account" tabindex="0">
+        <span>account</span>
+        <ol class="launch-list"></ol>
+      </div>
       <label>directory <input name="directory" spellcheck="false" autocomplete="off"></label>
       <ol class="suggestions" hidden></ol>
       <label>short name <input name="name" placeholder="e.g. router (else Claude Code picks one)" spellcheck="false" autocomplete="off"></label>

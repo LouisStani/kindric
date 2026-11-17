@@ -698,21 +698,9 @@ async function cycleTheme() {
   setStatus(`theme: ${name}`);
 }
 
-function accountOption(account) {
-  const option = element("option", "", account);
-  option.value = account;
-  return option;
-}
-
-// Each account with how much of its limits it used, from the last figures its status line
+// Each of `accounts` with how much of its limits it used, from the last figures its status line
 // wrote down: "lystriq · 5h 34% · week 16%", and how old they are past 10 minutes.
 // And "· login 3d" when its login must be renewed within a week.
-async function showAccountUsage(select) {
-  const labels = await accountLabels([...select.options].map((option) => option.value));
-  for (const option of select.options) option.textContent = labels.get(option.value) ?? option.value;
-}
-
-// Each of `accounts` with its line, as above.
 async function accountLabels(accounts) {
   let usages = [];
   try {
@@ -769,18 +757,16 @@ function ago(seconds) {
 function openNewSessionForm() {
   const form = document.getElementById("new-form");
   const fields = form.elements;
-  fields.account.replaceChildren(...lastView.accounts.map(accountOption));
-  showAccountUsage(fields.account);
   const project = panes.activeTab().project;
-  // The account of the last session started in this project, while it still exists.
-  if (project && project.account && lastView.accounts.includes(project.account)) fields.account.value = project.account;
+  newAccount.forget();
+  newAccount.show(project, lastView.accounts);
   fields.directory.value = project ? project.directory : "~";
   sessionDirectory.reset();
   fields.name.value = "";
   document.getElementById("new-message").textContent = "";
   form.querySelector("button").disabled = false;
   document.getElementById("new-session").showModal();
-  fields.account.focus();
+  document.getElementById("new-account").focus();
 }
 
 // In a project: the list of its accounts (launcher.js). Elsewhere, or with no account: the form.
@@ -828,7 +814,7 @@ async function startNewSession(event) {
   const fields = form.elements;
   const dialog = document.getElementById("new-session");
   const message = document.getElementById("new-message");
-  const account = fields.account.value;
+  const account = newAccount.picked();
   if (!account) {
     message.textContent = "no accounts: kindric-accounts add <name>";
     return;
@@ -1257,6 +1243,11 @@ const tabLaunch = new AccountList(document.getElementById("quick"), {
   onStart: startInProject,
   onForm: openNewSessionForm,
   onTrust: askTrust,
+});
+// The account of the full form: picked only, the session starts when the form is sent.
+const newAccount = new AccountList(document.getElementById("new-account"), {
+  labelsOf: accountLabels,
+  onEnter: () => document.getElementById("new-form").requestSubmit(),
 });
 
 const overview = new Overview(document.getElementById("overview"), {
