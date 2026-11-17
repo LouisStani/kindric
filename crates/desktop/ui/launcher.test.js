@@ -13,6 +13,10 @@ globalThis.document = {
       className: "",
       textContent: "",
       onclick: null,
+      scrolledTo: false,
+      scrollIntoView() {
+        this.scrolledTo = true;
+      },
       classList: {
         toggle: (name, on) => (on ? classes.add(name) : classes.delete(name)),
         contains: (name) => classes.has(name),
@@ -119,6 +123,15 @@ test("Enter in a list that only picks sends what it is in", async () => {
   await list.show(null, ["louis"]);
   key(root, "Enter");
   assert.equal(entered, 1);
+});
+
+test("the line picked is scrolled into sight", async () => {
+  const { root, list } = picking(() => {});
+  const accounts = Array.from({ length: 12 }, (_, index) => `account${index}`);
+  await list.show(null, accounts);
+  for (let step = 0; step < 11; step++) key(root, "ArrowDown");
+  assert.equal(list.picked(), "account11");
+  assert.equal(root.list.items[11].scrolledTo, true);
 });
 
 test("a list with no account picks nothing", async () => {

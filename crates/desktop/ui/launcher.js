@@ -86,18 +86,19 @@ export class AccountList {
 
   render() {
     const rows = this.rows();
-    this.list.replaceChildren(
-      ...rows.map((row, index) => {
-        const item = element("li", row.form ? "launch-form muted" : "", row.label);
-        item.classList.toggle("selected", index === this.selected);
-        item.onclick = () => {
-          this.selected = index;
-          if (this.picksOnly()) this.render();
-          else this.choose();
-        };
-        return item;
-      }),
-    );
+    const items = rows.map((row, index) => {
+      const item = element("li", row.form ? "launch-form muted" : "", row.label);
+      item.classList.toggle("selected", index === this.selected);
+      item.onclick = () => {
+        this.selected = index;
+        if (this.picksOnly()) this.render();
+        else this.choose();
+      };
+      return item;
+    });
+    this.list.replaceChildren(...items);
+    // A long list scrolls: the line picked stays in sight.
+    items[this.selected]?.scrollIntoView({ block: "nearest" });
   }
 
   onKey(key) {
