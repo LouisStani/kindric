@@ -635,6 +635,64 @@ class AnswerFromTheControlCenter(Journey):
         self.answered()
 
 
+# The mark of each tab of the bar, as the page draws it: [name, state class, sign in its dot].
+TAB_MARKS = """return [...document.querySelectorAll('#tabs button.tab')].map((tab) => {
+  const dot = tab.querySelector('.dot');
+  const state = ['asking', 'finished', 'waiting'].find((name) => tab.classList.contains(name)) ?? '';
+  return [tab.querySelector('.tab-name').textContent, state, dot ? dot.textContent : ''];
+});"""
+
+
+def tab_mark(driver: Driver, name: str) -> tuple[str, str] | None:
+    """The state and the sign the tab `name` shows, None without that tab."""
+    marks: list[list[str]] = driver.script(TAB_MARKS)
+    return next(((str(state), str(sign)) for tab, state, sign in marks if tab == name), None)
+
+
+def dot_sign(driver: Driver, title: str) -> str | None:
+    """The sign in the dot of the session's chip: "?", "✓" or ""; None while it is not in the bar."""
+    found = driver.script("""const chip = [...document.querySelectorAll('#chips li.chip:not(.more)')].find(
+      (chip) => chip.querySelector('.chip-title').textContent === arguments[0]);
+    return chip ? chip.querySelector('.dot').textContent : null;""", title)
+    return None if found is None else str(found)
+
+
+class QuestionFirstInTheBar(Journey):
+    """A session that waits for the user's permission shows "?" before a finished turn, in the bar
+    and on its tab, and is not marked finished meanwhile (355). Answered, it works, then shows its
+    finished turn. A `kindric ask` it leaves puts the "?" back at once, though no account changed."""
+
+    started = [("finished-one", "a short task work:6"), ("asks-one", "a task that needs a permission work:9 ask:permission_prompt")]
+
+    def titles(self) -> list[str]:
+        chips: list[list[Any]] = self.driver.script(CHIPS)
+        return [str(title) for _, title, _ in chips]
+
+    def test_question_first_then_answered_then_asked_again(self) -> None:
+        driver = self.driver
+        wait_until("the finished turn", lambda: chip_state(driver, "finished-one") == "finished", timeout=30)
+        wait_until("the question in the bar", lambda: chip_state(driver, "asks-one") == "asking", timeout=30)
+        self.assertEqual(self.titles(), ["asks-one", "finished-one"])
+        self.assertEqual(dot_sign(driver, "asks-one"), "?")
+        self.assertEqual(dot_sign(driver, "finished-one"), "✓")
+        self.assertEqual(tab_mark(driver, "other"), ("asking", "?"))
+
+        session = next(session for session in fake_sessions() if session.get("name") == "asks-one")
+        answered = subprocess.run(["kindric-accounts", "run", ACCOUNT, "attach", session["id"]], input="yes, go on work:4\n",
+                                  cwd=PROJECT, capture_output=True, text=True, timeout=30)
+        self.assertEqual(answered.returncode, 0, answered.stderr)
+        wait_until("the answered session at work", lambda: chip_state(driver, "asks-one") == "working")
+        self.assertEqual(tab_mark(driver, "other"), ("finished", "✓"))
+        wait_until("its turn finished", lambda: chip_state(driver, "asks-one") == "finished", timeout=30)
+
+        asked = subprocess.run(["kindric", "ask", "Keep the old routes?", "Asked by the end-to-end journey."],
+                               cwd=PROJECT, capture_output=True, text=True, timeout=10,
+                               env={**os.environ, "CLAUDE_CODE_SESSION_ID": session["sessionId"]})
+        self.assertEqual(asked.returncode, 0, asked.stderr)
+        wait_until("the ask's question in the bar", lambda: chip_state(driver, "asks-one") == "asking", timeout=10)
+        self.assertEqual(self.titles()[0], "asks-one")
+
+
 ISOLATED = "solo"
 
 
