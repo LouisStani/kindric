@@ -1556,6 +1556,28 @@ input:focus, select:focus {
 
 .memory-atlas button { cursor: pointer; }
 
+.purge-choices, .purge-confirm {
+  display: flex;
+  gap: 10px;
+  align-items: center;
+  flex-wrap: wrap;
+}
+
+.purge-choices[hidden], .purge-confirm[hidden] { display: none; }
+
+.purge button { cursor: pointer; }
+
+.purge .danger {
+  color: var(--error);
+  border-color: var(--error);
+}
+
+.purge-refused {
+  margin: 0;
+  padding-left: 18px;
+  color: var(--waiting);
+}
+
 .atlas-cartouche, .atlas-legend {
   position: absolute;
   margin: 0;

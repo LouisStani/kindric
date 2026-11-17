@@ -144,6 +144,7 @@ class Journey(unittest.TestCase):
         cls.prepare()
         for name, task in cls.started:
             accounts("run", ACCOUNT, "--bg", "-n", name, task)
+        cls.before_app()
         cls.driver = Driver.start(application())
         wait_until("the page ready", page_ready)
         cls.first_tab()
@@ -151,6 +152,10 @@ class Journey(unittest.TestCase):
     @classmethod
     def prepare(cls) -> None:
         """What a journey sets up once the account exists, before the app starts."""
+
+    @classmethod
+    def before_app(cls) -> None:
+        """What a journey does once its sessions are started, before the app starts."""
 
     @classmethod
     def first_tab(cls) -> None:
@@ -968,6 +973,57 @@ class AtlasZoomWithCtrlWheel(Journey):
     def tearDownClass(cls) -> None:
         super().tearDownClass()
         shutil.rmtree(MEMORY, ignore_errors=True)
+
+
+def age_transcript(name: str, days: int) -> None:
+    """Makes the session `name` last active `days` ago: kindric reads that from its transcript."""
+    session_id = session_id_of(name)
+    found = [path for folder in os.listdir(os.path.join(ACCOUNT_DIR, "projects"))
+             if os.path.exists(path := os.path.join(ACCOUNT_DIR, "projects", folder, f"{session_id}.jsonl"))]
+    if not found:
+        raise AssertionError(f"no transcript for {name}")
+    then = time.time() - days * 86400
+    for path in found:
+        os.utime(path, (then, then))
+
+
+class PurgeFromSettings(Journey):
+    """The settings purge the sessions idle for more than 7 days, after a question that counts
+    them: one goes, one Claude Code refuses (commits not pushed) stays with its reason, and the
+    recent one stays."""
+
+    started = [("old-done", "old work:1"), ("unpushed-old", "kept work:1"), ("recent", "new work:1")]
+
+    @classmethod
+    def before_app(cls) -> None:
+        wait_until("the turns over", lambda: all(fake_detail(name) not in (None, "") and not fake_detail(name).startswith("working")
+                                                 for name, _ in cls.started))
+        age_transcript("old-done", 40)
+        age_transcript("unpushed-old", 10)
+
+    def purge_text(self, css: str) -> str:
+        return self.driver.text(self.driver.find(f"#settings .purge {css}"))
+
+    def test_purge_older_than_seven_days(self) -> None:
+        driver = self.driver
+        driver.press(CONTROL, ",")
+        wait_until("the settings", lambda: dialog_open(driver, "settings"))
+        click_text(driver, "#settings .settings-categories li", "sessions")
+        driver.click(driver.find("#settings .purge button[data-days='7']"))
+        question = wait_until("the question", lambda: self.purge_text(".purge-question"))
+        self.assertTrue(question.startswith("2 sessions of work, idle for more than 7 days"), question)
+        driver.screenshot(os.path.join(OUT, "PurgeFromSettings-question.png"))
+
+        driver.click(driver.find("#settings .purge .purge-go"))
+        result = wait_until("the result", lambda: (text := self.purge_text(".purge-message")) != "purging…" and text)
+        self.assertEqual(result, "1 session removed; 1 refused by Claude Code, kept:")
+        self.assertIn("unpushed-old (work): ", self.purge_text(".purge-refused"))
+        self.assertIn("commits not pushed", self.purge_text(".purge-refused"))
+        names = sorted(session.get("name", "") for session in fake_sessions())
+        self.assertEqual(names, ["recent", "unpushed-old"], "the old one removed, the others kept")
+        wait_until("the removed one gone from the bar", lambda: chip_state(driver, "old-done") is None, timeout=10)
+        self.assertIsNotNone(chip_state(driver, "unpushed-old"), "the refused one stays in the bar")
+        self.assertTrue(fake_running("unpushed-old"), "the refused one keeps running")
 
 
 if __name__ == "__main__":

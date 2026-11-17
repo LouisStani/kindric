@@ -15,7 +15,8 @@ and writes the files kindric reads, in the shapes Claude Code 2.1.323 gives, wit
     claude attach ID                      a terminal on the session: each line typed (or pasted, with
                                           bracketed paste) is a new turn; a stopped session is
                                           started again, waiting
-    claude stop ID / claude rm ID
+    claude stop ID / claude rm ID         rm refuses a session whose name starts with "unpushed", as
+                                          Claude Code does for a worktree with commits not pushed
     claude mcp add [-s user] NAME -- CMD  the server in the account's .claude.json (~/.claude.json without one)
 
 Options kindric-accounts adds (--settings, --mcp-config=…, --append-system-prompt-file …) are
@@ -282,6 +283,9 @@ def stop(wanted, remove):
     session = find(sessions, wanted)
     if session is None:
         print(f"No job matching {wanted}", file=sys.stderr)
+        return 1
+    if remove and session.get("name", "").startswith("unpushed"):
+        print(f"{session['id']}: its worktree has commits not pushed; nothing removed", file=sys.stderr)
         return 1
     if alive(session.get("pid")):
         os.kill(session["pid"], signal.SIGTERM)

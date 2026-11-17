@@ -8,6 +8,7 @@ mod pane;
 mod page;
 mod prefs;
 mod projects;
+mod purge;
 mod settings;
 mod signal;
 mod store;
@@ -22,7 +23,7 @@ use std::process::ExitCode;
 use std::sync::{Mutex, MutexGuard, PoisonError};
 use std::time::{Duration, Instant};
 
-use kindric_core::attach::{AttachCommand, attach_command, login_command, stop_command, trust_command};
+use kindric_core::attach::{AttachCommand, attach_command, login_command, remove_command, stop_command, trust_command};
 use kindric_core::launcher::{self, Request, resolve_directory};
 use kindric_core::mailbox::Mailbox;
 use kindric_core::accounts::SessionInfo;
@@ -592,6 +593,59 @@ async fn hide_session(app: AppHandle, shared: State<'_, Shared>, account: String
         detach(&mut workspace, pane);
     }
     Ok(respond(&app, &shared, workspace))
+}
+
+/// The sessions a purge of those idle for more than `days` would remove, now.
+fn purge_targets(shared: &Shared, days: u32) -> Result<Vec<purge::Target>, String> {
+    if days == 0 {
+        return Err("a purge keeps at least the sessions of the last day".into());
+    }
+    let now = unix_now()?;
+    let view = shared.view.lock().unwrap_or_else(PoisonError::into_inner);
+    Ok(view::purgeable(&view, now, days).into_iter().filter_map(purge::Target::of).collect())
+}
+
+/// How many sessions of each account a purge of those idle for more than `days` would remove.
+#[tauri::command]
+fn purge_preview(shared: State<'_, Shared>, days: u32) -> Result<Vec<purge::Count>, String> {
+    let _span = shared.trace.span("purge_preview");
+    Ok(purge::counts(&purge_targets(&shared, days)?))
+}
+
+#[derive(Serialize)]
+struct Purged {
+    report: purge::Report,
+    tabs: Tabs,
+}
+
+/// Removes the sessions idle for more than `days` (decision 361) with `claude rm`, which stops one
+/// still running; its conversation stays for `claude --resume`. The panes that showed one empty.
+#[tauri::command]
+async fn purge_sessions(app: AppHandle, shared: State<'_, Shared>, days: u32) -> Result<Purged, String> {
+    let _span = shared.trace.span("purge_sessions");
+    let targets = purge_targets(&shared, days)?;
+    let report = tauri::async_runtime::spawn_blocking(move || {
+        purge::purge(targets, |target| {
+            let implicit = implicit_default(&target.account)?;
+            let output = remove_command(&target.account, &target.short_id, implicit)
+                .output()
+                .map_err(|error| format!("cannot run claude rm: {error}"))?;
+            if output.status.success() {
+                return Ok(());
+            }
+            Err(purge::failure_words(&output.stderr, &output.stdout, output.status.code()))
+        })
+    })
+    .await
+    .map_err(|error| error.to_string())?;
+    let mut workspace = shared.workspace();
+    for target in &report.removed {
+        let key = SessionKey { account: target.account.clone(), short_id: target.short_id.clone() };
+        for pane in workspace.tabs.clear_session(&key) {
+            detach(&mut workspace, pane);
+        }
+    }
+    Ok(Purged { report, tabs: respond(&app, &shared, workspace) })
 }
 
 /// What the session received and sent, oldest first, read or not. Nothing is marked read.
@@ -1585,6 +1639,8 @@ fn main() -> ExitCode {
             add_project,
             rename_session,
             hide_session,
+            purge_preview,
+            purge_sessions,
             show_session,
             messages,
             close_tab,

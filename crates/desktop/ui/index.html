@@ -127,6 +127,23 @@
         <span class="muted">every project as a system: its status, decisions, knowledge and lessons</span>
       </p>
     </section>
+    <section class="settings-section" data-category="sessions">
+      <h2>sessions</h2>
+      <div class="purge" data-search="purge old sessions remove clean idle days rm">
+        <p class="muted">remove the sessions idle for long, hidden or not: they leave kindric, their conversations stay in <code>claude --resume</code>. Those working or waiting for you stay.</p>
+        <p class="purge-choices">
+          <button type="button" data-days="31">older than 31 days</button>
+          <button type="button" data-days="7">older than 7 days</button>
+        </p>
+        <p class="purge-confirm" hidden>
+          <span class="purge-question"></span>
+          <button type="button" class="purge-go danger">purge</button>
+          <button type="button" class="purge-cancel">cancel</button>
+        </p>
+        <p class="purge-message muted"></p>
+        <ul class="purge-refused"></ul>
+      </div>
+    </section>
     <section class="settings-section" data-category="shortcuts">
       <h2>shortcuts</h2>
       <div class="shortcuts-list"></div>
