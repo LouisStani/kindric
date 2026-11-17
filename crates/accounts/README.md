@@ -245,6 +245,17 @@ kindric shows what your sessions are doing on one page, where you answer their q
 - Each is added only when the `kindric` in `PATH` knows it (`permission-hook`, `overview-start`).
 - Claude Code reads the settings when a session starts: only sessions started after kindric is installed have them.
 
+## Artifacts, in kindric
+
+kindric keeps the files a session made for you (a page, an image, a PDF) when the session calls `keep_artifact`. kindric-accounts adds `kindric artifact-check` to the sessions it starts, on Stop. When a turn made such files and kept none of them for you, the hook refuses the end of the turn once, with their names: the session keeps those made for you, or says that they only checked its own work, and stops.
+
+- A file counts when the session wrote it with Write, or when a shell command names it as its output (`-o`, `--output=`, `--screenshot=`, `>`), with one of the extensions `.html`, `.svg`, `.png`, `.jpg`, `.gif`, `.webp`, `.pdf`, `.mp4` and a few more. A path the shell still has to expand (`$OUT/a.png`) and a file a script writes on its own are not seen.
+- It asks once per turn: at the second stop, Claude Code says the hook refused already (`stop_hook_active`), and the hook lets it stop.
+- The hook comes after your own Stop hooks and kindric's others.
+- Never for an isolated account, which has no artifacts.
+- It is added only when the `kindric` in `PATH` knows `artifact-check`.
+- Claude Code reads the settings when a session starts: only sessions started after kindric is installed have it.
+
 ## Isolated accounts
 
 Keep a work account apart from your personal ones:
