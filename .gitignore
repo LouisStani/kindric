@@ -4,3 +4,4 @@
 *.swp
 *.swo
 /.claude/worktrees/
+__pycache__/
