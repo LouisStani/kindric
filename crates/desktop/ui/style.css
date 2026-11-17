@@ -437,6 +437,9 @@ ol, ul {
   padding: 0;
   list-style: none;
   user-select: none;
+  /* Room for more than ten accounts; past half the window, it scrolls. */
+  max-height: 50vh;
+  overflow-y: auto;
 }
 
 .launch-list li {
