@@ -1,0 +1,4 @@
+#!/bin/sh
+# A fake xdg-open for kindric's end-to-end tests: what kindric hands to the system's app is
+# written down, one line per call, in ~/xdg-open.log, and nothing is opened.
+printf '%s\n' "$*" >> "$HOME/xdg-open.log"
