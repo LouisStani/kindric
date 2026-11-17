@@ -25,7 +25,7 @@ use ratatui::layout::Rect;
 use crate::app::{App, Flow};
 use crate::pane::PaneKey;
 
-const USAGE: &str = "usage: kindric [mcp | unread | wait-message | away-hook | permission-hook | overview-start | ask <question> <context> | away done <session id> | --version]";
+const USAGE: &str = "usage: kindric [mcp | unread | wait-message | away-hook | permission-hook | artifact-check | overview-start | ask <question> <context> | away done <session id> | --version]";
 
 pub enum AppEvent {
     Input(Event),
@@ -64,6 +64,12 @@ fn main() -> ExitCode {
         // put in kindric's overview, and the user's answer there given to Claude Code.
         ["permission-hook"] => {
             kindric_core::permission::run_hook();
+            Ok(())
+        },
+        // The Stop hook of the sessions kindric-accounts starts: asks once per turn to keep for the
+        // user the pages and images the turn made, when it kept none.
+        ["artifact-check"] => {
+            kindric_core::turn_files::run_hook();
             Ok(())
         },
         // The SessionStart hook of the sessions kindric-accounts starts: how to ask the user.
