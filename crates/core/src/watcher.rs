@@ -15,8 +15,10 @@ use notify::{RecommendedWatcher, RecursiveMode, Watcher};
 /// does not have yet: what else it holds wakes nothing (`ChangeWatcher::wait`), as
 /// `.claude.json`, which Claude Code rewrites all the time.
 /// `registry_dir` holds the list of accounts: one added or removed shows at once.
+/// `quiet_roots` are watched whole: the mailbox, and the requests of the overview, whose writes
+/// query no account.
 /// Reads `jobs/` to list the job directories present now.
-pub fn targets(account_dirs: &[PathBuf], mailbox_root: &Path, registry_dir: &Path) -> Vec<(PathBuf, RecursiveMode)> {
+pub fn targets(account_dirs: &[PathBuf], quiet_roots: &[&Path], registry_dir: &Path) -> Vec<(PathBuf, RecursiveMode)> {
     let mut targets = Vec::new();
     for dir in account_dirs {
         let jobs = dir.join("jobs");
@@ -27,7 +29,7 @@ pub fn targets(account_dirs: &[PathBuf], mailbox_root: &Path, registry_dir: &Pat
         targets.push((jobs, RecursiveMode::NonRecursive));
     }
     targets.push((registry_dir.to_path_buf(), RecursiveMode::NonRecursive));
-    targets.push((mailbox_root.to_path_buf(), RecursiveMode::Recursive));
+    targets.extend(quiet_roots.iter().map(|root| (root.to_path_buf(), RecursiveMode::Recursive)));
     targets
 }
 
@@ -163,15 +165,16 @@ mod tests {
     use std::time::Instant;
 
     #[test]
-    fn targets_cover_each_account_the_list_of_accounts_and_the_mailbox() {
+    fn targets_cover_each_account_the_list_of_accounts_and_the_quiet_roots() {
         let dirs = [PathBuf::from("/a/louis"), PathBuf::from("/a/pro")];
-        let targets = targets(&dirs, Path::new("/m"), Path::new("/c"));
-        assert_eq!(targets.len(), 10);
+        let targets = targets(&dirs, &[Path::new("/m"), Path::new("/o")], Path::new("/c"));
+        assert_eq!(targets.len(), 11);
         assert!(targets.contains(&(PathBuf::from("/c"), RecursiveMode::NonRecursive)));
         assert!(targets.contains(&(PathBuf::from("/a/louis"), RecursiveMode::NonRecursive)));
         assert!(targets.contains(&(PathBuf::from("/a/pro/jobs"), RecursiveMode::NonRecursive)));
         assert!(targets.contains(&(PathBuf::from("/a/louis/sessions"), RecursiveMode::NonRecursive)));
-        assert_eq!(targets.last(), Some(&(PathBuf::from("/m"), RecursiveMode::Recursive)));
+        assert!(targets.contains(&(PathBuf::from("/m"), RecursiveMode::Recursive)));
+        assert_eq!(targets.last(), Some(&(PathBuf::from("/o"), RecursiveMode::Recursive)));
         assert!(!targets.iter().any(|(path, _)| path.ends_with(".claude.json")));
     }
 
@@ -195,7 +198,7 @@ mod tests {
         fs::create_dir_all(root.join("jobs/abc/tmp/deep")).unwrap();
         fs::create_dir_all(root.join("jobs/def")).unwrap();
         fs::write(root.join("jobs/notes.txt"), b"").unwrap();
-        let mut found = targets(std::slice::from_ref(&root), Path::new("/m"), Path::new("/c"));
+        let mut found = targets(std::slice::from_ref(&root), &[Path::new("/m")], Path::new("/c"));
         found.retain(|(path, _)| path.starts_with(root.join("jobs")));
         found.sort();
         let jobs = root.join("jobs");
@@ -211,10 +214,10 @@ mod tests {
         fs::create_dir_all(root.join("jobs")).unwrap();
         let account = [root.clone()];
         let mut watcher = ChangeWatcher::new().unwrap();
-        assert!(watcher.ensure(&targets(&account, &root.join("mailbox"), &root.join("registry"))).is_empty());
+        assert!(watcher.ensure(&targets(&account, &[root.join("mailbox").as_path()], &root.join("registry"))).is_empty());
         fs::create_dir(root.join("jobs/abc")).unwrap();
         assert!(woken_by(&watcher, "abc"), "the new job did not wake the list up");
-        assert!(watcher.ensure(&targets(&account, &root.join("mailbox"), &root.join("registry"))).is_empty());
+        assert!(watcher.ensure(&targets(&account, &[root.join("mailbox").as_path()], &root.join("registry"))).is_empty());
         fs::write(root.join("jobs/abc/state.json"), b"{}").unwrap();
         assert!(woken_by(&watcher, "state.json"), "the state of the new job did not wake the list up");
         fs::remove_dir_all(root).unwrap();
@@ -229,7 +232,7 @@ mod tests {
         fs::create_dir_all(&root).unwrap();
         let account = [root.clone()];
         let mut watcher = ChangeWatcher::new().unwrap();
-        assert!(watcher.ensure(&targets(&account, &root.join("mailbox"), &root.join("registry"))).is_empty());
+        assert!(watcher.ensure(&targets(&account, &[root.join("mailbox").as_path()], &root.join("registry"))).is_empty());
         fs::create_dir(root.join("sessions")).unwrap();
         let deadline = Instant::now() + Duration::from_secs(5);
         let mut woken = false;
@@ -238,7 +241,7 @@ mod tests {
                 Wake::Changed(paths) if paths.iter().any(|path| path.ends_with("sessions")));
         }
         assert!(woken, "the new sessions/ did not wake the list up");
-        assert!(watcher.ensure(&targets(&account, &root.join("mailbox"), &root.join("registry"))).is_empty());
+        assert!(watcher.ensure(&targets(&account, &[root.join("mailbox").as_path()], &root.join("registry"))).is_empty());
         assert!(watcher.watched.contains(&root.join("sessions")));
         fs::remove_dir_all(root).unwrap();
     }
@@ -253,7 +256,7 @@ mod tests {
         let root = fs::canonicalize(&made).unwrap();
         let account = [root.clone()];
         let mut watcher = ChangeWatcher::new().unwrap();
-        assert!(watcher.ensure(&targets(&account, &root.join("mailbox"), &root.join("registry"))).is_empty());
+        assert!(watcher.ensure(&targets(&account, &[root.join("mailbox").as_path()], &root.join("registry"))).is_empty());
         // macOS can report the creation of the folder itself after watching has started (CI,
         // 2026-11-14): those reports go first, so that only the writes below are tested.
         let quiet_by = Instant::now() + Duration::from_secs(5);
@@ -289,7 +292,7 @@ mod tests {
         symlink(&outside, account.join("jobs/abc/tmp/config")).unwrap();
         symlink(&outside, account.join("jobs/linked")).unwrap();
         let mut watcher = ChangeWatcher::new().unwrap();
-        let errors = watcher.ensure(&targets(std::slice::from_ref(&account), &root.join("mailbox"), &root.join("registry")));
+        let errors = watcher.ensure(&targets(std::slice::from_ref(&account), &[root.join("mailbox").as_path()], &root.join("registry")));
         fs::set_permissions(outside.join("locked"), fs::Permissions::from_mode(0o700)).unwrap();
         assert!(errors.is_empty(), "{errors:?}");
         assert!(!watcher.watched.iter().any(|path| path.starts_with(account.join("jobs/abc/tmp")) || path.ends_with("linked")));
