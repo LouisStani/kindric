@@ -10,8 +10,9 @@ and writes the files kindric reads, in the shapes Claude Code 2.1.323 gives, wit
     claude [options] --bg [-n name] TASK  a background session; TASK may hold "work:N": it works N
                                           seconds (2 by default), then waits for the user;
                                           each "touch:NAME" writes the file NAME in its folder
-    claude attach ID                      a terminal on the session: each line typed is a new turn;
-                                          a stopped session is started again, waiting
+    claude attach ID                      a terminal on the session: each line typed (or pasted, with
+                                          bracketed paste) is a new turn; a stopped session is
+                                          started again, waiting
     claude stop ID / claude rm ID
     claude mcp add [-s user] NAME -- CMD  the server in the account's .claude.json (~/.claude.json without one)
 
@@ -231,6 +232,10 @@ def agents(args):
     return 0
 
 
+BRACKETED_PASTE_ON = "\x1b[?2004h"
+PASTE_MARKS = re.compile("\x1b\\[20[01]~")
+
+
 def attach(wanted):
     session = find(load(), wanted)
     if session is None:
@@ -240,9 +245,11 @@ def attach(wanted):
     if not alive(session.get("pid")):
         spawn(session["sessionId"], None)
     print(f"fake claude · {session.get('name') or session['id']} · {session['cwd']}")
-    print("❯ ", end="", flush=True)
+    # Like Claude Code once its prompt reads input: bracketed paste on (what kindric waits for
+    # before typing an answer), and a pasted block read without its markers.
+    print(f"{BRACKETED_PASTE_ON}❯ ", end="", flush=True)
     for line in sys.stdin:
-        line = line.strip()
+        line = PASTE_MARKS.sub("", line).strip()
         if line:
             print(f"you said: {line}")
             child = subprocess.Popen([sys.executable, os.path.abspath(__file__), "--fake-turn", session["sessionId"], line],
