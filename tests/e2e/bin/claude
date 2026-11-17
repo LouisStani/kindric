@@ -9,7 +9,9 @@ and writes the files kindric reads, in the shapes Claude Code 2.1.323 gives, wit
     claude agents --json [--all]          the sessions of the account, stopped ones with --all
     claude [options] --bg [-n name] TASK  a background session; TASK may hold "work:N": it works N
                                           seconds (2 by default), then waits for the user;
-                                          each "touch:NAME" writes the file NAME in its folder
+                                          each "touch:NAME" writes the file NAME in its folder;
+                                          "ask:WHAT" ends the turn on a question of Claude Code
+                                          (waitingFor WHAT, "_" for spaces) instead of waiting
     claude attach ID                      a terminal on the session: each line typed (or pasted, with
                                           bracketed paste) is a new turn; a stopped session is
                                           started again, waiting
@@ -88,8 +90,9 @@ def alive(pid):
         return False
 
 
-def set_state(session_id, status, state, detail):
-    """What the session is doing: its process file (status) and its job file (state, detail)."""
+def set_state(session_id, status, state, detail, waiting_for=None):
+    """What the session is doing: its process file (status, and waitingFor while a question of
+    Claude Code is on its screen) and its job file (state, detail)."""
     sessions = load()
     session = find(sessions, session_id)
     if session is None:
@@ -97,13 +100,17 @@ def set_state(session_id, status, state, detail):
     session.update(status=status, state=state, detail=detail)
     save(sessions)
     if session.get("pid"):
-        write_json(os.path.join(config_dir(), "sessions", f"{session['pid']}.json"), {
+        process = {
             "pid": session["pid"], "sessionId": session["sessionId"], "cwd": session["cwd"], "startedAt": session["startedAt"],
             "version": VERSION, "kind": "bg", "name": session.get("name", ""), "jobId": session["id"],
             "updatedAt": now_ms(), "status": status, "statusUpdatedAt": now_ms(),
-        })
+        }
+        if waiting_for:
+            process["waitingFor"] = waiting_for
+        write_json(os.path.join(config_dir(), "sessions", f"{session['pid']}.json"), process)
+    tempo = {"busy": "active", "waiting": "blocked"}.get(status, "idle")
     write_json(os.path.join(config_dir(), "jobs", session["id"], "state.json"), {
-        "state": state, "detail": detail, "tempo": "active" if status == "busy" else "idle",
+        "state": state, "detail": detail, "tempo": tempo,
         "name": session.get("name", ""), "sessionId": session["sessionId"], "cliVersion": VERSION,
         "cwd": session["cwd"], "createdAt": iso(session["startedAt"]), "updatedAt": iso(now_ms()),
     })
@@ -136,6 +143,12 @@ def write_files(session_id, task):
     for name in re.findall(r"touch:(\S+)", task or ""):
         with open(os.path.join(session["cwd"], name), "w") as out:
             out.write(f"written by {session.get('name') or session['id']}\n")
+
+
+def question_of(task):
+    """What the turn ends waiting for, from "ask:WHAT" (Claude Code's words, "_" for spaces)."""
+    match = re.search(r"ask:(\S+)", task or "")
+    return match.group(1).replace("_", " ") if match else None
 
 
 def work_seconds(task):
@@ -171,6 +184,11 @@ def turn(session_id, task):
         step += 1
         if time.time() < end:
             job_progress(session_id, f"step {step} of: {task[:50]}")
+    question = question_of(task)
+    if question:
+        # Seen on Claude Code 2.1.326: "waiting" in the process file and in agents --json.
+        set_state(session_id, "waiting", "blocked", "waiting for you", question)
+        return
     write_transcript(session_id, {"type": "assistant", "message": {"role": "assistant", "content": [{"type": "text", "text": f"done: {task}"}]}})
     set_state(session_id, "idle", "blocked", "waiting for you")
 

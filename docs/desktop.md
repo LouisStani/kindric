@@ -33,7 +33,7 @@ Each tab is a project: a folder, and the sessions working in it, on any account.
 - The first tab, **other**, holds the sessions of no project. It always stays.
 - `Ctrl+Shift+T` adds a project. `Ctrl+Shift+X` removes the project of the visible tab; its sessions keep running.
 - Each tab has its own panes. Sessions in hidden tabs stay attached.
-- A tab with a session waiting for you carries a dot.
+- A tab with a session waiting for you carries a dot: `?` when one asks you something, before anything else.
 - The app starts again on the tab you left. At its first visit, each tab opens the session of its active pane again, in a single pane (splits are not kept).
 
 ## Control center
@@ -53,18 +53,20 @@ Tab **0**, `Ctrl+Shift+0`, is the page the app opens on. It shows every session 
 
 The bar at the top shows the sessions of the visible project as chips. Sessions that need you come first:
 
-1. unread messages
-2. a finished turn
-3. waiting
-4. working
-5. paused
-6. running in another terminal
+1. a question: a permission or a question of Claude Code on its screen, or a `kindric ask`
+2. unread messages
+3. a finished turn
+4. waiting
+5. working
+6. paused
+7. running in another terminal
 
 | Mark | State |
 | --- | --- |
+| `?` (amber) | asks you something: answer it in the session or in the control center |
 | filled dot | waiting for you |
 | half dot | Claude is working |
-| ✓ | finished a turn while you were not looking |
+| ✓ | finished a turn while you were not looking (never while it asks) |
 | empty ring | paused (no process; opening it wakes it up) |
 | dashed ring | interactive session in another terminal |
 
