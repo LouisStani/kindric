@@ -91,6 +91,37 @@ test("one project: its sessions most urgent first, the paused ones apart", () =>
   assert.deepEqual(labels(stopped), ["stopped"]);
 });
 
+// Decision 354: what needs you, paused less than two hours ago, working, done, at rest, paused
+// long ago; the last active first in each group.
+const NOW = 1_800_000_000;
+const ago = (minutes) => ({ last_active: NOW - minutes * 60 });
+
+test("a pause of less than two hours comes right after what needs you, an older one last", () => {
+  const rows = [
+    row("old pause", 2, { ...paused, ...ago(121) }),
+    row("rest", 2, ago(1)),
+    row("working an hour ago", 2, { ...working, ...ago(60) }),
+    row("asks", 2, { ...asking, ...ago(300) }),
+    row("pause", 2, { ...paused, ...ago(119) }),
+    row("done", 2, { ...done, ...ago(30) }),
+    row("working now", 2, { ...working, ...ago(0) }),
+  ];
+  const { active, paused: stopped } = projectView(rows, 2, new Map(), NOW);
+  assert.deepEqual(labels(active), ["asks", "pause", "working now", "working an hour ago", "done", "rest"]);
+  assert.deepEqual(labels(stopped), ["old pause"]);
+  const { groups } = allView(rows, tabs, new Map(), NOW);
+  assert.deepEqual(labels(groups[0].rows), ["pause", "working now", "working an hour ago", "done", "rest", "old pause"]);
+});
+
+test("within a group, the last active first; a session without a transcript last", () => {
+  const rows = [row("never", 2, working), row("an hour ago", 2, { ...working, ...ago(60) }), row("now", 2, { ...working, ...ago(0) })];
+  assert.deepEqual(labels(projectView(rows, 2, new Map(), NOW).active), ["now", "an hour ago", "never"]);
+  const pauses = [row("no transcript", 2, paused), row("hours ago", 2, { ...paused, ...ago(600) }), row("days ago", 2, { ...paused, ...ago(6000) })];
+  assert.deepEqual(labels(projectView(pauses, 2, new Map(), NOW).paused), ["hours ago", "days ago", "no transcript"], "an unknown pause is an old one");
+  const asks = [row("asked first", 2, { ...asking, ...ago(10) }), row("asked last", 2, { ...asking, ...ago(1) })];
+  assert.deepEqual(labels(allView(asks, tabs, new Map(), NOW).needs), ["asked last", "asked first"]);
+});
+
 test("a row says how many files its session kept and how many are new", () => {
   assert.equal(keptLabel(0, 0), "nothing kept");
   assert.equal(keptLabel(1, 0), "1 kept");

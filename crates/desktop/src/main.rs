@@ -27,7 +27,7 @@ use kindric_core::launcher::{self, Request, resolve_directory};
 use kindric_core::mailbox::Mailbox;
 use kindric_core::accounts::SessionInfo;
 use kindric_core::artifacts::{self, Kind};
-use kindric_core::{accounts, atlas, away, changes, checks, claude_theme, images, mailbox, origins, overview, refresher, steps, worktrees};
+use kindric_core::{accounts, activity, atlas, away, changes, checks, claude_theme, images, mailbox, origins, overview, refresher, steps, worktrees};
 use serde::Serialize;
 use serde::de::DeserializeOwned;
 use tauri::ipc::{Channel, InvokeResponseBody, Response};
@@ -1112,6 +1112,7 @@ fn publish(app: &AppHandle, update: refresher::Update) -> bool {
         view::carry_changed(&mut next, &current, &HashMap::new());
         view::assign(&mut next, &tabs, &prefs);
         mark_away(&mut next);
+        mark_activity(&mut next, implicit_default);
         next.errors.splice(0..0, shared.startup_errors.iter().cloned());
         // The same list again (the 30-second refresh, mostly): the page has nothing to draw.
         if next == *current {
@@ -1141,6 +1142,15 @@ fn publish(app: &AppHandle, update: refresher::Update) -> bool {
 fn mark_away(view: &mut view::ListView) {
     let root = away::default_root().ok();
     view::mark_away(view, |session| root.as_deref().and_then(|root| away::until(root, session)));
+}
+
+/// When each session of `view` was last active, from its transcript; none when the accounts'
+/// folders cannot be found.
+fn mark_activity(view: &mut view::ListView, implicit_default: bool) {
+    let Ok(paths) = accounts::paths() else {
+        return;
+    };
+    view::mark_activity(view, |account, sessions| activity::last_written(&accounts::dir_of(&paths, account, implicit_default), sessions));
 }
 
 /// What `set_away` changed: the end, none when back, and what to tell the session in the user's

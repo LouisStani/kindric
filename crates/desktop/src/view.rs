@@ -1,6 +1,6 @@
 //! What the page shows: the session list, built from each refresh.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::Path;
 
 use kindric_core::accounts::{SessionInfo, SessionState};
@@ -52,6 +52,9 @@ pub struct SessionRow {
     pub changed: Option<usize>,
     /// The user said they are away until then (Unix seconds): the session keeps working.
     pub away_until: Option<i64>,
+    /// When the session was last active (Unix seconds), from its transcript; the control center
+    /// orders by it (decision 354). Set by `mark_activity`.
+    pub last_active: Option<i64>,
     /// Kept for Ctrl+P, which searches the same fields as the terminal picker.
     #[serde(skip)]
     pub info: SessionInfo,
@@ -107,6 +110,7 @@ fn row(position: usize, session: &SessionInfo, unread: usize, finished: bool) ->
         images: Vec::new(),
         changed: None,
         away_until: None,
+        last_active: None,
         info: session.clone(),
         position,
     }
@@ -197,6 +201,19 @@ pub fn propose_images(next: &mut ListView, previous: &ListView, lookup: impl Fn(
 pub fn mark_away(view: &mut ListView, until: impl Fn(&str) -> Option<i64>) {
     for row in &mut view.sessions {
         row.away_until = until(&row.session_id);
+    }
+}
+
+/// When each session was last active, as `lookup` reads it for the sessions of one account (its
+/// name, their ids): asked once per account, whatever the number of its sessions.
+pub fn mark_activity(view: &mut ListView, lookup: impl Fn(&str, &HashSet<&str>) -> HashMap<String, i64>) {
+    let mut accounts: HashMap<&str, HashSet<&str>> = HashMap::new();
+    for row in &view.sessions {
+        accounts.entry(row.account.as_str()).or_default().insert(row.session_id.as_str());
+    }
+    let found: HashMap<String, i64> = accounts.iter().flat_map(|(account, sessions)| lookup(account, sessions)).collect();
+    for row in &mut view.sessions {
+        row.last_active = found.get(&row.session_id).copied();
     }
 }
 
@@ -356,6 +373,27 @@ mod tests {
         assert_eq!(view.sessions[1].away_until, None);
         mark_away(&mut view, |_| None);
         assert_eq!(view.sessions[0].away_until, None, "back");
+    }
+
+    #[test]
+    fn each_account_is_asked_once_for_when_its_sessions_were_active() {
+        let sessions = vec![session("pro", "x", false), session("louis", "y", false), session("louis", "z", false)];
+        let mut view = apply(&ListView::default(), Ok((snapshot(sessions), HashMap::new())), None);
+        let ids: Vec<String> = view.sessions.iter().map(|row| row.session_id.clone()).collect();
+        let asked = std::cell::RefCell::new(Vec::new());
+        mark_activity(&mut view, |account, sessions| {
+            let mut wanted: Vec<&str> = sessions.iter().copied().collect();
+            wanted.sort_unstable();
+            asked.borrow_mut().push((account.to_string(), wanted.join(" ")));
+            if account == "louis" { HashMap::from([(ids[1].clone(), 1_700)]) } else { HashMap::new() }
+        });
+        let mut asked = asked.into_inner();
+        asked.sort();
+        let mut louis = [ids[1].as_str(), ids[2].as_str()];
+        louis.sort_unstable();
+        assert_eq!(asked, [("louis".to_string(), louis.join(" ")), ("pro".to_string(), ids[0].clone())]);
+        let active: Vec<_> = view.sessions.iter().map(|row| row.last_active).collect();
+        assert_eq!(active, [None, Some(1_700), None], "a session without a transcript has no time");
     }
 
     #[test]
