@@ -3,6 +3,7 @@
 
 import { mark, note, traced } from "./trace.js";
 import { ScreenPhotos, fits } from "./photos.js";
+import { dotSign } from "./chips.js";
 
 const { invoke, Channel } = window.__TAURI__.core;
 
@@ -530,7 +531,7 @@ export class Panes {
         const mark = this.markOf(tab.id);
         if (mark) {
           button.classList.add(mark);
-          button.append(element("span", "dot", mark === "finished" ? "✓" : ""));
+          button.append(element("span", "dot", dotSign(mark)));
         }
         button.classList.toggle("active", !this.state.overview && tab.id === this.state.active);
         // The click that ends a drag is not a click on the tab.
