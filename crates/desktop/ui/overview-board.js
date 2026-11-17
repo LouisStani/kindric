@@ -24,13 +24,33 @@ export function standing(row, requests = new Map()) {
   return "elsewhere";
 }
 
-const ORDER = new Map([...STANDINGS.map((group, index) => [group.id, index]), ["elsewhere", STANDINGS.length]]);
+// A session paused less than this long ago waits for what to do next: it comes right after those
+// that need you. Paused longer, it is done with, and goes to the bottom (decision 354).
+export const RECENT_PAUSE_SECONDS = 2 * 60 * 60;
 
-// `rows` most urgent first; the list's own order within a group.
-export function urgentFirst(rows, requests = new Map()) {
+function nowSeconds() {
+  return Date.now() / 1000;
+}
+
+// Paused, and active less than RECENT_PAUSE_SECONDS before `now` (Unix seconds). `last_active`
+// is when its transcript was last written; without one, the pause is taken as old.
+export function recentlyPaused(row, requests = new Map(), now = nowSeconds()) {
+  return standing(row, requests) === "paused" && row.last_active != null && now - row.last_active < RECENT_PAUSE_SECONDS;
+}
+
+// Need you, paused not long ago, working, done, at rest, paused long ago.
+const ORDER = new Map([["need", 0], ["recent pause", 1], ["working", 2], ["done", 3], ["rest", 4], ["paused", 5], ["elsewhere", 6]]);
+
+function rank(row, requests, now) {
+  return ORDER.get(recentlyPaused(row, requests, now) ? "recent pause" : standing(row, requests));
+}
+
+// `rows` most urgent first, and within a group the last active first (decisions 349, 350, 354);
+// the list's own order among those with the same time.
+export function urgentFirst(rows, requests = new Map(), now = nowSeconds()) {
   return rows
-    .map((row, index) => ({ row, index }))
-    .sort((a, b) => ORDER.get(standing(a.row, requests)) - ORDER.get(standing(b.row, requests)) || a.index - b.index)
+    .map((row, index) => ({ row, index, rank: rank(row, requests, now) }))
+    .sort((a, b) => a.rank - b.rank || (b.row.last_active ?? 0) - (a.row.last_active ?? 0) || a.index - b.index)
     .map(({ row }) => row);
 }
 
@@ -52,19 +72,20 @@ export function projectsOf(rows, tabs, requests = new Map()) {
 
 // The view of every project: the sessions that need you first, whatever their project, then a
 // group per tab with its other sessions; a tab with none is left out.
-export function allView(rows, tabs, requests = new Map()) {
+export function allView(rows, tabs, requests = new Map(), now = nowSeconds()) {
   const needing = (row) => standing(row, requests) === "need";
   const groups = tabs
-    .map((tab) => ({ tab, rows: urgentFirst(rows.filter((row) => row.tab === tab.id && !needing(row)), requests) }))
+    .map((tab) => ({ tab, rows: urgentFirst(rows.filter((row) => row.tab === tab.id && !needing(row)), requests, now) }))
     .filter((group) => group.rows.length > 0);
-  return { needs: urgentFirst(rows.filter(needing), requests), groups };
+  return { needs: urgentFirst(rows.filter(needing), requests, now), groups };
 }
 
-// The view of one tab: its sessions most urgent first, the paused ones apart, at the bottom.
-export function projectView(rows, tabId, requests = new Map()) {
-  const mine = urgentFirst(rows.filter((row) => row.tab === tabId), requests);
-  const paused = (row) => standing(row, requests) === "paused";
-  return { active: mine.filter((row) => !paused(row)), paused: mine.filter(paused) };
+// The view of one tab: its sessions most urgent first, those paused long ago apart, at the
+// bottom; one paused not long ago stays with the others, right after what needs you.
+export function projectView(rows, tabId, requests = new Map(), now = nowSeconds()) {
+  const mine = urgentFirst(rows.filter((row) => row.tab === tabId), requests, now);
+  const pausedLongAgo = (row) => standing(row, requests) === "paused" && !recentlyPaused(row, requests, now);
+  return { active: mine.filter((row) => !pausedLongAgo(row)), paused: mine.filter(pausedLongAgo) };
 }
 
 // What a row says of the files its session kept for the user: `kept` in all, `fresh` of them not

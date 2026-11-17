@@ -1,4 +1,5 @@
 pub mod accounts;
+pub mod activity;
 pub mod artifacts;
 pub mod atlas;
 pub mod attach;
