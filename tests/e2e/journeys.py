@@ -531,6 +531,110 @@ class NarrowControlCenter(Journey):
             self.assertFalse(row["under"], "a wide row is a single line")
 
 
+def hook_input(session_id: str, tool: str, tool_input: dict[str, Any]) -> str:
+    """What Claude Code gives its PermissionRequest hook, in the shape of the trial of 2026-11-16
+    (permission.rs keeps it in its tests)."""
+    return json.dumps({"session_id": session_id, "transcript_path": "/t.jsonl", "cwd": PROJECT, "permission_mode": "default",
+                       "hook_event_name": "PermissionRequest", "tool_name": tool, "tool_input": tool_input, "permission_suggestions": []})
+
+
+def asked_by_hook(session_id: str, tool: str, tool_input: dict[str, Any]) -> subprocess.Popen[str]:
+    """`kindric permission-hook` started as Claude Code starts it for a session of the account: it
+    puts the question in the control center and waits for the answer."""
+    hook = subprocess.Popen(["kindric", "permission-hook"], stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                            text=True, cwd=PROJECT, env={**os.environ, "CLAUDE_CONFIG_DIR": ACCOUNT_DIR})
+    assert hook.stdin is not None
+    hook.stdin.write(hook_input(session_id, tool, tool_input))
+    hook.stdin.close()
+    return hook
+
+
+def prompts_of(session_id: str) -> list[str]:
+    """What the user said to the session, turn by turn, as its transcript keeps it."""
+    prompts: list[str] = []
+    projects = os.path.join(ACCOUNT_DIR, "projects")
+    for folder in os.listdir(projects) if os.path.isdir(projects) else []:
+        path = os.path.join(projects, folder, f"{session_id}.jsonl")
+        if os.path.exists(path):
+            with open(path) as source:
+                entries = [json.loads(line) for line in source if line.strip()]
+            prompts += [str(entry["message"]["content"]) for entry in entries if entry.get("type") == "user"]
+    return prompts
+
+
+def decision_of(hook: subprocess.Popen[str]) -> dict[str, Any]:
+    """The decision the hook prints for Claude Code once the user answered."""
+    assert hook.stdout is not None and hook.stderr is not None
+    with hook.stdout, hook.stderr:
+        try:
+            hook.wait(timeout=15)
+        except subprocess.TimeoutExpired:
+            hook.kill()
+            hook.wait()
+            raise AssertionError("the hook still waits: the answer did not reach it") from None
+        out, err = hook.stdout.read(), hook.stderr.read()
+    if not out.strip():
+        raise AssertionError(f"the hook printed nothing (exit {hook.returncode}): {err.strip()}")
+    printed: dict[str, Any] = json.loads(out)
+    decided: dict[str, Any] = printed["hookSpecificOutput"]["decision"]
+    return decided
+
+
+class AnswerFromTheControlCenter(Journey):
+    """What a session asks is answered from its row, without opening it: a permission (Allow,
+    then Deny), a question of AskUserQuestion (one click on an option), and a `kindric ask`, whose
+    answer is typed into the session with the question recalled (336)."""
+
+    started = [("asks", "a task that asks work:0")]
+
+    def requests(self) -> list[str]:
+        return texts(self.driver, "article.control-row .request")
+
+    def answered(self) -> None:
+        wait_until("the request gone from the row", lambda: self.requests() == [] or None)
+
+    def test_permission_question_and_ask(self) -> None:
+        driver = self.driver
+        carry_messages(driver)
+        driver.press(CONTROL, SHIFT, "0")
+        wait_until("the control center", lambda: not overview_hidden(driver))
+        wait_until("the session's row", lambda: texts(driver, "article.control-row .row-name") == ["asks"])
+        session = session_id_of("asks")
+
+        hook = asked_by_hook(session, "Bash", {"command": "touch e2e-made.txt", "description": "Create a file"})
+        wait_until("the command alone in the row", lambda: any("touch e2e-made.txt" in text for text in texts(driver, "article.control-row .request-command")))
+        click_text(driver, "article.control-row .request button", "Allow")
+        self.assertEqual(decision_of(hook)["behavior"], "allow")
+        self.answered()
+
+        hook = asked_by_hook(session, "Bash", {"command": "rm -r build", "description": "Remove the build"})
+        wait_until("the second command in the row", lambda: any("rm -r build" in text for text in texts(driver, "article.control-row .request-command")))
+        click_text(driver, "article.control-row .request button", "Deny")
+        self.assertEqual(decision_of(hook)["behavior"], "deny")
+        self.answered()
+
+        question = {"question": "Red or blue?", "header": "Color", "multiSelect": False,
+                    "options": [{"label": "Red", "description": "Answer red"}, {"label": "Blue", "description": "Answer blue"}]}
+        hook = asked_by_hook(session, "AskUserQuestion", {"questions": [question]})
+        wait_until("the question in the row", lambda: "Red or blue?" in texts(driver, "article.control-row .request-question"))
+        click_text(driver, "article.control-row .request button", "2 Blue")
+        decided = decision_of(hook)
+        self.assertEqual((decided["behavior"], decided["updatedInput"]["answers"]), ("allow", {"Red or blue?": "Blue"}))
+        self.answered()
+
+        asked = subprocess.run(["kindric", "ask", "Keep the old routes?", "They have no callers left. I keep writing the tests meanwhile."],
+                               cwd=PROJECT, capture_output=True, text=True, timeout=10, env={**os.environ, "CLAUDE_CODE_SESSION_ID": session})
+        self.assertEqual(asked.returncode, 0, asked.stderr)
+        field = wait_until("the ask's field in the row", lambda: driver.find_all("article.control-row .request.is-ask .request-field") or None)
+        driver.type_into(field[0], "keep them" + ENTER)
+        typed = 'Answer to your question "Keep the old routes?": keep them'
+        try:
+            wait_until("the answer typed into the session, with its question", lambda: prompts_of(session)[-1:] == [typed], timeout=30)
+        except AssertionError as error:
+            raise AssertionError(f"{error}; the session's last prompts: {prompts_of(session)[-2:]!r}") from error
+        self.answered()
+
+
 ISOLATED = "solo"
 
 
