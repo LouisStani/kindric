@@ -23,6 +23,8 @@ ENTER = ""
 ESCAPE = ""
 TAB = ""
 F2 = ""
+ARROW_DOWN = "\ue015"
+DELETE = "\ue017"
 
 T = TypeVar("T")
 
@@ -85,6 +87,15 @@ class Driver:
         down = [{"type": "keyDown", "value": key} for key in keys]
         up = [{"type": "keyUp", "value": key} for key in reversed(keys)]
         action = {"type": "key", "id": "keyboard", "actions": down + up}
+        self._command("POST", "/actions", {"actions": [action]})
+        self._command("DELETE", "/actions")
+
+    def drag(self, source: str, target: str) -> None:
+        """Presses the mouse on `source`, moves it to `target` in a few steps, and lets go there."""
+        moves = [{"type": "pointerMove", "origin": {ELEMENT_KEY: source}, "x": 0, "y": 0}, {"type": "pointerDown", "button": 0}]
+        moves += [{"type": "pointerMove", "origin": "pointer", "x": 0, "y": 4, "duration": 50} for _ in range(3)]
+        moves += [{"type": "pointerMove", "origin": {ELEMENT_KEY: target}, "x": 0, "y": 0, "duration": 200}, {"type": "pointerUp", "button": 0}]
+        action = {"type": "pointer", "id": "mouse", "parameters": {"pointerType": "mouse"}, "actions": moves}
         self._command("POST", "/actions", {"actions": [action]})
         self._command("DELETE", "/actions")
 
