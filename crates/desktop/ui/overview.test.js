@@ -46,6 +46,7 @@ const labels = (rows) => rows.map((each) => each.label);
 test("a session stands where the user sees it", () => {
   assert.equal(standing(row("a", 1, asking)), "need");
   assert.equal(standing(row("a", 1, { ...asking, state: "working" })), "need", "a question on screen comes first");
+  assert.equal(standing(row("a", 1, { asks: true, finished: true })), "need", "a request Rust found, before a finished turn");
   assert.equal(standing(row("a", 1, done)), "done");
   assert.equal(standing(row("a", 1, working)), "working");
   assert.equal(standing(row("a", 1)), "rest");

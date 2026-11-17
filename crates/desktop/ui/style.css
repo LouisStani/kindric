@@ -99,7 +99,7 @@ body {
   border-color: var(--line-strong);
 }
 
-.chip.waiting, .chip.finished {
+.chip.waiting, .chip.finished, .chip.asking {
   color: var(--text);
 }
 
@@ -154,12 +154,17 @@ body {
   border: var(--stroke) dashed var(--faint);
 }
 
-.finished .dot {
+.finished .dot, .asking .dot {
   width: auto;
   height: auto;
   border-radius: 0;
   font-weight: 700;
   color: var(--done);
+}
+
+/* A question waits for the user: the color of what waits, with its sign. */
+.asking .dot {
+  color: var(--waiting);
 }
 
 .chip.more {
@@ -227,7 +232,7 @@ body {
   color: var(--text);
 }
 
-.tip-state.waiting {
+.tip-state.waiting, .tip-state.asking {
   color: var(--waiting);
 }
 
@@ -378,7 +383,7 @@ ol, ul {
   box-shadow: 0 0 0 var(--stroke) var(--on-active);
 }
 
-.tab.active.finished .dot {
+.tab.active.finished .dot, .tab.active.asking .dot {
   color: var(--on-active);
   box-shadow: none;
 }

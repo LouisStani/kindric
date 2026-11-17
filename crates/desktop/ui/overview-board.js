@@ -16,7 +16,7 @@ export const STANDINGS = [
 // from `requestsBySession`). "paused": stopped, no process. "elsewhere": shown in a terminal
 // outside kindric, whose activity kindric does not know; counted in no group.
 export function standing(row, requests = new Map()) {
-  if (row.waiting_for || requests.has(row.session_id)) return "need";
+  if (row.asks || row.waiting_for || requests.has(row.session_id)) return "need";
   if (row.finished) return "done";
   if (row.state === "working") return "working";
   if (row.state === "waiting") return "rest";

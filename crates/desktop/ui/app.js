@@ -13,6 +13,7 @@ import { AtlasWindow } from "./atlas.js";
 import { expiresWithin, inHowLong, shortly, timeLeft } from "./expiry.js";
 import { Overview } from "./overview.js";
 import { summaryOf } from "./overview-board.js";
+import { chipState, dotSign, stateWords, tabMark } from "./chips.js";
 
 const { invoke } = window.__TAURI__.core;
 const { listen } = window.__TAURI__.event;
@@ -59,13 +60,6 @@ function renderStatus() {
   else node.replaceChildren("kindric", element("span", "cursor"));
 }
 
-// The state a chip shows: its color and the shape of its dot.
-function chipState(session) {
-  if (session.finished) return "finished";
-  if (!session.short_id) return "elsewhere";
-  return session.state;
-}
-
 function directoryField(formId) {
   const form = document.getElementById(formId);
   return new DirectoryField(form.elements.directory, form.querySelector(".suggestions"));
@@ -87,11 +81,7 @@ function barSessions() {
 
 // The dot of a tab: its most urgent session, if that one needs you.
 function markOf(tabId) {
-  const session = lastView.sessions.find((row) => row.tab === tabId && inBar(row));
-  if (!session) return null;
-  if (session.unread > 0) return "waiting";
-  const state = chipState(session);
-  return state === "finished" || state === "waiting" ? state : null;
+  return tabMark(lastView.sessions.find((row) => row.tab === tabId && inBar(row)));
 }
 
 // The user said they are away from `session` and the time has not passed.
@@ -117,9 +107,10 @@ function sessionItem(session) {
 }
 
 function chip(session, index) {
-  const item = element("li", `chip ${chipState(session)}`);
+  const state = chipState(session);
+  const item = element("li", `chip ${state}`);
   item.append(element("span", "pos", index < 9 ? `${index + 1}` : ""));
-  item.append(element("span", "dot", session.finished ? "✓" : ""));
+  item.append(element("span", "dot", dotSign(state)));
   item.append(element("span", "chip-title", session.label));
   if (session.unread > 0) {
     const badge = element("span", "badge", `${session.unread}`);
@@ -149,7 +140,7 @@ function chip(session, index) {
 
 function showTip(session, item) {
   const tip = document.getElementById("tip");
-  const state = [session.finished ? "done" : session.state];
+  const state = [stateWords(session)];
   if (session.isolated) state.push("isolated");
   if (awayNow(session)) state.push(`away until ${clockOf(session.away_until)}`);
   const head = element("div");
