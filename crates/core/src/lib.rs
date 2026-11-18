@@ -18,6 +18,7 @@ pub mod permission;
 pub mod progress;
 pub mod refresher;
 pub mod search;
+pub mod stats;
 pub mod steps;
 pub mod turn_files;
 pub mod wake;
