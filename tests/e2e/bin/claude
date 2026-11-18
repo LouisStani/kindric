@@ -18,7 +18,8 @@ and writes the files kindric reads, in the shapes Claude Code 2.1.323 gives, wit
                                           (waitingFor WHAT, "_" for spaces) instead of waiting;
                                           at its start and after each turn, the asyncRewake hooks of
                                           its --settings run in the background: exit code 2 starts a
-                                          turn with their error output
+                                          turn with their error output; with FAKE_INTERACTIVE=1, the
+                                          session is listed as one in a terminal of its own
                                           refused in a folder not trusted when the account's
                                           fake/require-trust exists
     claude                                interactive: Claude Code's trust question first in such a
@@ -118,7 +119,7 @@ def set_state(session_id, status, state, detail, waiting_for=None):
     if session.get("pid"):
         process = {
             "pid": session["pid"], "sessionId": session["sessionId"], "cwd": session["cwd"], "startedAt": session["startedAt"],
-            "version": VERSION, "kind": "bg", "name": session.get("name", ""), "jobId": session["id"],
+            "version": VERSION, "kind": "interactive" if session.get("interactive") else "bg", "name": session.get("name", ""), "jobId": session["id"],
             "updatedAt": now_ms(), "status": status, "statusUpdatedAt": now_ms(),
         }
         if waiting_for:
@@ -341,7 +342,8 @@ def background(args, task):
             name = args[index + 1]
     sessions = load()
     session = {"id": uuid.uuid4().hex[:8], "sessionId": str(uuid.uuid4()), "name": name or "", "cwd": os.getcwd(),
-               "startedAt": now_ms(), "pid": None, "status": "busy", "state": "working", "detail": "", "args": args}
+               "startedAt": now_ms(), "pid": None, "status": "busy", "state": "working", "detail": "", "args": args,
+               "interactive": os.environ.get("FAKE_INTERACTIVE") == "1"}
     sessions.append(session)
     save(sessions)
     spawn(session["sessionId"], task or "")
@@ -355,6 +357,12 @@ def agents(args):
     for session in load():
         running = alive(session.get("pid"))
         if not running and not show_all:
+            continue
+        if session.get("interactive"):
+            # A session in a terminal of its own, as 2.1.325 lists it: no job id, nothing to attach.
+            if running:
+                listed.append({"name": session.get("name", ""), "kind": "interactive", "status": session["status"], "pid": session["pid"],
+                               "cwd": session["cwd"], "sessionId": session["sessionId"]})
             continue
         entry = {"id": session["id"], "cwd": session["cwd"], "kind": "background", "startedAt": session["startedAt"],
                  "sessionId": session["sessionId"]}
