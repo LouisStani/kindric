@@ -2051,5 +2051,35 @@ class HooksOfTheTurn(Journey):
         self.assertEqual(stop_hook("artifact-check", session), "", "asked although the turn kept its image")
 
 
+def tab_button(driver: Driver, name: str) -> str:
+    found = driver.script("""return [...document.querySelectorAll('#tabs button.tab')].find((tab) => tab.querySelector('.tab-name').textContent === arguments[0]);""", name)
+    if not isinstance(found, dict) or ELEMENT_KEY not in found:
+        raise AssertionError(f"no tab {name}")
+    return str(found[ELEMENT_KEY])
+
+
+class TabMovedByMouse(Journey):
+    """A project tab dragged along the bar takes its new place, which "other" never leaves, and
+    keeps it after a restart."""
+
+    SECOND = os.path.join(HOME, "second")
+
+    def names(self) -> list[str]:
+        return [name for name, _ in tabs(self.driver)]
+
+    def test_drag_then_kept(self) -> None:
+        driver = self.driver
+        os.makedirs(self.SECOND, exist_ok=True)
+        add_project_at(driver, PROJECT, "project")
+        add_project_at(driver, self.SECOND, "second")
+        start = self.names()
+        self.assertEqual(start[-3:], ["other", "project", "second"])
+
+        driver.drag(tab_button(driver, "second"), tab_button(driver, "other"))
+        wait_until("second before project", lambda: self.names()[-3:] == ["other", "second", "project"] or None)
+        type(self).restart()
+        wait_until("the order after a restart", lambda: self.names()[-3:] == ["other", "second", "project"] or None)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
