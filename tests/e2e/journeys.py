@@ -1236,5 +1236,115 @@ class ChangedFilesInARepository(Journey):
         shutil.rmtree(WORKTREE, ignore_errors=True)
 
 
+def git_in(folder: str, *words: str) -> str:
+    done = subprocess.run(["git", *words], cwd=folder, check=True, capture_output=True, text=True, timeout=30)
+    return done.stdout
+
+
+def write(path: str, text: str) -> None:
+    with open(path, "w") as out:
+        out.write(text)
+
+
+def branch_exists(name: str) -> bool:
+    return subprocess.run(["git", "rev-parse", "--verify", "-q", f"refs/heads/{name}"], cwd=PROJECT, capture_output=True).returncode == 0
+
+
+class WorktreesWindow(Journey):
+    """Ctrl+Shift+B lists the worktrees of the project with their state. The main checkout, one
+    with uncommitted changes and one a session works in are refused, by the window and by the app
+    behind it; one not merged goes and its branch stays; one merged goes with its branch."""
+
+    TREES = os.path.join(PROJECT, ".claude/worktrees")
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        fresh_repository()
+        for name in ("done", "ahead", "dirty", "busy"):
+            git("worktree", "add", "-q", "-b", name, os.path.join(cls.TREES, name))
+        for name in ("done", "ahead"):
+            write(os.path.join(cls.TREES, name, f"{name}.txt"), f"{name}\n")
+            git_in(os.path.join(cls.TREES, name), "add", f"{name}.txt")
+            git_in(os.path.join(cls.TREES, name), "commit", "-q", "-m", name)
+        git("merge", "-q", "--ff-only", "done")
+        write(os.path.join(cls.TREES, "dirty", "README"), "changed\n")
+        super().setUpClass()
+
+    @classmethod
+    def before_app(cls) -> None:
+        subprocess.run(["kindric-accounts", "run", ACCOUNT, "--bg", "-n", "in-busy", "work in the worktree work:0"],
+                       cwd=os.path.join(cls.TREES, "busy"), check=True, capture_output=True, timeout=30)
+
+    def path(self, name: str) -> str:
+        return PROJECT if name == "main" else os.path.join(self.TREES, name)
+
+    def rows(self) -> dict[str, str]:
+        """Each worktree listed, by path, with the state shown."""
+        found: list[list[str]] = self.driver.script("""return [...document.querySelectorAll('#worktrees li.worktree')].map(
+          (row) => [row.title, row.querySelector('.worktree-state').textContent]);""")
+        return {str(path): str(state) for path, state in found}
+
+    def note(self) -> str:
+        return texts(self.driver, "#worktrees .worktrees-note")[0]
+
+    def choose(self, name: str) -> None:
+        """Up to the first row, then down to the worktree `name`."""
+        paths = list(self.rows())
+        for _ in paths:
+            self.driver.press("")
+        for _ in range(paths.index(self.path(name))):
+            self.driver.press(ARROW_DOWN)
+        wait_until(f"{name} chosen", lambda: texts(self.driver, "#worktrees li.worktree.selected") and
+                   self.driver.script("return document.querySelector('#worktrees li.worktree.selected').title") == self.path(name))
+
+    def refused(self, name: str, why: str) -> None:
+        self.choose(name)
+        self.driver.press(DELETE)
+        wait_until(f"{name} refused", lambda: why in self.note() or None)
+        self.assertTrue(os.path.isdir(self.path(name)), f"{name} removed")
+
+    def test_states_refusals_and_removals(self) -> None:
+        driver = self.driver
+        add_project(driver)
+        wait_until("the session in the worktree in the bar", lambda: chip_state(driver, "in-busy"))
+        driver.press(CONTROL, SHIFT, "b")
+        wait_until("the worktrees window", lambda: dialog_open(driver, "worktrees"))
+        rows = wait_until("every worktree", lambda: self.rows() if len(self.rows()) == 5 else None)
+        self.assertEqual(rows, {
+            PROJECT: "main checkout",
+            self.path("done"): "merged",
+            self.path("ahead"): "not merged · 1 commit ahead",
+            self.path("dirty"): "uncommitted changes",
+            self.path("busy"): "a session works here: in-busy",
+        })
+
+        self.refused("main", "the main checkout is never removed")
+        self.refused("dirty", "it has uncommitted changes")
+        self.refused("busy", "the session in-busy works in it")
+        # The app refuses too, whatever the page asks.
+        refusal = driver.script("""return window.__TAURI__.core.invoke('remove_worktree', { project: arguments[0], path: arguments[1] })
+          .then(() => 'removed', (error) => `${error}`);""", PROJECT, self.path("busy"))
+        self.assertEqual(refusal, "the session in-busy works in it")
+        self.assertTrue(os.path.isdir(self.path("busy")))
+
+        self.choose("ahead")
+        driver.press(DELETE)
+        wait_until("the question for ahead", lambda: "its branch ahead stays" in self.note() or None)
+        driver.press(ENTER)
+        wait_until("ahead removed, its branch kept", lambda: self.note().startswith("removed ahead; branch ahead kept") or None)
+        self.assertFalse(os.path.exists(self.path("ahead")))
+        self.assertTrue(branch_exists("ahead"))
+
+        wait_until("the list without ahead", lambda: self.path("ahead") not in self.rows() or None)
+        self.choose("done")
+        driver.press(DELETE)
+        wait_until("the question for done", lambda: "and its branch done" in self.note() or None)
+        driver.press(ENTER)
+        wait_until("done removed with its branch", lambda: self.note() == "removed done and its branch done" or None)
+        self.assertFalse(os.path.exists(self.path("done")))
+        self.assertFalse(branch_exists("done"))
+        wait_until("three left", lambda: sorted(self.rows()) == sorted([PROJECT, self.path("dirty"), self.path("busy")]) or None)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
