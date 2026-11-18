@@ -14,6 +14,7 @@ import { expiresWithin, inHowLong, shortly, timeLeft } from "./expiry.js";
 import { Overview } from "./overview.js";
 import { summaryOf } from "./overview-board.js";
 import { chipState, dotSign, stateWords, tabMark } from "./chips.js";
+import { pickerItems } from "./picker.js";
 
 const { invoke } = window.__TAURI__.core;
 const { listen } = window.__TAURI__.event;
@@ -89,12 +90,14 @@ function awayNow(session) {
   return Boolean(session.away_until) && session.away_until * 1000 > Date.now();
 }
 
-function sessionItem(session) {
+// A session of Ctrl+P; `when` says when it was last active.
+function sessionItem(session, when) {
   const item = element("li", "session");
   const title = element("div", "title");
   title.append(element("span", "name", session.label));
   if (session.unread > 0) title.append(element("span", "badge", `${session.unread} msg`));
   if (session.finished) title.append(element("span", "done", "done"));
+  if (when) title.append(element("span", "when", when));
   const detail = [session.account, session.state];
   if (session.isolated) detail.push("isolated");
   const project = panes.projectName(session.tab);
@@ -943,16 +946,22 @@ function renderPicker() {
     results.replaceChildren(element("li", "muted", "no match"));
     return;
   }
+  // By day of last activity (decision 376): Rust gives the order, pickerItems the heads.
   results.replaceChildren(
-    ...picker.rows.map((session, index) => {
-      const item = sessionItem(session);
+    ...pickerItems(picker.rows, new Date()).map((entry) => {
+      if (entry.head !== undefined) return element("li", "picker-day", entry.head);
+      const session = picker.rows[entry.index];
+      const item = sessionItem(session, entry.when);
+      item.dataset.index = `${entry.index}`;
       if (session.short_id) item.classList.add("openable");
-      if (index === picker.selected) item.classList.add("selected");
+      if (entry.index === picker.selected) item.classList.add("selected");
       item.addEventListener("click", () => choose(session));
       return item;
     }),
   );
-  results.children[picker.selected].scrollIntoView({ block: "nearest" });
+  // The first row brings its day's head into view with it.
+  if (picker.selected === 0) results.scrollTop = 0;
+  else results.querySelector(`[data-index="${picker.selected}"]`)?.scrollIntoView({ block: "nearest" });
 }
 
 async function filterPicker() {

@@ -1,5 +1,6 @@
 //! What the page shows: the session list, built from each refresh.
 
+use std::cmp::Reverse;
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
 
@@ -306,9 +307,14 @@ pub fn known_directories(projects: &[Project], view: &ListView, home: &Path) -> 
     known
 }
 
-/// The rows Ctrl+P offers for `query`: those of `tab` only, hidden ones last, in bar order.
+/// The rows Ctrl+P offers for `query`: those of `tab` only, the most recently active first, hidden
+/// ones last (decision 376); in bar order when two were active at the same second. A session
+/// whose last activity is unknown has not been used yet: it counts as active now.
 pub fn filter(view: &ListView, tab: PaneId, query: &str) -> Vec<SessionRow> {
-    view.sessions.iter().filter(|row| row.tab == tab && matches_with(&row.info, &row.label, query)).cloned().collect()
+    let mut found: Vec<SessionRow> =
+        view.sessions.iter().filter(|row| row.tab == tab && matches_with(&row.info, &row.label, query)).cloned().collect();
+    found.sort_by_key(|row| (row.hidden, Reverse(row.last_active.unwrap_or(i64::MAX))));
+    found
 }
 
 /// The sessions a purge of those idle for more than `days` at `now` (Unix seconds) removes
@@ -725,6 +731,29 @@ mod tests {
         assert_eq!(titles(&filter(&view, tabs.active_tab(), "old")), ["old"]);
         let home = Path::new("/home/u");
         assert!(!known_directories(&[], &view, home).contains(&tilde(Path::new("/home/u/old-work"), home)));
+    }
+
+    #[test]
+    fn ctrl_p_lists_the_most_recently_active_first_and_the_hidden_last() {
+        let sessions = vec![
+            in_state("louis", "old", SessionState::Paused),
+            in_state("louis", "recent", SessionState::Paused),
+            in_state("louis", "unused", SessionState::Waiting),
+            in_state("louis", "hidden-recent", SessionState::Paused),
+            in_state("louis", "hidden-old", SessionState::Paused),
+        ];
+        let mut view = refresh(&ListView::default(), sessions, None);
+        let mut prefs = Prefs::new();
+        crate::prefs::set_hidden(&mut prefs, "louis-hidden-recent", true);
+        crate::prefs::set_hidden(&mut prefs, "louis-hidden-old", true);
+        let tabs = Tabs::default();
+        assign(&mut view, &tabs, &prefs);
+        let active = HashMap::from([("old", 100), ("recent", 300), ("hidden-recent", 400), ("hidden-old", 50)]);
+        for row in &mut view.sessions {
+            row.last_active = active.get(row.title.as_str()).copied();
+        }
+        assert_eq!(titles(&filter(&view, tabs.active_tab(), "")), ["unused", "recent", "old", "hidden-recent", "hidden-old"]);
+        assert_eq!(titles(&filter(&view, tabs.active_tab(), "old")), ["old", "hidden-old"], "a search keeps the same order");
     }
 
     #[test]

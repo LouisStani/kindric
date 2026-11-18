@@ -980,6 +980,23 @@ input:focus, select:focus {
   overflow-y: auto;
 }
 
+/* Ctrl+P by day (decision 376): the head of each day, and when each session was last active. */
+.picker-day {
+  padding: 10px 8px 2px;
+  font-size: 11px;
+  color: var(--faint);
+}
+
+.picker-day:first-child {
+  padding-top: 0;
+}
+
+.when {
+  flex-shrink: 0;
+  font-size: 11px;
+  color: var(--faint);
+}
+
 .selected {
   background: var(--surface);
   border-color: var(--active);

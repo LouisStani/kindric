@@ -101,7 +101,7 @@ Clicking a chip opens the session in the active pane of its project's tab, movin
 
 **Directory fields** (`Ctrl+N`, `Ctrl+Shift+T`) first list the folders already in use, projects then sessions. Once you type, they list the folders that can follow (case ignored, hidden folders after a `.`). `Tab` completes, `Up` / `Down` choose, `Enter` takes the chosen one.
 
-**Find.** `Ctrl+P` searches the sessions of the visible tab by title, short name, account or directory, hidden sessions included.
+**Find.** `Ctrl+P` searches the sessions of the visible tab by title, short name, account or directory, hidden sessions included. They are listed by day of last activity, the most recent first, under the heads "today", "yesterday", then the date, each with its time. A session not used yet counts as today. Hidden sessions come last, under "hidden", each with its day.
 
 **Name.** `F2` gives a short name to the session of the active pane, for this app only. An empty name removes it. Without one, the bar shows Claude Code's name, cut after the last whole word within 24 characters.
 
