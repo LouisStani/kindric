@@ -276,6 +276,7 @@ function overviewTabs() {
     name: tab.project ? tab.project.name : "other",
     directory: tab.project ? tab.project.directory : null,
     project: tab.project,
+    inAll: !tab.project?.out_of_all,
   }));
 }
 
@@ -1255,6 +1256,10 @@ const overview = new Overview(document.getElementById("overview"), {
   thumbnailOf,
   onNewSession: (project) => openNewSession(project),
   onAddProject: openProjectForm,
+  onSetInAll: (tab, shown) =>
+    invoke("set_in_all", { tab: tab.id, inAll: shown })
+      .then((state) => panes.render(state))
+      .catch(setStatus),
 });
 
 const panes = new Panes(document.getElementById("panes"), document.getElementById("tabs"), document.getElementById("overview"), {

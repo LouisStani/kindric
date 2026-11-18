@@ -28,6 +28,7 @@ import {
   promptTargets,
   requestsBySession,
   sentText,
+  shownInAll,
   standing,
   summaryOf,
 } from "./overview-board.js";
@@ -83,6 +84,27 @@ test("all projects: what needs you first, from any project, then a group per pro
   assert.deepEqual(groups.map((group) => group.tab.name), ["kindric", "merkio"], "a project left with nothing is not shown");
   assert.deepEqual(labels(groups[0].rows), ["rest", "stopped"]);
   assert.deepEqual(labels(groups[1].rows), ["pricing"]);
+});
+
+// Decision 351: a project left out of all keeps there only what needs you.
+const leftOut = tabs.map((tab) => (tab.name === "merkio" ? { ...tab, inAll: false } : tab));
+
+test("a project left out of all shows there only its sessions that need you", () => {
+  const rows = [row("rest", 2), row("api", 3, asking), row("pricing", 3, working), row("notes", 1, done)];
+  const { needs, groups } = allView(rows, leftOut);
+  assert.deepEqual(labels(needs), ["api"], "what needs you stays, whatever its project");
+  assert.deepEqual(groups.map((group) => group.tab.name), ["other", "kindric"], "no group for merkio");
+  assert.deepEqual(labels(shownInAll(rows, leftOut)), ["rest", "api", "notes"]);
+  assert.deepEqual(labels(shownInAll(rows, tabs)), ["rest", "api", "pricing", "notes"], "every project shows by default");
+});
+
+test("the side's all counts what all shows, and every project says whether it is in all", () => {
+  const rows = [row("rest", 2), row("api", 3, asking), row("pricing", 3, working)];
+  const entries = projectsOf(rows, leftOut);
+  assert.deepEqual(entries[0].standings, ["need", "rest"], "merkio's working session is not in all");
+  assert.equal(entries[0].needs, 1);
+  assert.deepEqual(entries[3].standings, ["need", "working"], "merkio's own entry still has all its sessions");
+  assert.deepEqual(entries.map((entry) => entry.inAll), [true, true, true, false, true]);
 });
 
 test("one project: its sessions most urgent first, the paused ones apart", () => {

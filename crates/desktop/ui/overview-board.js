@@ -58,23 +58,41 @@ function needCount(rows, requests) {
   return rows.filter((row) => standing(row, requests) === "need").length;
 }
 
-// The side's list: "all", then one entry per tab of `tabs` (`[{ id, name }]`, in the order of the
-// bar), each with the standing of its sessions, most urgent first, and how many need you.
+// Whether the tab shows in "all": a project the user left out of it does not (decision 351);
+// "other" always does.
+function inAll(tab) {
+  return tab.inAll !== false;
+}
+
+// The sessions "all" shows: those of the tabs in it, and from the others those that need you.
+export function shownInAll(rows, tabs, requests = new Map()) {
+  const out = new Set(tabs.filter((tab) => !inAll(tab)).map((tab) => tab.id));
+  return rows.filter((row) => !out.has(row.tab) || standing(row, requests) === "need");
+}
+
+// The side's list: "all", then one entry per tab of `tabs` (`[{ id, name, inAll }]`, in the
+// order of the bar), each with the standing of its sessions, most urgent first, how many need
+// you, and whether it shows in "all".
 export function projectsOf(rows, tabs, requests = new Map()) {
-  const entry = (id, name, mine) => ({
+  const entry = (id, name, mine, shown) => ({
     id,
     name,
     standings: urgentFirst(mine, requests).map((row) => standing(row, requests)),
     needs: needCount(mine, requests),
+    inAll: shown,
   });
-  return [entry("all", "all", rows), ...tabs.map((tab) => entry(tab.id, tab.name, rows.filter((row) => row.tab === tab.id)))];
+  return [
+    entry("all", "all", shownInAll(rows, tabs, requests), true),
+    ...tabs.map((tab) => entry(tab.id, tab.name, rows.filter((row) => row.tab === tab.id), inAll(tab))),
+  ];
 }
 
 // The view of every project: the sessions that need you first, whatever their project, then a
-// group per tab with its other sessions; a tab with none is left out.
+// group per tab in "all" with its other sessions; a tab with none is left out.
 export function allView(rows, tabs, requests = new Map(), now = nowSeconds()) {
   const needing = (row) => standing(row, requests) === "need";
   const groups = tabs
+    .filter(inAll)
     .map((tab) => ({ tab, rows: urgentFirst(rows.filter((row) => row.tab === tab.id && !needing(row)), requests, now) }))
     .filter((group) => group.rows.length > 0);
   return { needs: urgentFirst(rows.filter(needing), requests, now), groups };

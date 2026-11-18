@@ -27,6 +27,7 @@ import {
   promptTargets,
   requestsBySession,
   sentText,
+  shownInAll,
   standing,
   summaryOf,
 } from "./overview-board.js";
@@ -82,7 +83,7 @@ export class Overview {
   // `onDetail(row)` reads the detail of a session (`session_detail`); `onOpenFile(file)` opens a
   // file it kept with the system's app. `onProjectFigures(tab)` reads what a project's head
   // counts (`project_figures`); `onChanges(row)` and `onWorktrees(tab)` open their windows.
-  constructor(section, { onOpen, onAnswer, onType, onPrompt, onDetail, onOpenFile, onProjectFigures, onChanges, onWorktrees, onArtifacts, thumbnailOf, onNewSession, onAddProject }) {
+  constructor(section, { onOpen, onAnswer, onType, onPrompt, onDetail, onOpenFile, onProjectFigures, onChanges, onWorktrees, onArtifacts, thumbnailOf, onNewSession, onAddProject, onSetInAll }) {
     this.section = section;
     this.onProjectFigures = onProjectFigures;
     this.onChanges = onChanges;
@@ -103,6 +104,7 @@ export class Overview {
     this.thumbnailOf = thumbnailOf;
     this.onNewSession = onNewSession;
     this.onAddProject = onAddProject;
+    this.onSetInAll = onSetInAll;
     // Session id → the files it kept for the user, not yet seen, oldest first (346).
     this.artifacts = new Map();
     this.seenArtifacts = "[]";
@@ -222,16 +224,31 @@ export class Overview {
     const projects = element("nav", "control-projects");
     for (const entry of projectsOf(rows, tabs, this.requests)) {
       const item = button(entry.id === this.shown ? "control-project on" : "control-project", "", () => this.show(entry.id));
+      if (!entry.inAll) item.classList.add("out");
       const dots = element("span", "control-dots");
       for (const id of entry.standings.slice(0, MOST_DOTS)) dots.append(element("span", `dot is-${id}`));
       item.append(element("span", "control-project-name", entry.name), dots);
       if (entry.needs > 0) item.append(element("span", "control-needs", `${entry.needs}`));
-      projects.append(item);
+      const line = element("div", "control-project-line");
+      line.append(item);
+      const tab = tabs.find((each) => each.id === entry.id);
+      if (tab?.directory) line.append(this.inAllToggle(entry, tab));
+      projects.append(line);
     }
     projects.append(button("control-add", "+ add a project", () => this.onAddProject()));
     const cards = accountCards(rows, accounts, this.figures.usages ?? []);
     const title = element("h3", "control-side-title", "accounts");
     this.side.replaceChildren(projects, title, ...cards.map((card) => this.accountCard(card)));
+  }
+
+  // The dot left of a project's name: shown in "all" or left out of it (decision 351). "all" and
+  // "other" have none.
+  inAllToggle(entry, tab) {
+    const toggle = button(entry.inAll ? "in-all-toggle on" : "in-all-toggle", "", () => this.onSetInAll(tab, !entry.inAll));
+    toggle.setAttribute("aria-pressed", `${entry.inAll}`);
+    toggle.setAttribute("aria-label", `${entry.name} in all projects`);
+    toggle.title = entry.inAll ? "shown in all projects · click to leave it out" : "left out of all projects, except what needs you · click to show it";
+    return toggle;
   }
 
   accountCard(card) {
@@ -254,7 +271,7 @@ export class Overview {
 
   renderMain(view, rows, tabs, newSessionKey) {
     const tab = tabs.find((each) => each.id === this.shown) ?? null;
-    const mine = tab ? rows.filter((row) => row.tab === tab.id) : rows;
+    const mine = tab ? rows.filter((row) => row.tab === tab.id) : shownInAll(rows, tabs, this.requests);
     const head = element("header", "control-head");
     const title = element("div", "control-title");
     title.append(element("h1", "", tab ? tab.name : "all projects"));
@@ -279,6 +296,8 @@ export class Overview {
     const body = element("div", "control-body");
     if (!view.loaded) {
       body.append(element("p", "overview-note", "loading…"));
+    } else if (mine.length === 0 && !tab && rows.length > 0) {
+      body.append(element("p", "overview-note", "the projects with sessions are left out of all · the dot left of a project's name shows it here"));
     } else if (mine.length === 0) {
       body.append(element("p", "overview-note", `no sessions yet · ${newSessionKey} starts one`));
     } else if (tab) {

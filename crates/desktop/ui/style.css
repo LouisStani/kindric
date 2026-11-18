@@ -1677,6 +1677,58 @@ input:focus, select:focus {
   border-bottom: var(--stroke) solid var(--line);
 }
 
+/* The dot that shows a project in "all" or leaves it out (decision 351), then the project. */
+.control-project-line {
+  position: relative;
+  display: grid;
+}
+
+.control-project-line .control-project {
+  padding-left: 30px;
+}
+
+/* In the project's left padding, over its button: a button cannot hold another. */
+.in-all-toggle {
+  position: absolute;
+  top: 9px;
+  left: 7px;
+  z-index: 1;
+  width: 18px;
+  height: 18px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  cursor: pointer;
+}
+
+.in-all-toggle::before {
+  content: "";
+  display: block;
+  width: 10px;
+  height: 10px;
+  margin: 4px;
+  border: var(--stroke) solid var(--muted);
+  border-radius: 50%;
+  box-sizing: border-box;
+}
+
+.in-all-toggle.on::before {
+  border-color: var(--active);
+  background: var(--active);
+}
+
+.in-all-toggle:hover::before {
+  border-color: var(--text-strong);
+}
+
+.control-project.out .control-project-name {
+  color: var(--muted);
+}
+
+.control-project.out .control-dots {
+  opacity: 0.5;
+}
+
 .control-project {
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto;
@@ -1738,7 +1790,8 @@ input:focus, select:focus {
 }
 
 .control-add {
-  padding: 10px 12px;
+  /* Under the projects' names, past their border and the dot's place. */
+  padding: 10px 12px 10px 33px;
   border: 0;
   background: transparent;
   font: inherit;
