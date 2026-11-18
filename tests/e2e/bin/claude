@@ -2,7 +2,7 @@
 """A fake Claude Code for kindric's end-to-end tests (decision 310): it answers what kindric asks
 and writes the files kindric reads, in the shapes Claude Code 2.1.323 gives, without any model.
 
-    claude --version                      "2.1.323 (Claude Code)"
+    claude --version                      "2.1.323 (Claude Code)", or the version in ~/.claude/fake/version
     claude auth status --json             logged in for an account (CLAUDE_CONFIG_DIR set), for ~/.claude
                                           only once ~/.claude/fake/logged-in exists;
                                           the login expires at the date in fake/login-expires, else 2027
@@ -564,7 +564,13 @@ def main(argv):
             words.append(arg)
         index += 1
     if "--version" in argv or "-v" in argv:
-        print(f"{VERSION} (Claude Code)")
+        # Another version for the journey that needs one: ~/.claude/fake/version.
+        try:
+            with open(os.path.join(os.path.expanduser("~"), ".claude", "fake", "version")) as source:
+                shown = source.read().strip() or VERSION
+        except OSError:
+            shown = VERSION
+        print(f"{shown} (Claude Code)")
         return 0
     if words[:2] == ["auth", "status"]:
         logged_in = "CLAUDE_CONFIG_DIR" in os.environ or default_logged_in()
