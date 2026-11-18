@@ -2118,5 +2118,28 @@ class AltKeysAndAnotherTerminal(Journey):
         wait_until("chip 1 open", lambda: self.opened() == [first] or None)
 
 
+class OldClaudeCodeWarned(Journey):
+    """F1 lists what is left to set up: a Claude Code older than the one kindric was tested with
+    gets a warning and the command that updates it, then every shortcut."""
+
+    @classmethod
+    def prepare(cls) -> None:
+        os.makedirs(os.path.join(CLAUDE_HOME, "fake"), exist_ok=True)
+        write(os.path.join(CLAUDE_HOME, "fake/version"), "2.1.300")
+
+    def test_warning_in_f1(self) -> None:
+        driver = self.driver
+        driver.press("")
+        wait_until("the help", lambda: dialog_open(driver, "help"))
+        checks = wait_until("Claude Code's line", lambda: [found for found in driver.script("""return [...document.querySelectorAll('#help li.check')].map(
+          (item) => [item.querySelector('.check-state').textContent, item.querySelector('.check-text').textContent,
+                     [...item.querySelectorAll('.check-copy code')].map((node) => node.textContent)]);""") if str(found[1]).startswith("Claude Code")] or None)
+        state, text, copies = checks[0]
+        self.assertEqual(state, "warning")
+        self.assertTrue(str(text).startswith("Claude Code 2.1.300"), text)
+        self.assertEqual(copies, ["claude update"])
+        self.assertTrue(driver.find_all("#help kbd"), "the shortcuts after the list")
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
