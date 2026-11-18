@@ -1721,5 +1721,65 @@ class ShortcutChanged(Journey):
         wait_until("the old keys working", lambda: background(driver) == EMBER or None)
 
 
+PROJECTS_FILE = os.path.join(HOME, ".local/share/kindric/projects.json")
+THEMES = os.path.join(CLAUDE_HOME, "themes")
+
+
+def project_themes() -> list[str | None]:
+    """The theme of each project of projects.json."""
+    try:
+        with open(PROJECTS_FILE) as source:
+            saved = json.load(source)
+    except (OSError, ValueError):
+        return []
+    projects = saved.get("projects", saved) if isinstance(saved, dict) else saved
+    return [project.get("theme") for project in projects]
+
+
+class ProjectTheme(Journey):
+    """Ctrl+Alt+E in a project tab goes through the themes for that project: its sessions' panes
+    show in it while the window keeps kindric's, Claude Code gets a theme of the project, a session
+    started there uses it, and after the last theme the project is back to kindric's."""
+
+    def pane_background(self) -> str:
+        return str(self.driver.script("return document.querySelector(arguments[0]).style.getPropertyValue('--background')", f"{VISIBLE_PANES}.active"))
+
+    def test_project_theme_then_back(self) -> None:
+        driver = self.driver
+        add_project(driver)
+        start_in_project(driver)
+        driver.press(CONTROL, ALT, "e")
+        wait_until("ember for the project", lambda: project_themes() == ["ember"] or None)
+        driver.press(CONTROL, ALT, "e")
+        wait_until("paper in the project's pane", lambda: self.pane_background() == PAPER or None)
+        self.assertEqual(background(driver), EMBER, "the window left kindric's theme")
+        self.assertEqual(project_themes(), ["paper"])
+        written = wait_until("Claude Code's theme of the project", lambda: [name for name in os.listdir(THEMES) if name.startswith("kindric-")] if os.path.isdir(THEMES) and any(name.startswith("kindric-") for name in os.listdir(THEMES)) else None)
+        self.assertEqual(len(written), 1, written)
+        theme = written[0].removesuffix(".json")
+        with open(os.path.join(THEMES, written[0])) as source:
+            self.assertTrue(str(json.load(source).get("base", "")).startswith("light"), "paper drawn dark")
+
+        driver.press(CONTROL, "n")
+        wait_until("the accounts to start with", lambda: dialog_open(driver, "quick-launch"))
+        driver.press(ENTER)
+        wait_until("a second session", lambda: len(fake_sessions()) == 2)
+        with open(settings_path(fake_sessions()[1])) as source:
+            self.assertIn(theme, source.read(), "the session started without the project's theme")
+
+        driver.press(CONTROL, ALT, "e")
+        wait_until("graphite for the project", lambda: project_themes() == ["graphite"] or None)
+        driver.press(CONTROL, ALT, "e")
+        wait_until("back to kindric's theme", lambda: project_themes() == [None] or None)
+        wait_until("the pane in kindric's theme", lambda: self.pane_background() == "" or None)
+
+
+def settings_path(session: dict[str, Any]) -> str:
+    args = [str(arg) for arg in session.get("args", [])]
+    if "--settings" not in args:
+        raise AssertionError(f"started without --settings: {args}")
+    return args[args.index("--settings") + 1]
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
