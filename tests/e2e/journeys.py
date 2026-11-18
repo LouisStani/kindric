@@ -1490,5 +1490,51 @@ class ProgressLine(Journey):
         wait_until("its last step, from the history, in the finder", lambda: self.picker_progress() == self.STEP or None)
 
 
+VISIBLE_PANES = "#panes .tab-page:not([hidden]) .pane"
+
+
+class BackWhereLeft(Journey):
+    """Closed on a project tab with two panes, the app starts again on that tab, its active pane's
+    session open in a single pane (splits are not kept). The first visit of the other tab opens
+    the session it showed."""
+
+    started = [("first", "a task work:0"), ("second", "another task work:0")]
+
+    @classmethod
+    def before_app(cls) -> None:
+        subprocess.run(["kindric-accounts", "run", ACCOUNT, "--bg", "-n", "elsewhere", "out of the project work:0"],
+                       cwd=HOME, check=True, capture_output=True, timeout=30)
+
+    def shown(self) -> list[str]:
+        """The titles of the chips shown in a pane."""
+        chips: list[list[Any]] = self.driver.script(CHIPS)
+        return [str(title) for _, title, open_ in chips if open_]
+
+    def test_tab_and_active_session_again(self) -> None:
+        driver = self.driver
+        wait_until("the session of the other tab", lambda: chip_state(driver, "elsewhere"))
+        open_from_bar(driver, "elsewhere")
+        add_project(driver)
+        wait_until("both sessions in the project's bar", lambda: chip_state(driver, "first") and chip_state(driver, "second"))
+        open_from_bar(driver, "first")
+        driver.press(CONTROL, SHIFT, "d")
+        wait_until("two panes", lambda: len(driver.find_all(VISIBLE_PANES)) == 2)
+        open_from_bar(driver, "second")
+        self.assertEqual(sorted(self.shown()), ["first", "second"])
+
+        driver.quit()
+        os.remove(TRACE)
+        type(self).driver = driver = Driver.start(application())
+        wait_until("the page ready again", page_ready)
+        wait_until("the project tab, active", lambda: ("project", True) in tabs(driver) or None)
+        self.assertTrue(overview_hidden(driver), "started on the control center")
+        wait_until("the active pane's session open", lambda: self.shown() == ["second"] or None)
+        self.assertEqual(len(driver.find_all(VISIBLE_PANES)), 1, "the split kept")
+
+        driver.press(CONTROL, SHIFT, "1")
+        wait_until("the other tab", lambda: ("other", True) in tabs(driver) or None)
+        wait_until("its session open again", lambda: self.shown() == ["elsewhere"] or None)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
