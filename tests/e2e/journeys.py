@@ -1979,5 +1979,39 @@ class ControlCenterFigures(Journey):
         wait_until("none new once seen", lambda: self.cell("alpha", ".row-kept") == "2 kept" or None)
 
 
+def add_project_at(driver: Driver, directory: str, name: str) -> None:
+    """Ctrl+Shift+T on `directory`: its tab, named `name`, active."""
+    driver.press(CONTROL, SHIFT, "t")
+    wait_until("the project form", lambda: dialog_open(driver, "new-project"))
+    field = driver.find("#project-form input[name=directory]")
+    driver.clear(field)
+    driver.type_into(field, directory)
+    driver.click(driver.find("#project-form button[type=submit]"))
+    wait_until(f"the tab {name}, active", lambda: (name, True) in tabs(driver) or None)
+
+
+class NestedProjects(Journey):
+    """A project inside another: a session working in the inner folder, or below it, belongs to the
+    inner project's tab; one in the outer folder stays in the outer tab."""
+
+    INNER = os.path.join(PROJECT, "inner")
+
+    @classmethod
+    def before_app(cls) -> None:
+        os.makedirs(os.path.join(cls.INNER, "deep"), exist_ok=True)
+        for name, folder in (("outer-one", PROJECT), ("inner-one", cls.INNER), ("deep-one", os.path.join(cls.INNER, "deep"))):
+            subprocess.run(["kindric-accounts", "run", ACCOUNT, "--bg", "-n", name, "a task work:0"], cwd=folder, check=True, capture_output=True, timeout=30)
+
+    def test_deepest_project_wins(self) -> None:
+        driver = self.driver
+        wait_until("the sessions in the bar", lambda: sorted(chip_titles(driver)) == ["deep-one", "inner-one", "outer-one"] or None)
+        add_project_at(driver, PROJECT, "project")
+        add_project_at(driver, self.INNER, "inner")
+        wait_until("the inner tab's sessions", lambda: sorted(chip_titles(driver)) == ["deep-one", "inner-one"] or None)
+        driver.press(CONTROL, SHIFT, "h")
+        wait_until("the outer tab", lambda: ("project", True) in tabs(driver) or None)
+        wait_until("the outer tab's session", lambda: chip_titles(driver) == ["outer-one"] or None)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
