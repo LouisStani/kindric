@@ -1690,7 +1690,11 @@ class ShortcutChanged(Journey):
         self.press_in_row("change")
         wait_until("waiting for the keys", lambda: self.keys_shown() == "press keys…" or None)
         driver.press(CONTROL, SHIFT, "k")
-        wait_until("taken keys refused", lambda: texts(driver, "#settings .shortcuts-message")[0].startswith('Ctrl+Shift+K is already "stop and hide') or None)
+        try:
+            wait_until("taken keys refused", lambda: texts(driver, "#settings .shortcuts-message")[0].startswith('Ctrl+Shift+K is already "stop and hide') or None)
+        except AssertionError as error:
+            focus = driver.script("const a = document.activeElement; return a ? `${a.tagName}.${a.className}` : 'none';")
+            raise AssertionError(f"{error}; message {texts(driver, '#settings .shortcuts-message')!r}, keys {self.keys_shown()!r}, focus {focus}") from error
         driver.press(CONTROL, ALT, "t")
         wait_until("the new keys", lambda: self.keys_shown() == "Ctrl+Alt+T" or None)
         with open(SETTINGS) as source:
@@ -1898,6 +1902,7 @@ class ControlCenterKeysAndPromptAll(Journey):
 
         self.to_control_center()
         wait_until("the project shown", lambda: self.heading() == ["project"] or None)
+        wait_until("prompt all for the three", lambda: "prompt all 3" in texts(driver, ".control-actions button") or None)
         click_text(driver, ".control-actions button", "prompt all 3")
         field = wait_until("the field for all", lambda: driver.find("[data-key='prompt/all']"))
         driver.type_into(field, "together work:0" + ENTER)
@@ -1920,7 +1925,9 @@ class ControlCenterKeysAndPromptAll(Journey):
         driver.press(ENTER)
         focused = wait_until("beta's field focused", lambda: driver.script("return document.activeElement?.dataset?.key ?? null"))
         self.assertEqual(focused, f"prompt/{session_id_of('beta')}")
-        driver.click(driver.find(".control-head h1"))
+        # Escape leaves the field for the row: o then opens its session.
+        driver.press(ESCAPE)
+        wait_until("out of the field", lambda: driver.script("return document.activeElement?.dataset?.key ?? null") != f"prompt/{session_id_of('beta')}" or None)
         driver.press("o")
         wait_until("beta open in a pane", lambda: overview_hidden(driver) and (chip(driver, "beta") or ("", False))[1] or None)
 
@@ -2001,7 +2008,9 @@ class NestedProjects(Journey):
     def before_app(cls) -> None:
         os.makedirs(os.path.join(cls.INNER, "deep"), exist_ok=True)
         for name, folder in (("outer-one", PROJECT), ("inner-one", cls.INNER), ("deep-one", os.path.join(cls.INNER, "deep"))):
-            subprocess.run(["kindric-accounts", "run", ACCOUNT, "--bg", "-n", name, "a task work:0"], cwd=folder, check=True, capture_output=True, timeout=30)
+            done = subprocess.run(["kindric-accounts", "run", ACCOUNT, "--bg", "-n", name, "a task work:0"], cwd=folder, capture_output=True, text=True, timeout=30)
+            if done.returncode != 0:
+                raise AssertionError(f"{name} not started in {folder}: {done.stderr.strip()}")
 
     def test_deepest_project_wins(self) -> None:
         driver = self.driver
@@ -2190,6 +2199,186 @@ class DirectoryFieldCompletion(Journey):
         driver.type_into(field, ARROW_DOWN + ENTER)
         wait_until("taken by Down and Enter", lambda: self.value() == f"{self.SHOWN}/.hidden" or None)
         self.assertTrue(dialog_open(driver, "new-project"), "Enter on a suggestion submitted the form")
+
+
+class CopyAndPaste(Journey):
+    """Text selected with the mouse in a pane, Ctrl+Shift+C copies it; Ctrl+Shift+V pastes it into
+    the session of the pane, as one block, and Enter sends it."""
+
+    started = [("pasted", "a task work:0")]
+
+    def select_first_line(self) -> None:
+        """Presses the mouse at the start of the pane's first line and lets go at its end."""
+        screen = self.driver.find(f"{VISIBLE_PANES}.active .xterm-screen")
+        box = self.driver.script("const box = arguments[0].getBoundingClientRect(); return [box.width, box.height];", {ELEMENT_KEY: screen})
+        width, height = float(box[0]), float(box[1])
+        origin = {ELEMENT_KEY: screen}
+        top = int(-height / 2 + 6)
+        moves = [{"type": "pointerMove", "origin": origin, "x": int(-width / 2 + 2), "y": top}, {"type": "pointerDown", "button": 0},
+                 {"type": "pointerMove", "origin": origin, "x": int(width / 2 - 4), "y": top, "duration": 200}, {"type": "pointerUp", "button": 0}]
+        self.driver._command("POST", "/actions", {"actions": [{"type": "pointer", "id": "mouse", "parameters": {"pointerType": "mouse"}, "actions": moves}]})
+        self.driver._command("DELETE", "/actions")
+
+    def test_select_copy_paste(self) -> None:
+        driver = self.driver
+        wait_until("the turn over", lambda: fake_detail("pasted") == "waiting for you", timeout=30)
+        open_from_bar(driver, "pasted")
+        time.sleep(1)
+        self.select_first_line()
+        driver.press(CONTROL, SHIFT, "c")
+        time.sleep(0.5)
+        self.assertNotIn("cannot copy", driver.text(driver.find("#status")))
+        driver.press(CONTROL, SHIFT, "v")
+        time.sleep(0.5)
+        self.assertNotIn("cannot paste", driver.text(driver.find("#status")))
+        type_in_pane(driver, "")
+        session = session_id_of("pasted")
+        last = wait_until("the pasted line sent as a turn", lambda: prompts_of(session)[1:] or None, timeout=15)
+        self.assertEqual(last[-1], f"fake claude · pasted · {PROJECT}")
+
+
+class AwayBackAndDone(Journey):
+    """Ctrl+Shift+Y with minutes: the pane's head says until when, and the hook keeps the session
+    working. Again with 0, the form's proposal: back, the session may stop. Away once more, then
+    the session says `kindric away done`: it may stop, and the head no longer says away."""
+
+    started = [("helper", "a task work:0")]
+
+    def head_away(self) -> str:
+        return texts(self.driver, f"{VISIBLE_PANES}.active .head-away")[0]
+
+    def away_for(self, minutes: str | None) -> None:
+        """Ctrl+Shift+Y, then `minutes` typed, or the form's proposal kept with None."""
+        driver = self.driver
+        driver.press(CONTROL, SHIFT, "y")
+        wait_until("the away form", lambda: dialog_open(driver, "away"))
+        field = driver.find("#away-form input[name=minutes]")
+        if minutes is not None:
+            driver.clear(field)
+            driver.type_into(field, minutes)
+        driver.click(driver.find("#away-form button[type=submit]"))
+        wait_until("the form closed", lambda: not dialog_open(driver, "away"))
+
+    def test_away_back_done(self) -> None:
+        driver = self.driver
+        wait_until("the turn over", lambda: fake_detail("helper") == "waiting for you", timeout=30)
+        open_from_bar(driver, "helper")
+        session = session_id_of("helper")
+
+        self.away_for("30")
+        wait_until("away in the pane's head", lambda: self.head_away().startswith("· away until ") or None)
+        self.assertIn('"decision":"block"', away_hook("Stop", session))
+
+        driver.press(CONTROL, SHIFT, "y")
+        wait_until("the away form", lambda: dialog_open(driver, "away"))
+        self.assertEqual(driver.script("return document.querySelector('#away-form input[name=minutes]').value"), "0", "back not proposed")
+        driver.press(ESCAPE)
+        wait_until("the form closed", lambda: not dialog_open(driver, "away"))
+        self.away_for("0")
+        wait_until("back, no longer away in the head", lambda: self.head_away() == "" or None)
+        self.assertEqual(away_hook("Stop", session), "", "still kept working once back")
+
+        self.away_for("60")
+        wait_until("away again", lambda: self.head_away().startswith("· away until ") or None)
+        done = subprocess.run(["kindric", "away", "done", session], capture_output=True, text=True, timeout=30)
+        self.assertEqual(done.returncode, 0, done.stderr)
+        self.assertEqual(away_hook("Stop", session), "", "still kept working after away done")
+        wait_until("no longer away in the head", lambda: self.head_away() == "" or None, timeout=30)
+
+
+class MessagesFromTheChipBadge(Journey):
+    """A click on the unread count of a chip shows that session's messages, without opening the
+    session in a pane, and reads nothing: the count stays."""
+
+    started = [("writer", "write work:0"), ("reader", "read work:0")]
+
+    def test_badge_click(self) -> None:
+        driver = self.driver
+        wait_until("both sessions in the bar", lambda: chip_state(driver, "writer") and chip_state(driver, "reader"))
+        mcp_call(session_id_of("writer"), "send_message", {"to": "reader", "text": "tests are green"})
+        wait_until("the unread count on reader", lambda: chip_badge(driver, "reader") == "1" or None)
+        badge = driver.script("""return [...document.querySelectorAll('#chips li.chip:not(.more)')].find(
+          (chip) => chip.querySelector('.chip-title').textContent === 'reader').querySelector('.badge');""")
+        driver.click(str(badge[ELEMENT_KEY]))
+        wait_until("the messages window", lambda: dialog_open(driver, "messages"))
+        wait_until("reader's message in it", lambda: "tests are green" in driver.text(driver.find("#messages-list")) or None)
+        self.assertFalse((chip(driver, "reader") or ("", True))[1], "reader opened in a pane")
+        driver.press(ESCAPE)
+        wait_until("the window closed", lambda: not dialog_open(driver, "messages"))
+        self.assertEqual(chip_badge(driver, "reader"), "1", "the message marked read")
+
+
+class AtlasKeysAndSearch(Journey):
+    """The memory atlas by the keyboard: an arrow picks the project, Enter goes in, Escape comes
+    back; typed letters search the memory, Enter goes to the first file found and shows it, and
+    Escape goes back up to the whole map. WebKit's driver drops its connection when it sends keys
+    while the atlas draws (a frame takes 60 to 100 ms under Xvfb): the keys are sent from the page."""
+
+    @classmethod
+    def prepare(cls) -> None:
+        AtlasZoomWithCtrlWheel.prepare()
+
+    def caption(self) -> str:
+        return str(self.driver.script("return document.querySelector('#atlas .atlas-caption').textContent"))
+
+    def key(self, name: str, target: str = "#atlas") -> None:
+        self.driver.script("""document.querySelector(arguments[1]).dispatchEvent(new KeyboardEvent('keydown', { key: arguments[0], bubbles: true, cancelable: true }));""", name, target)
+
+    def test_keys_search_and_back(self) -> None:
+        driver = self.driver
+        driver.press(CONTROL, ",")
+        wait_until("the settings", lambda: dialog_open(driver, "settings"))
+        click_text(driver, "#settings .settings-categories li", "memory")
+        driver.click(driver.find("#settings .memory-atlas-open"))
+        wait_until("the atlas", lambda: dialog_open(driver, "atlas"))
+        wait_until("the memory read", lambda: "2 files" in str(driver.script("return document.querySelector('#atlas .atlas-cartouche-count').textContent")) or None)
+
+        self.key("ArrowRight")
+        # The caption names what the arrow picked instead of the hints.
+        wait_until("something picked", lambda: not self.caption().startswith("type to search") or None)
+        self.key("Enter")
+        wait_until("one level down", lambda: self.caption().startswith("click a ") or None)
+        self.key("Escape")
+        wait_until("the whole map again", lambda: self.caption().startswith("type to search") or None)
+
+        for letter in "chose":
+            self.key(letter)
+        wait_until("one file found", lambda: "1 files hold “chose”" in self.caption() or None)
+        self.key("Enter", "#atlas .atlas-search")
+        wait_until("the file shown", lambda: "we chose" in str(driver.script("return document.querySelector('#atlas .atlas-note').textContent")) or None)
+        self.assertTrue(self.caption().startswith("esc comes back"), self.caption())
+        for _ in range(4):
+            self.key("Escape")
+            time.sleep(0.3)
+        wait_until("the whole map, the search gone", lambda: self.caption() == "type to search · drag or two fingers sideways to turn · pinch or wheel in and out · click a project · esc closes" or None)
+
+    @classmethod
+    def tearDownClass(cls) -> None:
+        super().tearDownClass()
+        shutil.rmtree(MEMORY, ignore_errors=True)
+
+
+class SignalWithoutLayerShell(Journey):
+    """`kindric-desktop signal` on a screen without Wayland's layer shell (X here): `on` says it
+    cannot and exits with 1, `off` with nothing shown does nothing and exits with 0, a wrong
+    command line exits with 2."""
+
+    def signal(self, *words: str) -> subprocess.CompletedProcess[str]:
+        # A Linux desktop always has XDG_RUNTIME_DIR, where the signal keeps its file; the image has none.
+        runtime = os.path.join(HOME, "runtime")
+        os.makedirs(runtime, mode=0o700, exist_ok=True)
+        environment = {name: value for name, value in os.environ.items() if name != "WAYLAND_DISPLAY"}
+        environment["XDG_RUNTIME_DIR"] = runtime
+        return subprocess.run([application(), "signal", *words], capture_output=True, text=True, timeout=15, env=environment)
+
+    def test_refused_off_and_usage(self) -> None:
+        on = self.signal("on")
+        self.assertEqual(on.returncode, 1, on.stderr)
+        self.assertTrue(on.stderr.startswith("kindric-desktop: "), on.stderr)
+        off = self.signal("off")
+        self.assertEqual((off.returncode, off.stderr), (0, ""))
+        wrong = self.signal("blink")
+        self.assertEqual(wrong.returncode, 2, wrong.stderr)
 
 
 if __name__ == "__main__":
