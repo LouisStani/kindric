@@ -9,7 +9,8 @@ and writes the files kindric reads, in the shapes Claude Code 2.1.323 gives, wit
     claude agents --json [--all]          the sessions of the account, stopped ones with --all
     claude [options] --bg [-n name] TASK  a background session; TASK may hold "work:N": it works N
                                           seconds (2 by default), then waits for the user;
-                                          each "touch:NAME" writes the file NAME in its folder;
+                                          each "touch:NAME" writes the file NAME in its folder,
+                                          "cd:PATH" goes into PATH, "commit:MESSAGE" commits there;
                                           "ask:WHAT" ends the turn on a question of Claude Code
                                           (waitingFor WHAT, "_" for spaces) instead of waiting;
                                           at its start and after each turn, the asyncRewake hooks of
@@ -126,27 +127,45 @@ def transcript_path(session):
     return os.path.join(config_dir(), "projects", folder, f"{session['sessionId']}.jsonl")
 
 
-def write_transcript(session_id, entry):
-    """Adds one entry to the session's transcript, in the shape Claude Code 2.1.323 writes."""
+def write_transcript(session_id, entry, cwd=None):
+    """Adds one entry to the session's transcript, in the shape Claude Code 2.1.323 writes; `cwd`
+    the folder the session is in, its own by default."""
     session = find(load(), session_id)
     if session is None:
         return
     path = transcript_path(session)
     os.makedirs(os.path.dirname(path), exist_ok=True)
-    entry.update(sessionId=session["sessionId"], cwd=session["cwd"], timestamp=iso(now_ms()), uuid=str(uuid.uuid4()))
+    entry.update(sessionId=session["sessionId"], cwd=cwd or session["cwd"], timestamp=iso(now_ms()), uuid=str(uuid.uuid4()))
     with open(path, "a") as out:
         # Compact, as Claude Code writes it: kindric looks for "name":"value" in the bytes.
         out.write(json.dumps(entry, separators=(",", ":")) + "\n")
 
 
+def tool_result(session_id, cwd, output):
+    """What a tool gave back, as Claude Code writes it in the transcript, in the folder `cwd`."""
+    write_transcript(session_id, {"type": "user", "message": {"role": "user", "content": [
+        {"type": "tool_result", "tool_use_id": f"toolu_{uuid.uuid4().hex[:12]}", "content": output}]}}, cwd)
+
+
 def write_files(session_id, task):
-    """Each "touch:NAME" of the task: the session writes the file NAME in its folder."""
+    """The steps of the task, in order: "touch:NAME" writes the file NAME in the folder the session
+    is in, "cd:PATH" goes into PATH (relative to its own folder), "commit:MESSAGE" commits every
+    change of that folder with git ("_" for spaces), its output in the transcript."""
     session = find(load(), session_id)
     if session is None:
         return
-    for name in re.findall(r"touch:(\S+)", task or ""):
-        with open(os.path.join(session["cwd"], name), "w") as out:
-            out.write(f"written by {session.get('name') or session['id']}\n")
+    here = session["cwd"]
+    for step, value in re.findall(r"\b(touch|cd|commit):(\S+)", task or ""):
+        if step == "touch":
+            with open(os.path.join(here, value), "w") as out:
+                out.write(f"written by {session.get('name') or session['id']}\n")
+        elif step == "cd":
+            here = os.path.normpath(os.path.join(here, value))
+            tool_result(session_id, here, "")
+        else:
+            subprocess.run(["git", "add", "-A"], cwd=here, capture_output=True)
+            done = subprocess.run(["git", "commit", "-m", value.replace("_", " ")], cwd=here, capture_output=True, text=True)
+            tool_result(session_id, here, done.stdout + done.stderr)
 
 
 def question_of(task):

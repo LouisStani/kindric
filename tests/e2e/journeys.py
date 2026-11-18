@@ -14,7 +14,7 @@ import time
 import unittest
 from typing import Any
 
-from driver import ARROW_DOWN, CONTROL, DELETE, ELEMENT_KEY, ENTER, F2, SHIFT, Driver, wait_until
+from driver import ARROW_DOWN, CONTROL, DELETE, ELEMENT_KEY, ENTER, ESCAPE, F2, SHIFT, Driver, wait_until
 
 HOME = os.path.expanduser("~")
 ACCOUNT = "work"
@@ -571,7 +571,9 @@ def prompts_of(session_id: str) -> list[str]:
         if os.path.exists(path):
             with open(path) as source:
                 entries = [json.loads(line) for line in source if line.strip()]
-            prompts += [str(entry["message"]["content"]) for entry in entries if entry.get("type") == "user"]
+            # A tool's result is a user entry too, its content a list.
+            prompts += [entry["message"]["content"] for entry in entries
+                        if entry.get("type") == "user" and isinstance(entry["message"]["content"], str)]
     return prompts
 
 
@@ -1157,6 +1159,81 @@ class WokenByAMessage(Journey):
         self.assertIn("unread message", woken[0])
         self.assertIn("sender", woken[0])
         wait_until("the sleeper working in the bar", lambda: chip_state(driver, "sleeper") == "working", timeout=10)
+
+
+WORKTREE = os.path.join(HOME, "wt")
+
+
+def start_in_project(driver: Driver) -> str:
+    """Ctrl+N in the visible project tab, Enter on the account: the title of the new session, once
+    its first turn is over and its pane shows it."""
+    driver.press(CONTROL, "n")
+    wait_until("the accounts to start with", lambda: dialog_open(driver, "quick-launch"))
+    driver.press(ENTER)
+    wait_until("a session of the fake claude", lambda: len(fake_sessions()) == 1)
+    title = wait_until("the session in the bar", lambda: (chip_titles(driver) or [None])[0])
+    wait_until("the session open in a pane", lambda: (chip(driver, title) or ("", False))[1])
+    wait_until("its first turn over", lambda: fake_sessions()[0].get("detail") == "waiting for you", timeout=30)
+    return title
+
+
+# The terminal of the active pane of the visible tab: hidden tabs keep theirs in the page.
+ACTIVE_TERMINAL = "#panes .tab-page:not([hidden]) .pane.active .xterm-helper-textarea"
+
+
+def type_in_pane(driver: Driver, text: str) -> None:
+    terminal = wait_until("the pane's terminal", lambda: driver.find(ACTIVE_TERMINAL))
+    driver.type_into(terminal, text + ENTER)
+
+
+class ChangedFilesInARepository(Journey):
+    """Ctrl+Shift+G on a session started from Ctrl+N in a git project: a block for the folder it
+    started in, compared with the state kindric wrote down at its start, with its own commit and
+    its new file but not the commit of another session; a block for the worktree it went into,
+    since the branch was created; Enter shows a diff, Escape goes back, then closes."""
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        fresh_repository()
+        shutil.rmtree(WORKTREE, ignore_errors=True)
+        super().setUpClass()
+
+    def heads(self) -> list[str]:
+        return texts(self.driver, "#changes li.artifact-group")
+
+    def test_blocks_diff_and_back(self) -> None:
+        driver = self.driver
+        add_project(driver)
+        start_in_project(driver)
+
+        with open(os.path.join(PROJECT, "other.txt"), "w") as other:
+            other.write("written by another session\n")
+        git("add", "other.txt")
+        git("commit", "-q", "-m", "another session")
+        git("worktree", "add", "-q", "-b", "feature", WORKTREE)
+        type_in_pane(driver, "touch:notes.txt commit:add_notes touch:draft.txt cd:../wt touch:wt.txt work:1")
+        wait_until("the turn over", lambda: os.path.exists(os.path.join(WORKTREE, "wt.txt")) and fake_sessions()[0].get("detail") == "waiting for you", timeout=30)
+
+        driver.press(CONTROL, SHIFT, "g")
+        wait_until("the changes window", lambda: dialog_open(driver, "changes"))
+        heads = wait_until("a block per copy", lambda: self.heads() if len(self.heads()) == 2 else None)
+        self.assertTrue(heads[0].startswith(PROJECT + " · ") and heads[0].endswith(" · since the start"), heads)
+        self.assertEqual(heads[1], f"{WORKTREE} · feature · since the branch was created")
+        self.assertEqual(texts(driver, "#changes li.change .artifact-name"), ["draft.txt", "notes.txt", "wt.txt"])
+
+        driver.press(ENTER)
+        wait_until("the diff of draft.txt", lambda: "+written by" in driver.text(driver.find("#changes .changes-body")))
+        self.assertEqual(texts(driver, "#changes .changes-title"), [f"draft.txt · {PROJECT}"])
+        driver.press(ESCAPE)
+        wait_until("the list again", lambda: len(texts(driver, "#changes li.change")) == 3)
+        self.assertTrue(dialog_open(driver, "changes"))
+        driver.press(ESCAPE)
+        wait_until("the window closed", lambda: not dialog_open(driver, "changes"))
+
+    @classmethod
+    def tearDownClass(cls) -> None:
+        super().tearDownClass()
+        shutil.rmtree(WORKTREE, ignore_errors=True)
 
 
 if __name__ == "__main__":
