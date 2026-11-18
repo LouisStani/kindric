@@ -1594,5 +1594,47 @@ class SplitStepAndClose(Journey):
         self.assertTrue(fake_running("bottom"), "the session stopped with its pane")
 
 
+class DoneInThePane(Journey):
+    """A session shown in a pane that is not the active one finishes its turn: its pane gets the
+    green border and "✓ done", until it is looked at. One whose turn ends on a question does not."""
+
+    started = [("worker", "a task work:8"), ("asker", "a task that asks work:8 ask:permission_prompt"), ("watched", "a task work:0")]
+
+    def marks(self) -> dict[str, tuple[bool, bool]]:
+        """For each pane of the visible tab, by its session: its border marked, its "done" shown."""
+        found: list[list[Any]] = self.driver.script("""return [...document.querySelectorAll(arguments[0])].map((pane) =>
+          [pane.querySelector('.head-title').textContent, pane.classList.contains('finished'), !pane.querySelector('.head-done').hidden]);""", VISIBLE_PANES)
+        return {str(title): (bool(border), bool(done)) for title, border, done in found}
+
+    def active_title(self) -> str:
+        return texts(self.driver, f"{VISIBLE_PANES}.active .head-title")[0]
+
+    def test_done_until_looked_at(self) -> None:
+        driver = self.driver
+        wait_until("the sessions in the bar", lambda: all(chip_state(driver, name) for name in ("worker", "asker", "watched")))
+        open_from_bar(driver, "worker")
+        driver.press(CONTROL, SHIFT, "d")
+        wait_until("two panes", lambda: len(driver.find_all(VISIBLE_PANES)) == 2)
+        open_from_bar(driver, "asker")
+        driver.press(CONTROL, SHIFT, "d")
+        wait_until("three panes", lambda: len(driver.find_all(VISIBLE_PANES)) == 3)
+        open_from_bar(driver, "watched")
+        self.assertEqual(self.marks(), {"worker": (False, False), "asker": (False, False), "watched": (False, False)})
+
+        wait_until("worker's turn over", lambda: chip_state(driver, "worker") == "finished", timeout=30)
+        wait_until("asker asking", lambda: chip_state(driver, "asker") == "asking", timeout=30)
+        wait_until("worker's pane marked done", lambda: self.marks()["worker"] == (True, True) or None)
+        self.assertEqual(self.marks()["asker"], (False, False), "a question marked done")
+
+        for _ in range(3):
+            if self.active_title() == "worker":
+                break
+            driver.press(CONTROL, "h")
+            time.sleep(0.2)
+        self.assertEqual(self.active_title(), "worker")
+        wait_until("the mark gone once looked at", lambda: self.marks()["worker"] == (False, False) or None)
+        self.assertNotEqual(chip_state(driver, "worker"), "finished")
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
