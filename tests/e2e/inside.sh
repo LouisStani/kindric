@@ -11,6 +11,9 @@ eval "$(dbus-launch --sh-syntax)"
 [ -n "${E2E_NO_TRACE:-}" ] || export KINDRIC_TRACE=1
 # Every call of the fake claude, for measure.py: the app gets the environment of tauri-driver.
 export FAKE_CLAUDE_CALLS="$HOME/claude-calls.log"
+# A billing variable the user may have: kindric and kindric-accounts never hand it to claude, as the
+# fake claude notes in fake/env.log (journey DefaultAccount). Not a real key.
+export ANTHROPIC_API_KEY=e2e-not-a-key
 tauri-driver >"$HOME/tauri-driver.log" 2>&1 &
 driver=$!
 
