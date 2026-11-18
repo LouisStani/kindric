@@ -8,9 +8,15 @@
 - [The session bar](#the-session-bar)
 - [Panes](#panes)
 - [Starting, naming and hiding sessions](#starting-naming-and-hiding-sessions)
+- [Away](#away)
+- [Changed files](#changed-files)
+- [Worktrees](#worktrees)
+- [Artifacts](#artifacts)
 - [Shortcuts](#shortcuts)
+- [Settings](#settings)
 - [Themes](#themes)
 - [Files kept by the app](#files-kept-by-the-app)
+- [Signal](#signal)
 
 ## Setup checklist
 
@@ -83,6 +89,8 @@ Clicking a chip opens the session in the active pane of its project's tab, movin
 - `Ctrl+Shift+D` splits the active pane: side by side if it is wider than tall, one above the other otherwise.
 - `Ctrl+Shift+W` closes the pane. The session keeps running.
 - Separators can be dragged.
+- The head of a pane names its session and its account, then its progress line, the number of files it changed (a click opens [Changed files](#changed-files)) and, while you are [away](#away), until when.
+- When the last turn of a session cites image files (`.png`, `.jpg`, `.gif`, `.webp`), its pane shows them in a band, up to 6. kindric reads them in the session's transcript, a file Claude Code does not document: if its layout changes, the band stays empty.
 - When Claude Code finishes a turn in a session you are not looking at, its chip gets a ✓ and its pane a green border and a **done** mark, until you look at it.
 - `Ctrl+Shift+C` copies the selection, `Ctrl+Shift+V` pastes text. `Ctrl+C` and `Ctrl+V` still go to Claude Code, which interrupts with the first and pastes an image with the second.
 - `Ctrl+Shift+M` shows the messages of the active pane's session. See [Messages](messages.md#in-the-desktop-app).
@@ -99,6 +107,54 @@ Clicking a chip opens the session in the active pane of its project's tab, movin
 
 **Hide.** `Ctrl+Shift+K`, once confirmed, stops the session of the active pane (`claude stop`, its conversation is kept) and hides it from the bar. `Ctrl+P` still lists hidden sessions, last. Choosing one shows it again and starts it.
 
+## Away
+
+`Ctrl+Shift+Y` tells the session of the active pane that you are away for a number of minutes (60 by default, up to 1440). kindric types a message in your name into its pane, and until that time the session keeps working without waiting for your approval. It must not push, merge, delete, install or use another account: kindric-accounts' hook refuses those commands and answers the other questions for you (see [Away, in kindric](../crates/accounts/README.md#away-in-kindric)).
+
+- The pane head shows "away until 14:30".
+- `0` means you are back: the session may stop again.
+- A session that has finished its task says so with `kindric away done <session id>` and stops.
+- Only sessions started after kindric was installed have the hook.
+
+## Changed files
+
+`Ctrl+Shift+G`, or a click on **N files** in a pane head, lists the files the session of the active pane changed. There is one block per working copy, in the order the session went into them: the folder it started in, then each worktree. Each is compared with its state when the session started.
+
+- The head of a block says what it is compared with: since the start, since the branch was created, or estimated since the start (for a session started before kindric wrote down its starting state).
+- In the folder it started in, commits count only when their git output is in the session's conversation. Commits of other sessions are left out.
+- `↑` `↓` choose a file, `Enter` shows its diff, `Esc` goes back to the list, then closes.
+
+kindric reads the folders in the session's transcript, a file Claude Code does not document: what it lacks gives fewer blocks, never an error.
+
+## Worktrees
+
+`Ctrl+Shift+B` lists the git worktrees of the visible tab's project: merged into the branch of the main checkout or not, how many commits ahead, the age of the last commit, whether the branch is also on `origin`.
+
+`Delete`, then `Enter`, removes the folder of the worktree chosen. Its branch goes with it only when git sees it merged: after a squash merge, or when it is not merged, the branch stays. A branch on `origin` is never touched. kindric refuses to remove:
+
+- the main checkout
+- a worktree a session works in
+- a worktree with uncommitted changes
+- a locked one (`git worktree unlock` first)
+- one whose folder is already gone (`git worktree prune` forgets it)
+
+## Artifacts
+
+Sessions keep the files they made for you (a page, an image, a PDF) with the `keep_artifact` tool of the [messages server](messages.md). kindric copies them into its data folder, by project.
+
+`Ctrl+Shift+A` opens the artifacts of the visible tab's project: unsorted first, then one block per group. The files new since the last opening are marked **new**; the control center counts them too.
+
+| Key | Effect |
+| --- | --- |
+| `Enter` | Open: an image shows in the window, anything else opens with the system's app |
+| `a` | Add files from the system's picker, into the group chosen |
+| `m` | Move the file to a group, or to a new one |
+| `n` | New group |
+| `r` | Rename the group |
+| `Delete` | Delete the file, or remove the group (its files go back to unsorted), after `Enter` |
+
+A file can also be dragged onto the head of a group.
+
 ## Shortcuts
 
 | Key | Effect |
@@ -111,6 +167,8 @@ Clicking a chip opens the session in the active pane of its project's tab, movin
 | `F2` | Give a short name |
 | `Ctrl+Shift+K` | Stop and hide (`Ctrl+P` brings it back) |
 | `Ctrl+Shift+M` | Read its messages |
+| `Ctrl+Shift+G` | Files it changed |
+| `Ctrl+Shift+Y` | You are away: it keeps working until then |
 | **Panes** | |
 | `Ctrl+Shift+D` | Split the pane |
 | `Ctrl+Shift+W` | Close the pane (the session keeps running) |
@@ -122,8 +180,11 @@ Clicking a chip opens the session in the active pane of its project's tab, movin
 | `Ctrl+Shift+X` | Remove this project (its sessions keep running) |
 | `Ctrl+Shift+H` / `Ctrl+Shift+L` | Previous / next tab |
 | `Ctrl+Shift+1` … `Ctrl+Shift+9` | Tab n |
+| `Ctrl+Shift+0` | Control center |
 | **App** | |
-| `Ctrl+,` | Settings: accounts, memory, shortcuts |
+| `Ctrl+Shift+A` | Artifacts of this project |
+| `Ctrl+Shift+B` | Worktrees of this project |
+| `Ctrl+,` | Settings: accounts, memory, sessions, shortcuts |
 | `Ctrl+Shift+E` | Next theme |
 | `Ctrl+Alt+E` | Next theme of this project, then kindric's again |
 | `F1` | Setup checklist and these shortcuts |
@@ -138,7 +199,9 @@ Unlike the terminal interface, the number of a session changes with its state: `
 
 The accounts section lists the accounts of kindric-accounts: logged in or not, plan, running sessions, isolated. **add** creates an account and opens Claude Code's login in a window of the app. **log in** does the same for an account that is logged out. **remove** takes an account off the list after you confirm; its folder stays on disk.
 
-The memory section sets the size above which a session is warned about the memory it opens at startup: 30 KB by default. It is a warning, nothing is cut. The value is kept in `~/.config/kindric-accounts/memory-warning`.
+The memory section sets the size above which a session is warned about the memory it opens at startup: 30 KB by default. It is a warning, nothing is cut. The value is kept in `~/.config/kindric-accounts/memory-warning`. **open the memory atlas** draws the memory of kindric (`~/.kindric/memory`) in 3D: each project is a system around its status, each file a planet. A pale sun is a status older than the project's last decision, a red planet a lesson given again, a grey rock a file its `INDEX.md` does not name. Drag to turn, pinch or use the wheel to go in and out, type to search. A click goes one level down, from the whole memory to a project, a system, then a planet to read; `Esc` comes back up.
+
+The sessions section purges the sessions idle for more than 31 or 7 days, hidden or not. kindric first says how many will go, by account, and asks to confirm. Each one is removed with `claude rm`: it leaves kindric, its conversation stays in `claude --resume`. A session that works or asks you something stays, and so does one whose last activity is unknown. When Claude Code refuses one, the reason it gives is shown under the button.
 
 The shortcuts section changes the key of an action: press **change**, then the new keys. A key needs Ctrl or Alt (F1 to F12 alone are fine), and one already taken is refused with the name of its action. **reset** gives the action its own key back. Changed keys are kept in `settings.json`.
 
@@ -167,9 +230,15 @@ All in kindric's data folder, next to the mailbox: `~/.local/share/kindric/` on 
 | `projects.json` | Projects, the account last used in each, and their theme |
 | `workspace.json` | The tab you left and the session of each tab's active pane |
 | `sessions.json` | Short names and hidden sessions |
-| `settings.json` | The theme |
+| `settings.json` | The theme and the shortcuts you changed |
 | `theme.json` | Your custom theme, if you write one |
 | `artifacts/<project>/` | The files sessions kept (`user/`, `claude/`), and `origins.json`: the session that kept each one, followed when the artifacts window moves it |
+| `starts/` | The state of each session's repository when it started, for [Changed files](#changed-files) |
+| `overview/` | The questions sessions ask you in the control center, and your answers |
+| `away/` | Until when you are away from each session |
+| `wait/` | The latest wait of each session for a message that wakes it |
+| `attached/` | One lock per session shown, so that two kindric windows never show the same one |
+| `mailbox/` | The messages, see [Messages](messages.md#storage) |
 
 ## Signal
 

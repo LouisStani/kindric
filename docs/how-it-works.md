@@ -2,6 +2,8 @@
 
 kindric never reads credentials. All account handling goes through [kindric-accounts](../crates/accounts/README.md).
 
+<img src="how-it-works.svg" alt="kindric-desktop starts and attaches sessions through kindric-accounts, which runs Claude Code on each account. The sessions call the kindric command, its MCP server and hooks, which write to kindric's data folder. kindric-desktop watches that folder." width="100%">
+
 ## Accounts and sessions
 
 - Accounts, isolated accounts and their directories come from the kindric-accounts library.
@@ -18,7 +20,24 @@ kindric never reads credentials. All account handling goes through [kindric-acco
 
 `Ctrl+N` starts `claude --bg` the way `kindric-accounts run` does (shared MCP servers, shared settings, billing variables removed), then opens the new session.
 
-Claude Code refuses to start a session in a directory the account never trusted: open `claude` there once first.
+Before it starts, kindric writes down the state of the session's repository (`starts/` in its data folder), from which [Changed files](desktop.md#changed-files) compares.
+
+Claude Code refuses to start a session in a directory the account never trusted. The form then offers **trust it**: Claude Code asks you in a window of the app, and kindric starts the session again once you press **done**. Your home directory cannot be trusted this way: Claude Code never saves that trust.
+
+## Hooks
+
+The sessions kindric-accounts starts get hooks that run the `kindric` command, when the `kindric` in `PATH` knows them. Claude Code reads them when a session starts, so only sessions started after kindric was installed have them.
+
+| Hook | Event | What it does |
+| --- | --- | --- |
+| `kindric unread` | before each prompt, after each tool | tells the session a message is waiting |
+| `kindric wait-message` | Stop, SessionStart, in the background | wakes the session when a message asks it to act now |
+| `kindric away-hook` | Stop, PreToolUse, PermissionRequest | keeps the session working while you are away |
+| `kindric permission-hook` | PermissionRequest | puts the question in the control center and gives back your answer |
+| `kindric overview-start` | SessionStart | tells the session to ask you with `kindric ask` |
+| `kindric artifact-check` | Stop | asks once to keep the files made for you |
+
+`kindric ask "<question>" "<context>"` puts a question in the control center without stopping the session; your answer comes back as a message from you. Isolated accounts get only the hooks of absence and of the control center. Each hook is described in the [README of kindric-accounts](../crates/accounts/README.md#messages-of-kindric).
 
 ## Refresh
 
@@ -26,9 +45,11 @@ The list refreshes when:
 
 - Claude Code writes to an account's `sessions/`, `daemon/` or `jobs/` directory: only that account is queried again
 - a message arrives: no account is queried, only unread counts are counted again
-- every 30 seconds, in case a change was missed: every account is queried
+- every 5 minutes, in case a change was missed (a session killed outright leaves its files as they were): every account is queried. Every 30 seconds when a folder could not be watched.
 
-A burst of writes counts once: the list waits until 0.3 s pass without one, but never more than 1 s. Idle, kindric uses about 5% of one CPU core.
+A burst of writes counts once: the list waits until 0.3 s pass without one, but never more than 1 s. Each query runs `claude agents --json` once per account.
+
+Measured on Linux with two panes showing working sessions, the app's main process used about 5% of one CPU core, and its web view as much.
 
 ## Limits
 
