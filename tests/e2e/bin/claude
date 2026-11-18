@@ -11,6 +11,7 @@ and writes the files kindric reads, in the shapes Claude Code 2.1.323 gives, wit
                                           seconds (2 by default), then waits for the user;
                                           each "touch:NAME" writes the file NAME in its folder,
                                           "cd:PATH" goes into PATH, "commit:MESSAGE" commits there;
+                                          each "image:NAME" writes a PNG its answer cites;
                                           "ask:WHAT" ends the turn on a question of Claude Code
                                           (waitingFor WHAT, "_" for spaces) instead of waiting;
                                           at its start and after each turn, the asyncRewake hooks of
@@ -32,10 +33,12 @@ import json
 import os
 import re
 import signal
+import struct
 import subprocess
 import sys
 import time
 import uuid
+import zlib
 
 VERSION = "2.1.323"
 # Options that take the next word as their value, when not written with "=".
@@ -212,9 +215,32 @@ def turn(session_id, task):
         # Seen on Claude Code 2.1.326: "waiting" in the process file and in agents --json.
         set_state(session_id, "waiting", "blocked", "waiting for you", question)
         return
-    write_transcript(session_id, {"type": "assistant", "message": {"role": "assistant", "content": [{"type": "text", "text": f"done: {task}"}]}})
+    answer = f"done: {task}"
+    images = write_images(session_id, task)
+    if images:
+        answer += "\n\nI made " + ", ".join(f"`{name}`" for name in images) + "."
+    write_transcript(session_id, {"type": "assistant", "message": {"role": "assistant", "content": [{"type": "text", "text": answer}]}})
     set_state(session_id, "idle", "blocked", "waiting for you")
     start_rewake(session_id, "Stop")
+
+
+def png(width, height, rgb):
+    """A PNG of one colour."""
+    def chunk(kind, data):
+        return struct.pack(">I", len(data)) + kind + data + struct.pack(">I", zlib.crc32(kind + data) & 0xFFFFFFFF)
+    rows = b"".join(b"\x00" + bytes(rgb) * width for _ in range(height))
+    header = struct.pack(">IIBBBBB", width, height, 8, 2, 0, 0, 0)
+    return b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", header) + chunk(b"IDAT", zlib.compress(rows)) + chunk(b"IEND", b"")
+
+
+def write_images(session_id, task):
+    """Each "image:NAME" of the task: a PNG written in the session's folder, which its answer cites."""
+    session = find(load(), session_id)
+    names = re.findall(r"\bimage:(\S+)", task or "")
+    for name in names if session else []:
+        with open(os.path.join(session["cwd"], name), "wb") as out:
+            out.write(png(8, 6, (200, 80, 30)))
+    return names if session else []
 
 
 def rewake_hooks(session, event):

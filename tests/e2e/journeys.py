@@ -1346,5 +1346,36 @@ class WorktreesWindow(Journey):
         wait_until("three left", lambda: sorted(self.rows()) == sorted([PROJECT, self.path("dirty"), self.path("busy")]) or None)
 
 
+class ImagesOfTheLastTurn(Journey):
+    """A turn seen ending that cites two images it made shows them in a band of the pane, drawn;
+    the next turn, which cites none, empties the band."""
+
+    started = [("painter", "draw image:shot.png image:plot.png work:4")]
+
+    BAND = "#panes .tab-page:not([hidden]) .pane.active .pane-images"
+
+    def drawn(self) -> list[list[Any]]:
+        """The images of the band: [alt, width the browser decoded] for each; [] when it is hidden."""
+        found: list[list[Any]] = self.driver.script("""const band = document.querySelector(arguments[0]);
+          if (!band || band.hidden) return [];
+          return [...band.querySelectorAll('img')].map((image) => [image.alt, image.naturalWidth]);""", self.BAND)
+        return found
+
+    def test_band_then_empty(self) -> None:
+        driver = self.driver
+        # kindric looks for images when it sees a turn end, not in a turn ended before it started.
+        wait_until("the turn seen working", lambda: chip_state(driver, "painter") == "working")
+        wait_until("the turn seen over", lambda: chip_state(driver, "painter") == "finished", timeout=30)
+        open_from_bar(driver, "painter")
+        drawn = wait_until("both images drawn", lambda: self.drawn() if len(self.drawn()) == 2 and all(width for _, width in self.drawn()) else None)
+        self.assertEqual(drawn, [["shot.png", 8], ["plot.png", 8]])
+
+        type_in_pane(driver, "now write text work:3")
+        wait_until("the next turn seen working", lambda: chip_state(driver, "painter") == "working")
+        wait_until("the next turn seen over", lambda: chip_state(driver, "painter") in ("waiting", "finished"), timeout=30)
+        time.sleep(1)
+        self.assertEqual(self.drawn(), [], "the band of the turn before")
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
