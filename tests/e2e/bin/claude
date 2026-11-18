@@ -12,7 +12,8 @@ and writes the files kindric reads, in the shapes Claude Code 2.1.323 gives, wit
                                           seconds (2 by default), then waits for the user;
                                           each "touch:NAME" writes the file NAME in its folder,
                                           "cd:PATH" goes into PATH, "commit:MESSAGE" commits there;
-                                          each "image:NAME" writes a PNG its answer cites;
+                                          each "image:NAME" writes a PNG (a Write in the transcript)
+                                          its answer cites; "keep:NAME" notes a keep_artifact call;
                                           "ask:WHAT" ends the turn on a question of Claude Code
                                           (waitingFor WHAT, "_" for spaces) instead of waiting;
                                           at its start and after each turn, the asyncRewake hooks of
@@ -234,6 +235,13 @@ def turn(session_id, task):
     images = write_images(session_id, task)
     if images:
         answer += "\n\nI made " + ", ".join(f"`{name}`" for name in images) + "."
+    # The tools the turn called, as Claude Code writes them: Write for each image, keep_artifact
+    # (for the user) for each "keep:NAME".
+    calls = [("Write", {"file_path": name, "content": "…"}) for name in images]
+    calls += [("mcp__kindric__keep_artifact", {"path": name, "for": "user"}) for name in re.findall(r"\bkeep:(\S+)", task or "")]
+    for name, given in calls:
+        write_transcript(session_id, {"type": "assistant", "message": {"role": "assistant", "content": [
+            {"type": "tool_use", "id": f"toolu_{uuid.uuid4().hex[:12]}", "name": name, "input": given}]}})
     write_transcript(session_id, {"type": "assistant", "message": {"role": "assistant", "content": [{"type": "text", "text": answer}]}})
     set_state(session_id, "idle", "blocked", "waiting for you")
     start_rewake(session_id, "Stop")

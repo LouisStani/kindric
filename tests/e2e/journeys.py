@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import shutil
 import subprocess
 import time
@@ -2011,6 +2012,43 @@ class NestedProjects(Journey):
         driver.press(CONTROL, SHIFT, "h")
         wait_until("the outer tab", lambda: ("project", True) in tabs(driver) or None)
         wait_until("the outer tab's session", lambda: chip_titles(driver) == ["outer-one"] or None)
+
+
+def stop_hook(command: str, session: dict[str, Any], stop_hook_active: bool = False) -> str:
+    """What the Stop hook `kindric <command>` answers Claude Code at the end of the session's turn."""
+    folder = re.sub(r"[/.]", "-", str(session["cwd"]))
+    given = {"hook_event_name": "Stop", "session_id": session["sessionId"], "cwd": session["cwd"], "stop_hook_active": stop_hook_active,
+             "transcript_path": os.path.join(ACCOUNT_DIR, "projects", folder, f"{session['sessionId']}.jsonl")}
+    done = subprocess.run(["kindric", command], input=json.dumps(given), capture_output=True, text=True, timeout=30)
+    return done.stdout.strip()
+
+
+class HooksOfTheTurn(Journey):
+    """A session started by kindric gets the hooks `overview-start` (SessionStart), which tells it to
+    ask with `kindric ask`, and `artifact-check` (Stop): a turn that made an image and kept none is
+    asked once to keep it; a turn that kept it, or the second stop of a turn, is let go."""
+
+    started = [("drawer", "draw image:logo.png work:0")]
+
+    def test_overview_start_and_artifact_check(self) -> None:
+        wait_until("the turn over", lambda: fake_detail("drawer") == "waiting for you", timeout=30)
+        session = next(s for s in fake_sessions() if s.get("name") == "drawer")
+        hooks = hook_commands(settings_of(session))
+        self.assertTrue(any(command.endswith("overview-start") for command in hooks.get("SessionStart", [])), hooks)
+        self.assertTrue(any(command.endswith("artifact-check") for command in hooks.get("Stop", [])), hooks)
+        started = subprocess.run(["kindric", "overview-start"], capture_output=True, text=True, timeout=30)
+        self.assertIn('kindric ask "<question>" "<context>"', started.stdout)
+
+        answer = json.loads(stop_hook("artifact-check", session))
+        self.assertEqual(answer["decision"], "block")
+        self.assertIn("logo.png", answer["reason"])
+        self.assertEqual(stop_hook("artifact-check", session, stop_hook_active=True), "", "asked twice in a turn")
+
+        attached = subprocess.run(["kindric-accounts", "run", ACCOUNT, "attach", session["id"]], input="draw again image:logo2.png keep:logo2.png work:0\n",
+                                  cwd=PROJECT, capture_output=True, text=True, timeout=30)
+        self.assertEqual(attached.returncode, 0, attached.stderr)
+        wait_until("the second turn over", lambda: len(prompts_of(session["sessionId"])) == 2 and fake_detail("drawer") == "waiting for you", timeout=30)
+        self.assertEqual(stop_hook("artifact-check", session), "", "asked although the turn kept its image")
 
 
 if __name__ == "__main__":
