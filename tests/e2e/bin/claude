@@ -3,7 +3,8 @@
 and writes the files kindric reads, in the shapes Claude Code 2.1.323 gives, without any model.
 
     claude --version                      "2.1.323 (Claude Code)"
-    claude auth status --json             logged in for an account (CLAUDE_CONFIG_DIR set), not for ~/.claude;
+    claude auth status --json             logged in for an account (CLAUDE_CONFIG_DIR set), for ~/.claude
+                                          only once ~/.claude/fake/logged-in exists;
                                           the login expires at the date in fake/login-expires, else 2027
     claude auth login                     a new login, noted in fake/logins.log: it expires in 2027
     claude agents --json [--all]          the sessions of the account, stopped ones with --all
@@ -25,7 +26,8 @@ and writes the files kindric reads, in the shapes Claude Code 2.1.323 gives, wit
     claude mcp add [-s user] NAME -- CMD  the server in the account's .claude.json (~/.claude.json without one)
 
 Options kindric-accounts adds (--settings, --mcp-config=…, --append-system-prompt-file …) are
-ignored, but a session keeps the words it was started with ("args"). Everything lives in the
+ignored, but a session keeps the words it was started with ("args"). Each call notes in
+fake/env.log whether it had CLAUDE_CONFIG_DIR and the billing variables. Everything lives in the
 account's folder: fake/sessions.json, sessions/<pid>.json, jobs/<id>/state.json, and the transcript
 projects/<folder>/<session id>.jsonl, a prompt and an answer per turn.
 """
@@ -423,6 +425,23 @@ def mcp_add(name, command):
     return 0
 
 
+# What kindric must give claude, or not: the account's folder, and no billing variable.
+WATCHED_ENV = ("CLAUDE_CONFIG_DIR", "ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "CLAUDE_CODE_OAUTH_TOKEN")
+
+
+def note_environment(argv):
+    """fake/env.log of the account: per call, its words and which WATCHED_ENV it had."""
+    present = [name for name in WATCHED_ENV if name in os.environ]
+    os.makedirs(os.path.join(config_dir(), "fake"), exist_ok=True)
+    with open(os.path.join(config_dir(), "fake", "env.log"), "a") as log:
+        log.write(f"{' '.join(argv).replace(chr(9), ' ')}\t{' '.join(present)}\n")
+
+
+def default_logged_in():
+    """~/.claude, the implicit default account, is logged in once fake/logged-in is there."""
+    return os.path.exists(os.path.join(os.path.expanduser("~"), ".claude", "fake", "logged-in"))
+
+
 LOGIN_EXPIRES = "2027-01-01T00:00:00.000Z"
 
 
@@ -468,6 +487,7 @@ def main(argv):
     if calls:
         with open(calls, "a") as log:
             log.write(f"{time.time():.3f} {' '.join(argv)}\n")
+    note_environment(argv)
     # Words that are not options or their values: the subcommand and the task.
     words = []
     index = 0
@@ -483,7 +503,7 @@ def main(argv):
         print(f"{VERSION} (Claude Code)")
         return 0
     if words[:2] == ["auth", "status"]:
-        logged_in = "CLAUDE_CONFIG_DIR" in os.environ
+        logged_in = "CLAUDE_CONFIG_DIR" in os.environ or default_logged_in()
         print(json.dumps({"loggedIn": logged_in, "authMethod": "claude.ai" if logged_in else "none", "loginExpiresAt": login_expires() if logged_in else None}))
         return 0 if logged_in else 1
     if words[:2] == ["auth", "login"]:
