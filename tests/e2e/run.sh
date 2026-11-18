@@ -11,16 +11,20 @@
 #
 # The image is built the first time. The code of the checkout is then copied into the container
 # and compiled there, into one volume shared by every checkout: the dependencies are compiled
-# once for all of them, and only what changed is compiled again.
+# once for all of them, and only what changed is compiled again. The programs land in one place of
+# that volume, target/release: two runs at once would replace each other's while their journeys
+# run (seen on 2026-11-18, decision 382). So a run holds a lock on the volume while it compiles
+# and copies its programs into the container, and its journeys use that copy; the journeys of two
+# runs still go on at the same time.
 # Screenshots go to $E2E_OUT (default /tmp/kindric-e2e-out), one per journey.
 set -eu
 
 root=$(cd "$(dirname "$0")/../.." && pwd)
 image=kindric-e2e
 target=kindric-e2e-target
-# Each checkout is compiled from its own path: cargo tells the programs of two checkouts apart by
-# their path, so one never runs the other's (mounted at the same path, a build whose sources look
-# older than it is kept). Copied, not compiled in place: Tauri's build script writes in the source.
+# Each checkout is copied to its own path and compiled there. Copied, not compiled in place: Tauri's
+# build script writes in the source. Cargo still gives two checkouts the same compiled files for
+# kindric's crates (verified on 2026-11-18), hence the touch below.
 build=/home/tester/build/$(printf %s "$root" | cksum | cut -d ' ' -f 1)
 out=${E2E_OUT:-/tmp/kindric-e2e-out}
 
@@ -49,6 +53,22 @@ exec podman run --rm --userns=keep-id \
         # tar keeps the dates of the files, which cargo compares to know what changed.
         (cd /src && tar --exclude=./target --exclude=./.git --exclude=./.claude --exclude=node_modules -cf - .) \
             | tar -xf - -C "$E2E_BUILD"
+        # One build at a time in the shared volume, until this run has its own copy of the programs.
+        # The lock goes with the shell if the build fails.
+        exec 9>/home/tester/target/.e2e-build.lock
+        flock 9
+        # Cargo gives the crates of kindric in every checkout the same compiled files, and keeps those of
+        # the last checkout built while it sees nothing new: their sources are made newer here, so
+        # that this run compiles its own. The dependencies stay compiled once for all.
+        find "$E2E_BUILD/crates" -type f -exec touch {} +
         (cd "$E2E_BUILD" && cargo build --locked --release -p kindric-desktop -p kindric-accounts -p kindric) >"$HOME/build.log" 2>&1 \
             || { tail -40 "$HOME/build.log"; exit 1; }
+        programs="$HOME/programs"
+        mkdir -p "$programs"
+        for program in kindric-desktop kindric kindric-accounts; do
+            cp /home/tester/target/release/$program "$programs/"
+        done
+        flock -u 9
+        exec 9>&-
+        export PATH="$programs:$PATH"
         exec /src/tests/e2e/inside.sh "$@"' inside "$@"
