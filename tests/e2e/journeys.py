@@ -1822,5 +1822,41 @@ class TrustAFolder(Journey):
         self.assertEqual(fake_sessions()[0]["cwd"], PROJECT)
 
 
+class AccountAddedThenRemoved(Journey):
+    """The settings add an account: kindric-accounts creates it and Claude Code's login runs in the
+    helper window. "remove" asks first, then takes it off the list and leaves its folder on disk."""
+
+    EXTRA_DIR = os.path.join(HOME, ".local/share/kindric-accounts/extra")
+
+    def account_names(self) -> list[str]:
+        return texts(self.driver, "#settings li.account .account-name")
+
+    def test_add_log_in_remove(self) -> None:
+        driver = self.driver
+        driver.press(CONTROL, ",")
+        wait_until("the settings", lambda: dialog_open(driver, "settings"))
+        click_text(driver, "#settings .settings-categories li", "accounts")
+        wait_until("the account work", lambda: self.account_names() == ["work"] or None)
+
+        driver.type_into(driver.find("#settings .accounts-add input[name=name]"), "extra" + ENTER)
+        wait_until("Claude Code's login of extra", lambda: os.path.exists(os.path.join(self.EXTRA_DIR, "fake/logins.log")))
+        if dialog_open(driver, "helper"):
+            driver.click(driver.find("#helper-done"))
+        wait_until("the login window closed", lambda: not dialog_open(driver, "helper"))
+        wait_until("extra listed", lambda: "extra" in self.account_names() or None)
+        self.assertIn("extra", accounts("list"))
+
+        found = driver.script("""const row = [...document.querySelectorAll('#settings li.account')].find((item) => item.querySelector('.account-name').textContent === 'extra');
+          return [...row.querySelectorAll('.account-actions button')].find((button) => button.textContent === 'remove');""")
+        driver.click(str(found[ELEMENT_KEY]))
+        question = wait_until("the question", lambda: texts(driver, "#settings .account-confirm") or None)
+        self.assertEqual(question, [f"take extra off the list? its folder stays: {self.EXTRA_DIR}."])
+        self.assertIn("extra", accounts("list"), "removed before the answer")
+        click_text(driver, "#settings li.account .account-actions button.danger", "remove")
+        wait_until("extra off the list", lambda: self.account_names() == ["work"] or None)
+        self.assertNotIn("extra", accounts("list"))
+        self.assertTrue(os.path.isdir(self.EXTRA_DIR), "the account's folder removed")
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
