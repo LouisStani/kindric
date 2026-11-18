@@ -2081,5 +2081,42 @@ class TabMovedByMouse(Journey):
         wait_until("the order after a restart", lambda: self.names()[-3:] == ["other", "second", "project"] or None)
 
 
+class AltKeysAndAnotherTerminal(Journey):
+    """A session in a terminal of its own shows last, with its own mark, and cannot be opened:
+    Alt+n on its chip opens nothing, and Alt+L and Alt+H go round the others without it."""
+
+    started = [("one", "a task work:0"), ("two", "a task work:0")]
+
+    @classmethod
+    def before_app(cls) -> None:
+        subprocess.run(["kindric-accounts", "run", ACCOUNT, "--bg", "-n", "term", "typing in a terminal work:300"], cwd=PROJECT,
+                       check=True, capture_output=True, timeout=30, env=dict(os.environ, FAKE_INTERACTIVE="1"))
+
+    def opened(self) -> list[str]:
+        chips: list[list[Any]] = self.driver.script(CHIPS)
+        return [str(title) for _, title, shown in chips if shown]
+
+    def test_numbers_steps_and_elsewhere(self) -> None:
+        driver = self.driver
+        wait_until("three chips", lambda: len(chip_titles(driver)) == 3 or None)
+        wait_until("one and two at rest", lambda: chip_state(driver, "one") == "waiting" and chip_state(driver, "two") == "waiting" or None, timeout=30)
+        titles = chip_titles(driver)
+        self.assertEqual(titles[-1], "term", "the session of another terminal not last")
+        self.assertEqual(chip_state(driver, "term"), "elsewhere")
+        first, second = titles[0], titles[1]
+
+        driver.press(ALT, "2")
+        wait_until("chip 2 open", lambda: self.opened() == [second] or None)
+        driver.press(ALT, "3")
+        time.sleep(1)
+        self.assertEqual(self.opened(), [second], "the session of another terminal opened")
+        driver.press(ALT, "l")
+        wait_until("Alt+L round to chip 1, over the other terminal", lambda: self.opened() == [first] or None)
+        driver.press(ALT, "h")
+        wait_until("Alt+H round to chip 2", lambda: self.opened() == [second] or None)
+        driver.press(ALT, "1")
+        wait_until("chip 1 open", lambda: self.opened() == [first] or None)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
