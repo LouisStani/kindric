@@ -307,11 +307,16 @@ pub struct KindricHooks {
     pub start: Option<String>,
     /// Asks a session, once per turn, to keep for the user the pages and images it made.
     pub artifacts: Option<String>,
+    /// Puts in kindric's overview the question a session's reply asks, when Claude Code classed
+    /// its turn as waiting for the user.
+    pub question: Option<String>,
 }
 
 impl KindricHooks {
     fn is_empty(&self) -> bool {
-        [&self.unread, &self.away, &self.wake, &self.permission, &self.start, &self.artifacts].iter().all(|hook| hook.is_none())
+        [&self.unread, &self.away, &self.wake, &self.permission, &self.start, &self.artifacts, &self.question]
+            .iter()
+            .all(|hook| hook.is_none())
     }
 }
 
@@ -352,6 +357,9 @@ pub fn with_additions(settings: Option<&str>, statusline: Option<&str>, hooks: &
     if let Some(command) = &hooks.start {
         add_hook(&mut settings, &START_EVENTS, &serde_json::json!({ "type": "command", "command": command }));
     }
+    if let Some(command) = &hooks.question {
+        add_hook(&mut settings, &QUESTION_EVENTS, &serde_json::json!({ "type": "command", "command": command }));
+    }
     if let Some(command) = &hooks.artifacts {
         add_hook(&mut settings, &ARTIFACT_EVENTS, &serde_json::json!({ "type": "command", "command": command }));
     }
@@ -376,6 +384,9 @@ const PERMISSION_EVENTS: [(&str, Option<&str>); 1] = [("PermissionRequest", None
 
 /// The event of the overview's instruction: when a session starts.
 const START_EVENTS: [(&str, Option<&str>); 1] = [("SessionStart", None)];
+
+/// The event of the question a reply asks: when the turn ends.
+const QUESTION_EVENTS: [(&str, Option<&str>); 1] = [("Stop", None)];
 
 /// The event of the question about the files a turn made: when it ends.
 const ARTIFACT_EVENTS: [(&str, Option<&str>); 1] = [("Stop", None)];
@@ -430,7 +441,7 @@ const KINDRIC_NAMES: [&str; 2] = ["kindric.exe", "kindric"];
 const KINDRIC_NAMES: [&str; 1] = ["kindric"];
 
 /// kindric's hooks for a session: `"<kindric>" unread`, `away-hook`, `wait-message`,
-/// `permission-hook`, `overview-start` and `artifact-check`, each when
+/// `permission-hook`, `overview-start`, `question-check` and `artifact-check`, each when
 /// the `kindric` in `PATH` has it. An older one would answer with its usage and exit code 2, which
 /// Claude Code shows to Claude after every tool: each is tried once, with no input, and must exit 0.
 pub fn kindric_hooks() -> KindricHooks {
@@ -451,6 +462,7 @@ pub fn kindric_hooks() -> KindricHooks {
         permission: answering("permission-hook"),
         start: answering("overview-start"),
         artifacts: answering("artifact-check"),
+        question: answering("question-check"),
     }
 }
 
@@ -661,6 +673,23 @@ mod tests {
         assert!(stop[2].get("matcher").is_none());
         assert_eq!(value["hooks"].as_object().map(Map::len), Some(3), "Stop, and the away hook's own two");
         let alone = KindricHooks { artifacts: Some("k artifact-check".into()), ..KindricHooks::default() };
+        assert!(!alone.is_empty(), "enough for a settings file");
+    }
+
+    #[test]
+    fn the_question_check_comes_before_the_artifact_check() {
+        let hooks = KindricHooks {
+            question: Some("k question-check".into()),
+            artifacts: Some("k artifact-check".into()),
+            ..KindricHooks::default()
+        };
+        let settings = r#"{"hooks":{"Stop":[{"hooks":[{"type":"command","command":"mine"}]}]}}"#;
+        let (text, _) = with_additions(Some(settings), None, &hooks);
+        let stop = &serde_json::from_str::<Value>(&text).unwrap()["hooks"]["Stop"];
+        assert_eq!(stop[0]["hooks"][0]["command"], "mine");
+        assert_eq!(stop[1]["hooks"][0], serde_json::json!({ "type": "command", "command": "k question-check" }), "in the foreground, quick");
+        assert_eq!(stop[2]["hooks"][0]["command"], "k artifact-check");
+        let alone = KindricHooks { question: Some("k question-check".into()), ..KindricHooks::default() };
         assert!(!alone.is_empty(), "enough for a settings file");
     }
 

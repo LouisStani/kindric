@@ -235,14 +235,15 @@ A session that has finished runs `kindric away done <session id>` and stops.
 
 ## Overview, in kindric
 
-kindric shows what your sessions are doing on one page, where you answer their questions without opening them. kindric-accounts adds two hooks for it to the sessions it starts:
+kindric shows what your sessions are doing on one page, where you answer their questions without opening them. kindric-accounts adds three hooks for it to the sessions it starts:
 
 - PermissionRequest, `kindric permission-hook` (timeout 24 h): each question Claude Code would ask on the screen of a session, whether a tool may run or a question of AskUserQuestion, is also put in the overview. Your answer there is given back to Claude Code. The question stays on the session's screen meanwhile: answer it there and the hook ends without a word.
 - SessionStart, `kindric overview-start`: tells the session to ask you with `kindric ask "<question>" "<context>"` rather than AskUserQuestion. That command puts the question in the overview and does not stop the session, which goes on with what does not depend on your answer. The answer comes later as a message from you.
+- Stop, `kindric question-check`: a session often asks in its reply instead. At the end of each turn of a background session, Claude Code writes in `jobs/<id>/timeline.jsonl` whether the turn waits for you (`blocked`), with a short line that is often the question itself. When it does, the hook puts that question in the overview, with the end of the reply, as a `kindric ask`; nothing when the session already has a question there. These files are not documented: if they change, the hook asks nothing.
 
 - The hooks come after your own hooks, and after the hook of absence: while you are away from a session, that one answers and the overview stays out of it.
 - An isolated account gets them too: they put its questions before you and give back your answers, nothing of another account.
-- Each is added only when the `kindric` in `PATH` knows it (`permission-hook`, `overview-start`).
+- Each is added only when the `kindric` in `PATH` knows it (`permission-hook`, `overview-start`, `question-check`).
 - Claude Code reads the settings when a session starts: only sessions started after kindric is installed have them.
 
 ## Artifacts, in kindric

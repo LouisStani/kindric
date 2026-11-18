@@ -732,6 +732,59 @@ class AskAnsweredInTheSession(Journey):
         wait_until("the turn finished, no question left", lambda: dot_sign(driver, "asks-in-session") == "✓", timeout=30)
 
 
+def turn_end(session: dict[str, Any], state: str, detail: str, text: str) -> None:
+    """The end of a turn as Claude Code writes it in the job's timeline.jsonl, which the fake
+    claude does not write."""
+    path = os.path.join(ACCOUNT_DIR, "jobs", session["id"], "timeline.jsonl")
+    with open(path, "a") as timeline:
+        timeline.write(json.dumps({"at": "2026-11-18T10:03:50.523Z", "state": state, "detail": detail, "text": text}) + "\n")
+
+
+def question_check(session: dict[str, Any]) -> None:
+    """`kindric question-check` run as Claude Code runs a Stop hook of the session: the fake claude
+    runs no hook."""
+    event = json.dumps({"session_id": session["sessionId"], "hook_event_name": "Stop", "cwd": PROJECT, "stop_hook_active": False})
+    done = subprocess.run(["kindric", "question-check"], input=event, cwd=PROJECT, capture_output=True, text=True, timeout=10,
+                          env={**os.environ, "CLAUDE_JOB_DIR": os.path.join(ACCOUNT_DIR, "jobs", session["id"])})
+    if done.returncode != 0 or done.stdout or done.stderr:
+        raise AssertionError(f"question-check exited {done.returncode}: {done.stdout!r} {done.stderr!r}")
+
+
+class QuestionOfTheReply(Journey):
+    """A question the session wrote in its reply, not with `kindric ask`, reaches the control center
+    at the end of its turn (366); answered there, it is typed into the session. A turn that asks
+    nothing puts nothing there."""
+
+    started = [("replies", "a task that ends with a question work:0")]
+
+    def test_question_of_the_reply_answered_from_the_page(self) -> None:
+        driver = self.driver
+        carry_messages(driver)
+        driver.press(CONTROL, SHIFT, "0")
+        wait_until("the control center", lambda: not overview_hidden(driver))
+        wait_until("the session's row", lambda: texts(driver, "article.control-row .row-name") == ["replies"])
+        session = next(each for each in fake_sessions() if each.get("name") == "replies")
+
+        turn_end(session, "done", "menu finished", "The menu is ready.")
+        question_check(session)
+        self.assertEqual(overview_requests(), [], "a turn that asks nothing")
+
+        turn_end(session, "blocked", "Which colour for the buttons?", "The menu is ready.\n\nWhich colour for the buttons?")
+        question_check(session)
+        wait_until("the question in the row", lambda: texts(driver, "article.control-row .request.is-ask .request-question") == ["Which colour for the buttons?"])
+        self.assertEqual(texts(driver, "article.control-row .request.is-ask .request-context"), ["The menu is ready."])
+        self.assertEqual(texts(driver, "article.control-row .row-badge.keeps"), [], "its turn is over: it does not work meanwhile")
+        question_check(session)
+        self.assertEqual(len(overview_requests()), 1, "asked once")
+        driver.screenshot(os.path.join(OUT, "QuestionOfTheReply-asked.png"))
+
+        field = wait_until("the answer field", lambda: driver.find_all("article.control-row .request.is-ask .request-field") or None)
+        driver.type_into(field[0], "orange" + ENTER)
+        typed = 'Answer to your question "Which colour for the buttons?": orange'
+        wait_until("the answer typed into the session", lambda: prompts_of(session["sessionId"])[-1:] == [typed], timeout=30)
+        wait_until("the request gone from the row", lambda: texts(driver, "article.control-row .request") == [] or None)
+
+
 ISOLATED = "solo"
 
 
