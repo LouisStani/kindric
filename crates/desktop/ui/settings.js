@@ -373,7 +373,10 @@ export class SettingsWindow {
     const row = element("div", "shortcut");
     row.dataset.search = `${shortcut.help} ${shortcut.shown} ${shortcut.group} shortcut key`.toLowerCase();
     const waiting = this.capturing === shortcut.id;
-    row.append(element("span", "shortcut-help", shortcut.help), element("kbd", waiting ? "waiting" : "", waiting ? "press keys…" : shortcut.shown));
+    const keys = element("kbd", waiting ? "waiting" : "", waiting ? "press keys…" : shortcut.shown);
+    // Focusable, to hold the focus while it waits for the keys (startCapture).
+    if (waiting) keys.tabIndex = -1;
+    row.append(element("span", "shortcut-help", shortcut.help), keys);
     const actions = element("span", "shortcut-actions");
     if (!shortcut.fixed && !waiting) actions.append(button("change", () => this.startCapture(shortcut.id)));
     if (shortcut.changed && !waiting) actions.append(button("reset", () => this.saveKey(shortcut.id, null)));
@@ -385,6 +388,9 @@ export class SettingsWindow {
     this.capturing = id;
     this.shortcutMessage.textContent = "press the new keys, or Escape to cancel.";
     this.drawShortcuts();
+    // The "change" button pressed is gone with the rows drawn again, and the focus with it, out
+    // of the dialog, whose listener would then never get the keys.
+    this.shortcutList.querySelector("kbd.waiting")?.focus({ preventScroll: true });
   }
 
   stopCapture() {
