@@ -1536,5 +1536,63 @@ class BackWhereLeft(Journey):
         wait_until("its session open again", lambda: self.shown() == ["elsewhere"] or None)
 
 
+class SplitStepAndClose(Journey):
+    """Ctrl+Shift+D splits the active pane side by side when it is wider than tall, one above the
+    other otherwise; Ctrl+H and Ctrl+L go from pane to pane; a separator dragged keeps its place;
+    Ctrl+Shift+W closes a pane and its session keeps running."""
+
+    started = [("left", "a task work:0"), ("top", "a task work:0"), ("bottom", "a task work:0")]
+
+    def active_title(self) -> str:
+        return texts(self.driver, f"{VISIBLE_PANES}.active .head-title")[0]
+
+    def splits(self) -> list[str]:
+        """The splits of the visible tab, outer first: "row" side by side, "column" one above the other."""
+        found: list[str] = self.driver.script("""return [...document.querySelectorAll('#panes .tab-page:not([hidden]) .split')]
+          .map((split) => split.classList.contains('row') ? 'row' : 'column');""")
+        return [str(name) for name in found]
+
+    def left_share(self) -> float:
+        return float(self.driver.script("""const split = document.querySelector('#panes .tab-page:not([hidden]) .split.row');
+          return split.firstElementChild.getBoundingClientRect().width / split.getBoundingClientRect().width;"""))
+
+    def test_split_step_drag_close(self) -> None:
+        driver = self.driver
+        wait_until("the sessions in the bar", lambda: all(chip_state(driver, name) for name in ("left", "top", "bottom")))
+        open_from_bar(driver, "left")
+        driver.press(CONTROL, SHIFT, "d")
+        wait_until("two panes side by side", lambda: self.splits() == ["row"] or None)
+        open_from_bar(driver, "top")
+        driver.press(CONTROL, SHIFT, "d")
+        wait_until("the right pane cut in two, one above the other", lambda: self.splits() == ["row", "column"] or None)
+        open_from_bar(driver, "bottom")
+        self.assertEqual(len(driver.find_all(VISIBLE_PANES)), 3)
+
+        driver.press(CONTROL, "h")
+        wait_until("the previous pane", lambda: self.active_title() == "top" or None)
+        driver.press(CONTROL, "l")
+        wait_until("the next pane", lambda: self.active_title() == "bottom" or None)
+
+        self.assertAlmostEqual(self.left_share(), 0.5, delta=0.02)
+        divider = driver.find("#panes .tab-page:not([hidden]) .split.row > .divider")
+        driver.drag(divider, driver.find(f"{VISIBLE_PANES} .screen"))
+        share = wait_until("the separator moved", lambda: self.left_share() if self.left_share() < 0.4 else None)
+        driver.press(CONTROL, "l")
+        time.sleep(0.5)
+        self.assertAlmostEqual(self.left_share(), share, delta=0.02, msg="the separator went back")
+
+        for _ in range(3):
+            if self.active_title() == "bottom":
+                break
+            driver.press(CONTROL, "l")
+            time.sleep(0.2)
+        self.assertEqual(self.active_title(), "bottom")
+        driver.press(CONTROL, SHIFT, "w")
+        wait_until("two panes left", lambda: len(driver.find_all(VISIBLE_PANES)) == 2 or None)
+        self.assertEqual(self.splits(), ["row"])
+        wait_until("bottom no longer shown", lambda: (chip(driver, "bottom") or ("", True))[1] is False or None)
+        self.assertTrue(fake_running("bottom"), "the session stopped with its pane")
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
