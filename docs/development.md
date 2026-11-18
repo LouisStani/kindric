@@ -26,7 +26,7 @@ The tests never start Claude Code and never touch your accounts. The JavaScript 
 
 ### End-to-end journeys
 
-`tests/e2e/run.sh` runs the desktop app in a container (podman, rootless), on a screen that does not exist, driven through WebDriver, with a fake `claude` (`tests/e2e/bin/claude`). Each journey starts from nothing and leaves a screenshot and the app's trace in `/tmp/kindric-e2e-out`. A fake `xdg-open` beside it writes down what the app hands to the system instead of opening it. The first run builds the image (several minutes); later runs compile only what changed. Pass a journey name to run only it (`tests/e2e/run.sh SessionInTheBar`), `--rebuild` to build the image again. They are not part of CI.
+`tests/e2e/run.sh` runs the desktop app in a container (podman, rootless), on a screen that does not exist, driven through WebDriver, with a fake `claude` (`tests/e2e/bin/claude`). Each journey starts from nothing and leaves a screenshot and the app's trace in `/tmp/kindric-e2e-out`. A fake `xdg-open` beside it writes down what the app hands to the system instead of opening it. The first run builds the image (several minutes). The dependencies are compiled once, in a volume every checkout shares; each run compiles kindric's own crates again (about 20 s) and keeps its programs to itself, so two checkouts can run their journeys at the same time. Pass a journey name to run only it (`tests/e2e/run.sh SessionInTheBar`), `--rebuild` to build the image again. They are not part of CI.
 
 `E2E_SCRIPT=measure.py E2E_NO_TRACE=1 tests/e2e/run.sh` measures the app instead: start time, processor and memory while left alone with a working session, how many times it ran `claude`, the size of the programs. Compare two branches with it, never with a timer by hand.
 

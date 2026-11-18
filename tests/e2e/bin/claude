@@ -38,6 +38,8 @@ account's folder: fake/sessions.json, sessions/<pid>.json, jobs/<id>/state.json 
 jobs/<id>/timeline.jsonl, and the transcript
 projects/<folder>/<session id>.jsonl, a prompt and an answer per turn.
 """
+import contextlib
+import fcntl
 import json
 import os
 import re
@@ -90,6 +92,20 @@ def save(sessions):
     write_json(registry_path(), sessions)
 
 
+@contextlib.contextmanager
+def registry():
+    """The sessions, read then written back under a lock. Several processes change them (the
+    command, each session's process): without it, one wrote back an old list over the change of
+    another, and a session started by --bg was lost (seen on 2026-11-18)."""
+    path = registry_path()
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(f"{path}.lock", "w") as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        sessions = load()
+        yield sessions
+        save(sessions)
+
+
 def find(sessions, wanted):
     for session in sessions:
         if wanted in (session["id"], session["sessionId"], session.get("name")):
@@ -110,12 +126,11 @@ def alive(pid):
 def set_state(session_id, status, state, detail, waiting_for=None):
     """What the session is doing: its process file (status, and waitingFor while a question of
     Claude Code is on its screen) and its job file (state, detail)."""
-    sessions = load()
-    session = find(sessions, session_id)
-    if session is None:
-        return
-    session.update(status=status, state=state, detail=detail)
-    save(sessions)
+    with registry() as sessions:
+        session = find(sessions, session_id)
+        if session is None:
+            return
+        session.update(status=status, state=state, detail=detail)
     if session.get("pid"):
         process = {
             "pid": session["pid"], "sessionId": session["sessionId"], "cwd": session["cwd"], "startedAt": session["startedAt"],
@@ -283,15 +298,14 @@ def rewake_hooks(session, event):
 def start_rewake(session_id, event):
     """Runs the session's asyncRewake hooks of `event`, each in a process of its own, noted in the
     session's "hooks" so that stopping the session ends them."""
-    sessions = load()
-    session = find(sessions, session_id)
-    if session is None:
-        return
-    for command in rewake_hooks(session, event):
-        process = subprocess.Popen([sys.executable, os.path.abspath(__file__), "--fake-rewake", session_id, event, command],
-                                   stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True)
-        session.setdefault("hooks", []).append(process.pid)
-    save(sessions)
+    with registry() as sessions:
+        session = find(sessions, session_id)
+        if session is None:
+            return
+        for command in rewake_hooks(session, event):
+            process = subprocess.Popen([sys.executable, os.path.abspath(__file__), "--fake-rewake", session_id, event, command],
+                                       stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True)
+            session.setdefault("hooks", []).append(process.pid)
 
 
 def rewake(session_id, event, command):
@@ -330,9 +344,8 @@ def spawn(session_id, task):
     mode = ["--fake-resume", session_id] if task is None else ["--fake-worker", session_id, task]
     process = subprocess.Popen([sys.executable, os.path.abspath(__file__), *mode],
                                stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True)
-    sessions = load()
-    find(sessions, session_id).update(pid=process.pid, status="idle" if task is None else "busy")
-    save(sessions)
+    with registry() as sessions:
+        find(sessions, session_id).update(pid=process.pid, status="idle" if task is None else "busy")
 
 
 def background(args, task):
@@ -340,12 +353,11 @@ def background(args, task):
     for index, arg in enumerate(args):
         if arg in ("-n", "--name") and index + 1 < len(args):
             name = args[index + 1]
-    sessions = load()
     session = {"id": uuid.uuid4().hex[:8], "sessionId": str(uuid.uuid4()), "name": name or "", "cwd": os.getcwd(),
                "startedAt": now_ms(), "pid": None, "status": "busy", "state": "working", "detail": "", "args": args,
                "interactive": os.environ.get("FAKE_INTERACTIVE") == "1"}
-    sessions.append(session)
-    save(sessions)
+    with registry() as sessions:
+        sessions.append(session)
     spawn(session["sessionId"], task or "")
     print(f"backgrounded · {session['id']}" + (f" · {name}" if name else ""))
     return 0
@@ -405,30 +417,29 @@ def attach(wanted):
 
 
 def stop(wanted, remove):
-    sessions = load()
-    session = find(sessions, wanted)
-    if session is None:
-        print(f"No job matching {wanted}", file=sys.stderr)
-        return 1
-    if remove and session.get("name", "").startswith("unpushed"):
-        print(f"{session['id']}: its worktree has commits not pushed; nothing removed", file=sys.stderr)
-        return 1
-    if alive(session.get("pid")):
-        os.kill(session["pid"], signal.SIGTERM)
-    for hook in session.pop("hooks", []):
-        try:
-            os.killpg(hook, signal.SIGTERM)
-        except OSError:
-            pass
-    if session.get("pid"):
-        try:
-            os.remove(os.path.join(config_dir(), "sessions", f"{session['pid']}.json"))
-        except OSError:
-            pass
-    session.update(pid=None, status=None, state="stopped")
-    if remove:
-        sessions.remove(session)
-    save(sessions)
+    with registry() as sessions:
+        session = find(sessions, wanted)
+        if session is None:
+            print(f"No job matching {wanted}", file=sys.stderr)
+            return 1
+        if remove and session.get("name", "").startswith("unpushed"):
+            print(f"{session['id']}: its worktree has commits not pushed; nothing removed", file=sys.stderr)
+            return 1
+        if alive(session.get("pid")):
+            os.kill(session["pid"], signal.SIGTERM)
+        for hook in session.pop("hooks", []):
+            try:
+                os.killpg(hook, signal.SIGTERM)
+            except OSError:
+                pass
+        if session.get("pid"):
+            try:
+                os.remove(os.path.join(config_dir(), "sessions", f"{session['pid']}.json"))
+            except OSError:
+                pass
+        session.update(pid=None, status=None, state="stopped")
+        if remove:
+            sessions.remove(session)
     if not remove:
         write_job(session, {"state": "stopped", "detail": "Stopped", "tempo": "idle"})
     print(f"{'removed' if remove else 'stopped'} {session['id']}")
