@@ -1924,5 +1924,60 @@ class ControlCenterKeysAndPromptAll(Journey):
         wait_until("beta open in a pane", lambda: overview_hidden(driver) and (chip(driver, "beta") or ("", False))[1] or None)
 
 
+def status_line(session_id: str, context: float, five_hour: float, seven_day: float) -> None:
+    """kindric-accounts' status line run by Claude Code for a session of the account, with the
+    figures Claude Code gives it."""
+    given = {"session_id": session_id, "context_window": {"used_percentage": context},
+             "rate_limits": {"five_hour": {"used_percentage": five_hour, "resets_at": time.time() + 3600},
+                             "seven_day": {"used_percentage": seven_day, "resets_at": time.time() + 86400}}}
+    done = subprocess.run(["kindric-accounts", "statusline"], input=json.dumps(given), capture_output=True, text=True, timeout=30,
+                          cwd=PROJECT, env=dict(os.environ, CLAUDE_CONFIG_DIR=ACCOUNT_DIR))
+    if done.returncode != 0:
+        raise AssertionError(f"the status line exited {done.returncode}: {done.stderr.strip()}")
+
+
+class ControlCenterFigures(Journey):
+    """What the status line wrote down shows in the control center: the account's 5 h and 7 day
+    limits, framed past 80 %, with when the 5 h window starts again, and how full each session's
+    context is. A row counts the files its session kept for the user, the new ones too; a click
+    opens the artifacts window, after which none is new."""
+
+    started = [("alpha", "make touch:a.txt touch:b.txt work:0"), ("beta", "rest work:0")]
+
+    def cell(self, name: str, css: str) -> str:
+        found = self.driver.script("""const row = [...document.querySelectorAll('article.control-row')].find((row) => row.querySelector('.row-name').textContent === arguments[0]);
+          const cell = row && row.querySelector(arguments[1]);
+          return cell ? cell.textContent : null;""", name, css)
+        return "" if found is None else str(found)
+
+    def test_limits_context_and_kept(self) -> None:
+        driver = self.driver
+        carry_messages(driver)
+        add_project(driver)
+        wait_until("alpha's files", lambda: all(os.path.exists(os.path.join(PROJECT, name)) for name in ("a.txt", "b.txt")))
+        alpha = session_id_of("alpha")
+        status_line(alpha, 42.4, 85, 30)
+        for name in ("a.txt", "b.txt"):
+            mcp_call(alpha, "keep_artifact", {"path": name, "for": "user"})
+
+        driver.press(CONTROL, SHIFT, "0")
+        wait_until("the control center", lambda: not overview_hidden(driver))
+        click_text(driver, ".control-project .control-project-name", "project")
+        wait_until("the account's limits", lambda: texts(driver, ".account-card .account-percent") == ["85%", "30%"] or None)
+        self.assertTrue(driver.script("return document.querySelector('.account-card').classList.contains('hot')"), "past 80 % and not framed")
+        self.assertTrue(any(note.startswith("5h resets at ") for note in texts(driver, ".account-card .account-note")))
+        wait_until("alpha's context", lambda: self.cell("alpha", ".row-ctx") == "ctx42%" or None)
+        self.assertEqual(self.cell("beta", ".row-ctx"), "ctx—")
+
+        wait_until("alpha's kept files, new", lambda: self.cell("alpha", ".row-kept") == "2 kept · 2 new" or None)
+        self.assertEqual(self.cell("beta", ".row-kept"), "nothing kept")
+        found = driver.script("""return [...document.querySelectorAll('article.control-row')].find((row) => row.querySelector('.row-name').textContent === 'alpha').querySelector('.row-kept');""")
+        driver.click(str(found[ELEMENT_KEY]))
+        wait_until("the artifacts window", lambda: dialog_open(driver, "artifacts"))
+        driver.press(ESCAPE)
+        wait_until("the artifacts window closed", lambda: not dialog_open(driver, "artifacts"))
+        wait_until("none new once seen", lambda: self.cell("alpha", ".row-kept") == "2 kept" or None)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
