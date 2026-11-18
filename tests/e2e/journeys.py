@@ -1377,5 +1377,72 @@ class ImagesOfTheLastTurn(Journey):
         self.assertEqual(self.drawn(), [], "the band of the turn before")
 
 
+CLAUDE_HOME = os.path.join(HOME, ".claude")
+ARROW_UP = ""
+
+
+def environments(folder: str) -> list[tuple[str, list[str]]]:
+    """What the fake claude noted of each call in an account's folder: its first words, and which of
+    CLAUDE_CONFIG_DIR and the billing variables it had."""
+    try:
+        with open(os.path.join(folder, "fake/env.log")) as log:
+            lines = [line.rstrip("\n").split("\t") for line in log if line.strip()]
+    except OSError:
+        return []
+    # `--version` and `--help`, for the setup checklist, touch no account: they keep the environment.
+    return [(words, present.split()) for words, present in lines if words not in ("--version", "--help")]
+
+
+class DefaultAccount(Journey):
+    """Claude Code's own configuration, ~/.claude, logged in: the account `default`, first in the
+    Ctrl+N form. Its session starts, shows and stops through `claude` without CLAUDE_CONFIG_DIR, and
+    no call of claude, on any account, gets the billing variable the app has."""
+
+    @classmethod
+    def prepare(cls) -> None:
+        os.makedirs(os.path.join(CLAUDE_HOME, "fake"), exist_ok=True)
+        write(os.path.join(CLAUDE_HOME, "fake/logged-in"), "")
+
+    def test_default_without_config_dir_nor_billing(self) -> None:
+        driver = self.driver
+        self.assertIn("ANTHROPIC_API_KEY", os.environ, "the journey needs the billing variable of inside.sh")
+        driver.press(CONTROL, "n")
+        wait_until("the new session form", lambda: dialog_open(driver, "new-session"))
+        accounts_listed = wait_until("both accounts in the form", lambda: texts(driver, "#new-account .launch-list li") if len(texts(driver, "#new-account .launch-list li")) == 2 else None)
+        self.assertTrue(accounts_listed[0].startswith("default"), accounts_listed)
+        for _ in accounts_listed:
+            driver.press(ARROW_UP)
+        wait_until("default picked", lambda: texts(driver, "#new-account .launch-list li.selected")[0].startswith("default"))
+        directory = driver.find("#new-form input[name=directory]")
+        driver.clear(directory)
+        driver.type_into(directory, PROJECT)
+        driver.type_into(driver.find("#new-form input[name=name]"), "mine" + ENTER)
+        wait_until("the session open in a pane", lambda: (chip(driver, "mine") or ("", False))[1])
+        session = wait_until("the session in ~/.claude", lambda: next((s for s in sessions_of_folder(CLAUDE_HOME) if s.get("name") == "mine"), None))
+        self.assertEqual(session["cwd"], PROJECT)
+
+        driver.press(CONTROL, SHIFT, "k")
+        wait_until("the question before hiding", lambda: dialog_open(driver, "confirm-hide"))
+        driver.click(driver.find("#hide-form button[type=submit]"))
+        wait_until("the session stopped", lambda: not next(s for s in sessions_of_folder(CLAUDE_HOME) if s.get("name") == "mine").get("pid"))
+
+        calls = environments(CLAUDE_HOME)
+        for words in ("auth status", "agents --json", "--bg", "attach", "stop"):
+            self.assertTrue(any(words in called for called, _ in calls), f"no {words} on default: {calls}")
+        self.assertEqual([(called, present) for called, present in calls if present], [], "default given CLAUDE_CONFIG_DIR or billing")
+        work = environments(ACCOUNT_DIR)
+        self.assertTrue(work, "no call on the account work")
+        self.assertEqual([(called, present) for called, present in work if present != ["CLAUDE_CONFIG_DIR"]], [], "work given billing")
+
+
+def sessions_of_folder(folder: str) -> list[dict[str, Any]]:
+    try:
+        with open(os.path.join(folder, "fake/sessions.json")) as source:
+            sessions: list[dict[str, Any]] = json.load(source)
+            return sessions
+    except (OSError, ValueError):
+        return []
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
