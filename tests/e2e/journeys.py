@@ -341,13 +341,22 @@ ACCOUNT_DIR = os.path.join(HOME, ".local/share/kindric-accounts", ACCOUNT)
 
 def mcp_call(session_id: str, tool: str, arguments: dict[str, Any]) -> str:
     """Calls a tool of `kindric mcp` as the session `session_id` would, through Claude Code; its text."""
+    text, refused = mcp_answer(session_id, tool, arguments)
+    if refused:
+        raise AssertionError(f"{tool} refused: {text}")
+    return text
+
+
+def mcp_answer(session_id: str, tool: str, arguments: dict[str, Any], account_dir: str = ACCOUNT_DIR) -> tuple[str, bool]:
+    """Calls a tool of `kindric mcp` as a session of the account in `account_dir` would: its text,
+    and whether the tool refused."""
     requests = [
         {"jsonrpc": "2.0", "id": 1, "method": "initialize",
          "params": {"protocolVersion": "2025-06-18", "capabilities": {}, "clientInfo": {"name": "e2e", "version": "1"}}},
         {"jsonrpc": "2.0", "method": "notifications/initialized"},
         {"jsonrpc": "2.0", "id": 2, "method": "tools/call", "params": {"name": tool, "arguments": arguments}},
     ]
-    environment = dict(os.environ, CLAUDE_CODE_SESSION_ID=session_id, CLAUDE_CONFIG_DIR=ACCOUNT_DIR)
+    environment = dict(os.environ, CLAUDE_CODE_SESSION_ID=session_id, CLAUDE_CONFIG_DIR=account_dir)
     done = subprocess.run(["kindric", "mcp"], input="".join(json.dumps(request) + "\n" for request in requests),
                           capture_output=True, text=True, timeout=30, env=environment, cwd=PROJECT)
     for line in done.stdout.splitlines():
@@ -355,9 +364,8 @@ def mcp_call(session_id: str, tool: str, arguments: dict[str, Any]) -> str:
         if answer.get("id") == 2:
             result = answer.get("result", {})
             text = "".join(part.get("text", "") for part in result.get("content", []))
-            if result.get("isError") or "error" in answer:
-                raise AssertionError(f"{tool} refused: {text or answer.get('error')}")
-            return text
+            refused = bool(result.get("isError") or "error" in answer)
+            return (text or str(answer.get("error", ""))), refused
     raise AssertionError(f"kindric mcp gave no answer to {tool}: {done.stderr.strip()}")
 
 
@@ -1058,6 +1066,97 @@ class PurgeFromSettings(Journey):
         wait_until("the removed one gone from the bar", lambda: chip_state(driver, "old-done") is None, timeout=10)
         self.assertIsNotNone(chip_state(driver, "unpushed-old"), "the refused one stays in the bar")
         self.assertTrue(fake_running("unpushed-old"), "the refused one keeps running")
+
+
+MAILBOX = os.path.join(HOME, ".local/share/kindric/mailbox")
+
+
+def stop_sessions_of(account: str) -> None:
+    for session in sessions_of(account):
+        if session.get("pid"):
+            subprocess.run(["kindric-accounts", "run", account, "stop", session["id"]], cwd=PROJECT, capture_output=True, timeout=30)
+
+
+def mcp_start(account_dir: str) -> subprocess.CompletedProcess[str]:
+    """`kindric mcp` started as Claude Code starts it for a session of the account in `account_dir`."""
+    hello = {"jsonrpc": "2.0", "id": 1, "method": "initialize",
+             "params": {"protocolVersion": "2025-06-18", "capabilities": {}, "clientInfo": {"name": "e2e", "version": "1"}}}
+    return subprocess.run(["kindric", "mcp"], input=json.dumps(hello) + "\n", capture_output=True, text=True, timeout=30, cwd=PROJECT,
+                          env=dict(os.environ, CLAUDE_CODE_SESSION_ID="00000000-0000-0000-0000-000000000000", CLAUDE_CONFIG_DIR=account_dir))
+
+
+class IsolatedOutOfMessages(Journey):
+    """A session of an isolated account shows in the bar, but stays out of the messages: the
+    other sessions do not see it in list_sessions, cannot leave it a message by name or by id, and
+    the messages server refuses to start in its account."""
+
+    started = [("open", "a task work:0")]
+
+    @classmethod
+    def prepare(cls) -> None:
+        accounts("add", ISOLATED)
+        accounts("isolate", ISOLATED)
+
+    @classmethod
+    def before_app(cls) -> None:
+        accounts("run", ISOLATED, "--bg", "-n", "alone", "a private task work:0")
+
+    def test_isolated_session_unreachable(self) -> None:
+        driver = self.driver
+        wait_until("both sessions in the bar", lambda: chip_state(driver, "open") and chip_state(driver, "alone"))
+        alone = next(session for session in sessions_of(ISOLATED) if session.get("name") == "alone")
+        me = session_id_of("open")
+
+        listed, refused = mcp_answer(me, "list_sessions", {})
+        self.assertFalse(refused, listed)
+        self.assertIn("open (you)", listed)
+        self.assertNotIn("alone", listed)
+        self.assertNotIn(alone["sessionId"], listed)
+
+        for to in ("alone", alone["sessionId"], alone["id"]):
+            said, refused = mcp_answer(me, "send_message", {"to": to, "text": "secret"})
+            self.assertTrue(refused, f"a message reached the isolated session through {to!r}: {said}")
+        self.assertFalse(os.path.exists(os.path.join(MAILBOX, alone["sessionId"])), "a mailbox for the isolated session")
+
+        started = mcp_start(os.path.join(HOME, ".local/share/kindric-accounts", ISOLATED))
+        self.assertNotEqual(started.returncode, 0, started.stdout)
+        self.assertIn("isolated", started.stderr)
+        self.assertNotIn('"id":1', started.stdout.replace(" ", ""))
+
+    @classmethod
+    def tearDownClass(cls) -> None:
+        super().tearDownClass()
+        stop_sessions_of(ISOLATED)
+
+
+WAITS = os.path.join(HOME, ".local/share/kindric/wait")
+
+
+class WokenByAMessage(Journey):
+    """A session at rest stays at rest for a message of information, and wakes for one that asks
+    it to act now: its `kindric wait-message` hook ends, and the session starts a turn told of the
+    message, shown working in the bar."""
+
+    started = [("sender", "write work:0"), ("sleeper", "rest work:0")]
+
+    def test_rest_then_woken(self) -> None:
+        driver = self.driver
+        wait_until("the sleeper's turn over", lambda: chip_state(driver, "sleeper") in ("finished", "waiting"), timeout=30)
+        sleeper = session_id_of("sleeper")
+        wait_until("the sleeper waiting for a message", lambda: os.path.exists(os.path.join(WAITS, sleeper)))
+        turns = len(prompts_of(sleeper))
+
+        mcp_call(session_id_of("sender"), "send_message", {"to": "sleeper", "text": "the build is green"})
+        time.sleep(5)
+        self.assertEqual(len(prompts_of(sleeper)), turns, "woken by a message of information")
+        self.assertNotEqual(chip_state(driver, "sleeper"), "working")
+
+        said = mcp_call(session_id_of("sender"), "send_message", {"to": "sleeper", "text": "run the tests now", "wake": True})
+        self.assertIn("It acts on it now", said)
+        woken = wait_until("the sleeper's new turn", lambda: prompts_of(sleeper)[turns:] or None, timeout=15)
+        self.assertIn("unread message", woken[0])
+        self.assertIn("sender", woken[0])
+        wait_until("the sleeper working in the bar", lambda: chip_state(driver, "sleeper") == "working", timeout=10)
 
 
 if __name__ == "__main__":

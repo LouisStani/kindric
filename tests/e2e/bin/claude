@@ -11,7 +11,10 @@ and writes the files kindric reads, in the shapes Claude Code 2.1.323 gives, wit
                                           seconds (2 by default), then waits for the user;
                                           each "touch:NAME" writes the file NAME in its folder;
                                           "ask:WHAT" ends the turn on a question of Claude Code
-                                          (waitingFor WHAT, "_" for spaces) instead of waiting
+                                          (waitingFor WHAT, "_" for spaces) instead of waiting;
+                                          at its start and after each turn, the asyncRewake hooks of
+                                          its --settings run in the background: exit code 2 starts a
+                                          turn with their error output
     claude attach ID                      a terminal on the session: each line typed (or pasted, with
                                           bracketed paste) is a new turn; a stopped session is
                                           started again, waiting
@@ -192,12 +195,59 @@ def turn(session_id, task):
         return
     write_transcript(session_id, {"type": "assistant", "message": {"role": "assistant", "content": [{"type": "text", "text": f"done: {task}"}]}})
     set_state(session_id, "idle", "blocked", "waiting for you")
+    start_rewake(session_id, "Stop")
+
+
+def rewake_hooks(session, event):
+    """The commands the session's settings (--settings) run in the background for `event`, the
+    hooks marked asyncRewake: Claude Code starts a turn with the error output of one that exits 2."""
+    args = session.get("args", [])
+    try:
+        with open(args[args.index("--settings") + 1]) as source:
+            settings = json.load(source)
+    except (ValueError, IndexError, OSError):
+        return []
+    return [hook["command"] for matcher in settings.get("hooks", {}).get(event, []) for hook in matcher.get("hooks", [])
+            if hook.get("asyncRewake") and hook.get("command")]
+
+
+def start_rewake(session_id, event):
+    """Runs the session's asyncRewake hooks of `event`, each in a process of its own, noted in the
+    session's "hooks" so that stopping the session ends them."""
+    sessions = load()
+    session = find(sessions, session_id)
+    if session is None:
+        return
+    for command in rewake_hooks(session, event):
+        process = subprocess.Popen([sys.executable, os.path.abspath(__file__), "--fake-rewake", session_id, event, command],
+                                   stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True)
+        session.setdefault("hooks", []).append(process.pid)
+    save(sessions)
+
+
+def rewake(session_id, event, command):
+    """One asyncRewake hook: given what Claude Code gives a hook; exit code 2 wakes the session,
+    its error output the prompt of the new turn."""
+    session = find(load(), session_id)
+    if session is None:
+        return
+    asked = {"session_id": session["sessionId"], "transcript_path": transcript_path(session), "cwd": session["cwd"], "hook_event_name": event}
+    done = subprocess.run(command, shell=True, input=json.dumps(asked), capture_output=True, text=True, cwd=session["cwd"])
+    session = find(load(), session_id)
+    if done.returncode == 2 and session is not None and alive(session.get("pid")):
+        turn(session_id, done.stderr.strip())
 
 
 def worker(session_id, task):
     """The session's process: it lives until stopped, like a background session of Claude Code.
     Without a task, it was stopped and is started again: it waits for the user."""
     signal.signal(signal.SIGTERM, lambda *_: sys.exit(0))
+    # The registry is written by the process that started this one once it has its pid: writing
+    # it before would lose that pid.
+    deadline = time.time() + 5
+    while time.time() < deadline and (find(load(), session_id) or {}).get("pid") != os.getpid():
+        time.sleep(0.05)
+    start_rewake(session_id, "SessionStart")
     if task is None:
         set_state(session_id, "idle", "blocked", "waiting for you")
     else:
@@ -289,6 +339,11 @@ def stop(wanted, remove):
         return 1
     if alive(session.get("pid")):
         os.kill(session["pid"], signal.SIGTERM)
+    for hook in session.pop("hooks", []):
+        try:
+            os.killpg(hook, signal.SIGTERM)
+        except OSError:
+            pass
     if session.get("pid"):
         try:
             os.remove(os.path.join(config_dir(), "sessions", f"{session['pid']}.json"))
@@ -355,6 +410,9 @@ def main(argv):
         return 0
     if argv[:1] == ["--fake-resume"]:
         worker(argv[1], None)
+        return 0
+    if argv[:1] == ["--fake-rewake"]:
+        rewake(argv[1], argv[2], argv[3])
         return 0
     if argv[:1] == ["--fake-turn"]:
         turn(argv[1], argv[2])
