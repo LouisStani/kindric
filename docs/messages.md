@@ -53,6 +53,8 @@ They can still be shown in a pane. `kindric-accounts isolate default` does the s
 
 This view only reads: nothing is marked read, so the session still gets its messages from `read_messages`.
 
+A paused session counts on its chip, in `Ctrl+P` and on its tab only the messages it received in the last day. Older ones, which it would never read, no longer bring it to the top. They are not removed: `Ctrl+Shift+M` shows them, and the session reads them once it starts again. A session that works or waits for you counts every message.
+
 ## Storage
 
 Each message is one JSON file in `mailbox/<session id>/`, inside kindric's data folder: `~/.local/share/kindric/` on Linux and macOS (`$XDG_DATA_HOME/kindric/` if set), `%APPDATA%\kindric\` on Windows. The directories are readable only by you. A message that has been read moves to `read/`.

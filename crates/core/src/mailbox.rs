@@ -65,6 +65,11 @@ fn file_stem(sent_at: u64, process: u32, sequence: u64) -> String {
     format!("{sent_at:020}-{process}-{sequence:020}")
 }
 
+/// When the message in `file` was sent, from its name (`file_stem`).
+fn sent_at_of(file: &Path) -> Option<u64> {
+    file.file_stem()?.to_str()?.split('-').next()?.parse().ok()
+}
+
 /// Where kindric keeps its files, next to the kindric-accounts data: `$XDG_DATA_HOME`
 /// (else `~/.local/share`) on Unix, the user's AppData on Windows, then `kindric`.
 pub fn data_dir() -> io::Result<PathBuf> {
@@ -180,6 +185,13 @@ impl Mailbox {
 
     pub fn unread_count(&self, session: &str) -> io::Result<usize> {
         Ok(self.unread_files(session)?.len())
+    }
+
+    /// The unread messages of `session` sent at `since` (Unix seconds) or later, told by the
+    /// names of their files: none is read. A name that gives no time counts, so that nothing
+    /// is hidden by mistake.
+    pub fn unread_count_since(&self, session: &str, since: u64) -> io::Result<usize> {
+        Ok(self.unread_files(session)?.iter().filter(|file| sent_at_of(file).is_none_or(|sent| sent >= since)).count())
     }
 
     /// What a session is told about its unread messages, once per new message: "2 unread
@@ -337,6 +349,21 @@ mod tests {
         assert_eq!(unread_hook_answer(&mailbox, r#"{"session_id":"bbbb-2222","hook_event_name":"UserPromptSubmit"}"#), None, "told once");
         assert_eq!(unread_hook_answer(&mailbox, r#"{"session_id":"../x","hook_event_name":"PostToolUse"}"#), None);
         assert_eq!(unread_hook_answer(&mailbox, "{broken"), None);
+        fs::remove_dir_all(mailbox.root()).unwrap();
+    }
+
+    #[test]
+    fn unread_since_counts_the_messages_sent_from_then_on() {
+        let mailbox = Mailbox::new(temp_root("since"));
+        mailbox.send("bbbb-2222", &message("old", 100)).unwrap();
+        mailbox.send("bbbb-2222", &message("at the limit", 200)).unwrap();
+        mailbox.send("bbbb-2222", &message("new", 300)).unwrap();
+        assert_eq!(mailbox.unread_count_since("bbbb-2222", 200).unwrap(), 2, "a message sent at the limit counts");
+        assert_eq!(mailbox.unread_count_since("bbbb-2222", 301).unwrap(), 0);
+        assert_eq!(mailbox.unread_count_since("bbbb-2222", 0).unwrap(), mailbox.unread_count("bbbb-2222").unwrap());
+        // A file whose name gives no time is counted rather than hidden.
+        fs::write(mailbox.inbox("bbbb-2222").unwrap().join("odd.json"), b"{}").unwrap();
+        assert_eq!(mailbox.unread_count_since("bbbb-2222", 301).unwrap(), 1);
         fs::remove_dir_all(mailbox.root()).unwrap();
     }
 
