@@ -1060,5 +1060,110 @@ class PurgeFromSettings(Journey):
         self.assertTrue(fake_running("unpushed-old"), "the refused one keeps running")
 
 
+MAILBOX = os.path.join(HOME, ".local/share/kindric/mailbox")
+
+
+def leave_message(to: str, text: str, age_seconds: int) -> None:
+    """A message to the session `to`, sent `age_seconds` ago, written as kindric writes them."""
+    sent_at = int(time.time()) - age_seconds
+    inbox = os.path.join(MAILBOX, session_id_of(to))
+    os.makedirs(inbox, mode=0o700, exist_ok=True)
+    message = {"from_session": "e2e-sender", "from_title": "sender", "from_account": ACCOUNT,
+               "sent_at": sent_at, "text": text, "wake": False}
+    with open(os.path.join(inbox, f"{sent_at:020}-1-{0:020}.json"), "w", encoding="utf-8") as file:
+        json.dump(message, file)
+
+
+def pause(names: list[str]) -> None:
+    """Lets the turns of these sessions end, then stops them: they stay, paused."""
+    wait_until("the turns over", lambda: all(fake_detail(name) not in (None, "") and not fake_detail(name).startswith("working")
+                                             for name in names))
+    for name in names:
+        session = next(session for session in fake_sessions() if session.get("name") == name)
+        accounts("run", ACCOUNT, "stop", session["id"])
+    wait_until("the sessions stopped", lambda: not any(fake_running(name) for name in names))
+
+
+def open_picker(driver: Driver) -> None:
+    driver.press(CONTROL, "p")
+    wait_until("the session finder", lambda: dialog_open(driver, "picker"))
+
+
+def picker_badges(driver: Driver) -> dict[str, str | None]:
+    """The unread count each row of Ctrl+P shows, None without one."""
+    found: list[list[Any]] = driver.script("""return [...document.querySelectorAll('#picker-results li.session')].map(
+      (row) => [row.querySelector('.name').textContent, row.querySelector('.badge')?.textContent ?? null]);""")
+    return {str(name): None if badge is None else str(badge) for name, badge in found}
+
+
+class QuietOldMessages(Journey):
+    """A paused session counts only the messages of the last day (decision 375): an old message
+    no longer gives it a badge, a recent one does, and Ctrl+Shift+M still shows the old one."""
+
+    started = [("quiet-old", "old talk work:0"), ("quiet-new", "new talk work:0")]
+
+    @classmethod
+    def before_app(cls) -> None:
+        pause(["quiet-old", "quiet-new"])
+        leave_message("quiet-old", "sent two days ago", 2 * 86400)
+        leave_message("quiet-new", "sent a minute ago", 60)
+
+    def test_old_message_no_badge(self) -> None:
+        driver = self.driver
+        open_picker(driver)
+        badges = wait_until("both sessions in the finder", lambda: (found := picker_badges(driver)).keys() >= {"quiet-old", "quiet-new"} and found)
+        self.assertEqual(badges["quiet-new"], "1 msg", "a message of the last minute counts")
+        self.assertIsNone(badges["quiet-old"], "a message of two days ago no longer counts")
+        self.assertEqual(len(os.listdir(os.path.join(MAILBOX, session_id_of("quiet-old")))), 1, "the old message is kept")
+
+
+def picker_entries(driver: Driver) -> list[tuple[str, str]]:
+    """Ctrl+P from top to bottom: ("head", day) for a head, (name, when) for a session."""
+    found: list[list[str]] = driver.script("""return [...document.querySelectorAll('#picker-results li')].map((item) =>
+      item.classList.contains('picker-day') ? ['head', item.textContent]
+        : [item.querySelector('.name').textContent, item.querySelector('.when')?.textContent ?? '']);""")
+    return [(str(first), str(second)) for first, second in found]
+
+
+class PickerByDay(Journey):
+    """Ctrl+P lists the sessions by day of last activity (decision 376): today first, then
+    yesterday, then older days, each under its head with its time; the hidden ones last, under
+    their own head."""
+
+    started = [("fresh", "today work:0"), ("day-before", "yesterday work:0"), ("week-ago", "old work:0"), ("put-away", "hidden work:0")]
+
+    @classmethod
+    def before_app(cls) -> None:
+        pause([name for name, _ in cls.started])
+        age_transcript("day-before", 1)
+        age_transcript("week-ago", 6)
+        prefs = {session_id_of("put-away"): {"hidden": True}}
+        data = os.path.join(HOME, ".local/share/kindric")
+        os.makedirs(data, mode=0o700, exist_ok=True)
+        with open(os.path.join(data, "sessions.json"), "w", encoding="utf-8") as file:
+            json.dump(prefs, file)
+
+    def test_days_times_and_hidden_last(self) -> None:
+        driver = self.driver
+        open_picker(driver)
+        entries = wait_until("every session in the finder", lambda: (found := picker_entries(driver)) and len([e for e in found if e[0] != "head"]) == 4 and found)
+        driver.screenshot(os.path.join(OUT, "PickerByDay-finder.png"))
+        names = [first for first, _ in entries if first != "head"]
+        heads = [second for first, second in entries if first == "head"]
+        self.assertEqual(names, ["fresh", "day-before", "week-ago", "put-away"], entries)
+        self.assertEqual(heads[0], "today", entries)
+        self.assertEqual(heads[-1], "hidden", entries)
+        self.assertEqual(entries[0], ("head", "today"), "a head before the first session")
+        self.assertEqual(len(heads), 4, f"today, yesterday, six days ago, hidden: {entries}")
+        self.assertEqual(heads[1], "yesterday", entries)
+        self.assertNotIn(heads[2], {"today", "yesterday", "hidden"}, "six days ago is named by its date")
+        for first, second in entries:
+            if first not in ("head", "put-away"):
+                self.assertRegex(second, r"^\d{1,2}:\d{2}", f"{first} shows its time")
+        hidden_when = next(second for first, second in entries if first == "put-away")
+        # The system's language says how: "today 13:21", or "today 01:21 PM" as in the image.
+        self.assertRegex(hidden_when, r"^today \d{1,2}:\d{2}( [AP]M)?$", "a hidden one shows its day and time")
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
