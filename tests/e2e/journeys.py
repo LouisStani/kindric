@@ -8,13 +8,14 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import shutil
 import subprocess
 import time
 import unittest
 from typing import Any
 
-from driver import ARROW_DOWN, CONTROL, DELETE, ELEMENT_KEY, ENTER, F2, SHIFT, Driver, wait_until
+from driver import ALT, ARROW_DOWN, CONTROL, DELETE, ELEMENT_KEY, ENTER, ESCAPE, F2, SHIFT, TAB, Driver, wait_until
 
 HOME = os.path.expanduser("~")
 ACCOUNT = "work"
@@ -341,13 +342,22 @@ ACCOUNT_DIR = os.path.join(HOME, ".local/share/kindric-accounts", ACCOUNT)
 
 def mcp_call(session_id: str, tool: str, arguments: dict[str, Any]) -> str:
     """Calls a tool of `kindric mcp` as the session `session_id` would, through Claude Code; its text."""
+    text, refused = mcp_answer(session_id, tool, arguments)
+    if refused:
+        raise AssertionError(f"{tool} refused: {text}")
+    return text
+
+
+def mcp_answer(session_id: str, tool: str, arguments: dict[str, Any], account_dir: str = ACCOUNT_DIR) -> tuple[str, bool]:
+    """Calls a tool of `kindric mcp` as a session of the account in `account_dir` would: its text,
+    and whether the tool refused."""
     requests = [
         {"jsonrpc": "2.0", "id": 1, "method": "initialize",
          "params": {"protocolVersion": "2025-06-18", "capabilities": {}, "clientInfo": {"name": "e2e", "version": "1"}}},
         {"jsonrpc": "2.0", "method": "notifications/initialized"},
         {"jsonrpc": "2.0", "id": 2, "method": "tools/call", "params": {"name": tool, "arguments": arguments}},
     ]
-    environment = dict(os.environ, CLAUDE_CODE_SESSION_ID=session_id, CLAUDE_CONFIG_DIR=ACCOUNT_DIR)
+    environment = dict(os.environ, CLAUDE_CODE_SESSION_ID=session_id, CLAUDE_CONFIG_DIR=account_dir)
     done = subprocess.run(["kindric", "mcp"], input="".join(json.dumps(request) + "\n" for request in requests),
                           capture_output=True, text=True, timeout=30, env=environment, cwd=PROJECT)
     for line in done.stdout.splitlines():
@@ -355,9 +365,8 @@ def mcp_call(session_id: str, tool: str, arguments: dict[str, Any]) -> str:
         if answer.get("id") == 2:
             result = answer.get("result", {})
             text = "".join(part.get("text", "") for part in result.get("content", []))
-            if result.get("isError") or "error" in answer:
-                raise AssertionError(f"{tool} refused: {text or answer.get('error')}")
-            return text
+            refused = bool(result.get("isError") or "error" in answer)
+            return (text or str(answer.get("error", ""))), refused
     raise AssertionError(f"kindric mcp gave no answer to {tool}: {done.stderr.strip()}")
 
 
@@ -563,7 +572,9 @@ def prompts_of(session_id: str) -> list[str]:
         if os.path.exists(path):
             with open(path) as source:
                 entries = [json.loads(line) for line in source if line.strip()]
-            prompts += [str(entry["message"]["content"]) for entry in entries if entry.get("type") == "user"]
+            # A tool's result is a user entry too, its content a list.
+            prompts += [entry["message"]["content"] for entry in entries
+                        if entry.get("type") == "user" and isinstance(entry["message"]["content"], str)]
     return prompts
 
 
@@ -1060,6 +1071,922 @@ class PurgeFromSettings(Journey):
         self.assertTrue(fake_running("unpushed-old"), "the refused one keeps running")
 
 
+MAILBOX = os.path.join(HOME, ".local/share/kindric/mailbox")
+
+
+def stop_sessions_of(account: str) -> None:
+    for session in sessions_of(account):
+        if session.get("pid"):
+            subprocess.run(["kindric-accounts", "run", account, "stop", session["id"]], cwd=PROJECT, capture_output=True, timeout=30)
+
+
+def mcp_start(account_dir: str) -> subprocess.CompletedProcess[str]:
+    """`kindric mcp` started as Claude Code starts it for a session of the account in `account_dir`."""
+    hello = {"jsonrpc": "2.0", "id": 1, "method": "initialize",
+             "params": {"protocolVersion": "2025-06-18", "capabilities": {}, "clientInfo": {"name": "e2e", "version": "1"}}}
+    return subprocess.run(["kindric", "mcp"], input=json.dumps(hello) + "\n", capture_output=True, text=True, timeout=30, cwd=PROJECT,
+                          env=dict(os.environ, CLAUDE_CODE_SESSION_ID="00000000-0000-0000-0000-000000000000", CLAUDE_CONFIG_DIR=account_dir))
+
+
+class IsolatedOutOfMessages(Journey):
+    """A session of an isolated account shows in the bar, but stays out of the messages: the
+    other sessions do not see it in list_sessions, cannot leave it a message by name or by id, and
+    the messages server refuses to start in its account."""
+
+    started = [("open", "a task work:0")]
+
+    @classmethod
+    def prepare(cls) -> None:
+        accounts("add", ISOLATED)
+        accounts("isolate", ISOLATED)
+
+    @classmethod
+    def before_app(cls) -> None:
+        accounts("run", ISOLATED, "--bg", "-n", "alone", "a private task work:0")
+
+    def test_isolated_session_unreachable(self) -> None:
+        driver = self.driver
+        wait_until("both sessions in the bar", lambda: chip_state(driver, "open") and chip_state(driver, "alone"))
+        alone = next(session for session in sessions_of(ISOLATED) if session.get("name") == "alone")
+        me = session_id_of("open")
+
+        listed, refused = mcp_answer(me, "list_sessions", {})
+        self.assertFalse(refused, listed)
+        self.assertIn("open (you)", listed)
+        self.assertNotIn("alone", listed)
+        self.assertNotIn(alone["sessionId"], listed)
+
+        for to in ("alone", alone["sessionId"], alone["id"]):
+            said, refused = mcp_answer(me, "send_message", {"to": to, "text": "secret"})
+            self.assertTrue(refused, f"a message reached the isolated session through {to!r}: {said}")
+        self.assertFalse(os.path.exists(os.path.join(MAILBOX, alone["sessionId"])), "a mailbox for the isolated session")
+
+        started = mcp_start(os.path.join(HOME, ".local/share/kindric-accounts", ISOLATED))
+        self.assertNotEqual(started.returncode, 0, started.stdout)
+        self.assertIn("isolated", started.stderr)
+        self.assertNotIn('"id":1', started.stdout.replace(" ", ""))
+
+    @classmethod
+    def tearDownClass(cls) -> None:
+        super().tearDownClass()
+        stop_sessions_of(ISOLATED)
+
+
+WAITS = os.path.join(HOME, ".local/share/kindric/wait")
+
+
+class WokenByAMessage(Journey):
+    """A session at rest stays at rest for a message of information, and wakes for one that asks
+    it to act now: its `kindric wait-message` hook ends, and the session starts a turn told of the
+    message, shown working in the bar."""
+
+    started = [("sender", "write work:0"), ("sleeper", "rest work:0")]
+
+    def test_rest_then_woken(self) -> None:
+        driver = self.driver
+        wait_until("the sleeper's turn over", lambda: chip_state(driver, "sleeper") in ("finished", "waiting"), timeout=30)
+        sleeper = session_id_of("sleeper")
+        wait_until("the sleeper waiting for a message", lambda: os.path.exists(os.path.join(WAITS, sleeper)))
+        turns = len(prompts_of(sleeper))
+
+        mcp_call(session_id_of("sender"), "send_message", {"to": "sleeper", "text": "the build is green"})
+        time.sleep(5)
+        self.assertEqual(len(prompts_of(sleeper)), turns, "woken by a message of information")
+        self.assertNotEqual(chip_state(driver, "sleeper"), "working")
+
+        said = mcp_call(session_id_of("sender"), "send_message", {"to": "sleeper", "text": "run the tests now", "wake": True})
+        self.assertIn("It acts on it now", said)
+        woken = wait_until("the sleeper's new turn", lambda: prompts_of(sleeper)[turns:] or None, timeout=15)
+        self.assertIn("unread message", woken[0])
+        self.assertIn("sender", woken[0])
+        wait_until("the sleeper working in the bar", lambda: chip_state(driver, "sleeper") == "working", timeout=10)
+
+
+WORKTREE = os.path.join(HOME, "wt")
+
+
+def start_in_project(driver: Driver) -> str:
+    """Ctrl+N in the visible project tab, Enter on the account: the title of the new session, once
+    its first turn is over and its pane shows it."""
+    driver.press(CONTROL, "n")
+    wait_until("the accounts to start with", lambda: dialog_open(driver, "quick-launch"))
+    driver.press(ENTER)
+    wait_until("a session of the fake claude", lambda: len(fake_sessions()) == 1)
+    title = wait_until("the session in the bar", lambda: (chip_titles(driver) or [None])[0])
+    wait_until("the session open in a pane", lambda: (chip(driver, title) or ("", False))[1])
+    wait_until("its first turn over", lambda: fake_sessions()[0].get("detail") == "waiting for you", timeout=30)
+    return title
+
+
+# The terminal of the active pane of the visible tab: hidden tabs keep theirs in the page.
+ACTIVE_TERMINAL = "#panes .tab-page:not([hidden]) .pane.active .xterm-helper-textarea"
+
+
+def type_in_pane(driver: Driver, text: str) -> None:
+    terminal = wait_until("the pane's terminal", lambda: driver.find(ACTIVE_TERMINAL))
+    driver.type_into(terminal, text + ENTER)
+
+
+class ChangedFilesInARepository(Journey):
+    """Ctrl+Shift+G on a session started from Ctrl+N in a git project: a block for the folder it
+    started in, compared with the state kindric wrote down at its start, with its own commit and
+    its new file but not the commit of another session; a block for the worktree it went into,
+    since the branch was created; Enter shows a diff, Escape goes back, then closes."""
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        fresh_repository()
+        shutil.rmtree(WORKTREE, ignore_errors=True)
+        super().setUpClass()
+
+    def heads(self) -> list[str]:
+        return texts(self.driver, "#changes li.artifact-group")
+
+    def test_blocks_diff_and_back(self) -> None:
+        driver = self.driver
+        add_project(driver)
+        start_in_project(driver)
+
+        with open(os.path.join(PROJECT, "other.txt"), "w") as other:
+            other.write("written by another session\n")
+        git("add", "other.txt")
+        git("commit", "-q", "-m", "another session")
+        git("worktree", "add", "-q", "-b", "feature", WORKTREE)
+        type_in_pane(driver, "touch:notes.txt commit:add_notes touch:draft.txt cd:../wt touch:wt.txt work:1")
+        wait_until("the turn over", lambda: os.path.exists(os.path.join(WORKTREE, "wt.txt")) and fake_sessions()[0].get("detail") == "waiting for you", timeout=30)
+
+        driver.press(CONTROL, SHIFT, "g")
+        wait_until("the changes window", lambda: dialog_open(driver, "changes"))
+        heads = wait_until("a block per copy", lambda: self.heads() if len(self.heads()) == 2 else None)
+        self.assertTrue(heads[0].startswith(PROJECT + " · ") and heads[0].endswith(" · since the start"), heads)
+        self.assertEqual(heads[1], f"{WORKTREE} · feature · since the branch was created")
+        self.assertEqual(texts(driver, "#changes li.change .artifact-name"), ["draft.txt", "notes.txt", "wt.txt"])
+
+        driver.press(ENTER)
+        wait_until("the diff of draft.txt", lambda: "+written by" in driver.text(driver.find("#changes .changes-body")))
+        self.assertEqual(texts(driver, "#changes .changes-title"), [f"draft.txt · {PROJECT}"])
+        driver.press(ESCAPE)
+        wait_until("the list again", lambda: len(texts(driver, "#changes li.change")) == 3)
+        self.assertTrue(dialog_open(driver, "changes"))
+        driver.press(ESCAPE)
+        wait_until("the window closed", lambda: not dialog_open(driver, "changes"))
+
+    @classmethod
+    def tearDownClass(cls) -> None:
+        super().tearDownClass()
+        shutil.rmtree(WORKTREE, ignore_errors=True)
+
+
+def git_in(folder: str, *words: str) -> str:
+    done = subprocess.run(["git", *words], cwd=folder, check=True, capture_output=True, text=True, timeout=30)
+    return done.stdout
+
+
+def write(path: str, text: str) -> None:
+    with open(path, "w") as out:
+        out.write(text)
+
+
+def branch_exists(name: str) -> bool:
+    return subprocess.run(["git", "rev-parse", "--verify", "-q", f"refs/heads/{name}"], cwd=PROJECT, capture_output=True).returncode == 0
+
+
+class WorktreesWindow(Journey):
+    """Ctrl+Shift+B lists the worktrees of the project with their state. The main checkout, one
+    with uncommitted changes and one a session works in are refused, by the window and by the app
+    behind it; one not merged goes and its branch stays; one merged goes with its branch."""
+
+    TREES = os.path.join(PROJECT, ".claude/worktrees")
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        fresh_repository()
+        for name in ("done", "ahead", "dirty", "busy"):
+            git("worktree", "add", "-q", "-b", name, os.path.join(cls.TREES, name))
+        for name in ("done", "ahead"):
+            write(os.path.join(cls.TREES, name, f"{name}.txt"), f"{name}\n")
+            git_in(os.path.join(cls.TREES, name), "add", f"{name}.txt")
+            git_in(os.path.join(cls.TREES, name), "commit", "-q", "-m", name)
+        git("merge", "-q", "--ff-only", "done")
+        write(os.path.join(cls.TREES, "dirty", "README"), "changed\n")
+        super().setUpClass()
+
+    @classmethod
+    def before_app(cls) -> None:
+        subprocess.run(["kindric-accounts", "run", ACCOUNT, "--bg", "-n", "in-busy", "work in the worktree work:0"],
+                       cwd=os.path.join(cls.TREES, "busy"), check=True, capture_output=True, timeout=30)
+
+    def path(self, name: str) -> str:
+        return PROJECT if name == "main" else os.path.join(self.TREES, name)
+
+    def rows(self) -> dict[str, str]:
+        """Each worktree listed, by path, with the state shown."""
+        found: list[list[str]] = self.driver.script("""return [...document.querySelectorAll('#worktrees li.worktree')].map(
+          (row) => [row.title, row.querySelector('.worktree-state').textContent]);""")
+        return {str(path): str(state) for path, state in found}
+
+    def note(self) -> str:
+        return texts(self.driver, "#worktrees .worktrees-note")[0]
+
+    def choose(self, name: str) -> None:
+        """Up to the first row, then down to the worktree `name`."""
+        paths = list(self.rows())
+        for _ in paths:
+            self.driver.press("")
+        for _ in range(paths.index(self.path(name))):
+            self.driver.press(ARROW_DOWN)
+        wait_until(f"{name} chosen", lambda: texts(self.driver, "#worktrees li.worktree.selected") and
+                   self.driver.script("return document.querySelector('#worktrees li.worktree.selected').title") == self.path(name))
+
+    def refused(self, name: str, why: str) -> None:
+        self.choose(name)
+        self.driver.press(DELETE)
+        wait_until(f"{name} refused", lambda: why in self.note() or None)
+        self.assertTrue(os.path.isdir(self.path(name)), f"{name} removed")
+
+    def test_states_refusals_and_removals(self) -> None:
+        driver = self.driver
+        add_project(driver)
+        wait_until("the session in the worktree in the bar", lambda: chip_state(driver, "in-busy"))
+        driver.press(CONTROL, SHIFT, "b")
+        wait_until("the worktrees window", lambda: dialog_open(driver, "worktrees"))
+        rows = wait_until("every worktree", lambda: self.rows() if len(self.rows()) == 5 else None)
+        self.assertEqual(rows, {
+            PROJECT: "main checkout",
+            self.path("done"): "merged",
+            self.path("ahead"): "not merged · 1 commit ahead",
+            self.path("dirty"): "uncommitted changes",
+            self.path("busy"): "a session works here: in-busy",
+        })
+
+        self.refused("main", "the main checkout is never removed")
+        self.refused("dirty", "it has uncommitted changes")
+        self.refused("busy", "the session in-busy works in it")
+        # The app refuses too, whatever the page asks.
+        refusal = driver.script("""return window.__TAURI__.core.invoke('remove_worktree', { project: arguments[0], path: arguments[1] })
+          .then(() => 'removed', (error) => `${error}`);""", PROJECT, self.path("busy"))
+        self.assertEqual(refusal, "the session in-busy works in it")
+        self.assertTrue(os.path.isdir(self.path("busy")))
+
+        self.choose("ahead")
+        driver.press(DELETE)
+        wait_until("the question for ahead", lambda: "its branch ahead stays" in self.note() or None)
+        driver.press(ENTER)
+        wait_until("ahead removed, its branch kept", lambda: self.note().startswith("removed ahead; branch ahead kept") or None)
+        self.assertFalse(os.path.exists(self.path("ahead")))
+        self.assertTrue(branch_exists("ahead"))
+
+        wait_until("the list without ahead", lambda: self.path("ahead") not in self.rows() or None)
+        self.choose("done")
+        driver.press(DELETE)
+        wait_until("the question for done", lambda: "and its branch done" in self.note() or None)
+        driver.press(ENTER)
+        wait_until("done removed with its branch", lambda: self.note() == "removed done and its branch done" or None)
+        self.assertFalse(os.path.exists(self.path("done")))
+        self.assertFalse(branch_exists("done"))
+        wait_until("three left", lambda: sorted(self.rows()) == sorted([PROJECT, self.path("dirty"), self.path("busy")]) or None)
+
+
+class ImagesOfTheLastTurn(Journey):
+    """A turn seen ending that cites two images it made shows them in a band of the pane, drawn;
+    the next turn, which cites none, empties the band."""
+
+    started = [("painter", "draw image:shot.png image:plot.png work:4")]
+
+    BAND = "#panes .tab-page:not([hidden]) .pane.active .pane-images"
+
+    def drawn(self) -> list[list[Any]]:
+        """The images of the band: [alt, width the browser decoded] for each; [] when it is hidden."""
+        found: list[list[Any]] = self.driver.script("""const band = document.querySelector(arguments[0]);
+          if (!band || band.hidden) return [];
+          return [...band.querySelectorAll('img')].map((image) => [image.alt, image.naturalWidth]);""", self.BAND)
+        return found
+
+    def test_band_then_empty(self) -> None:
+        driver = self.driver
+        # kindric looks for images when it sees a turn end, not in a turn ended before it started.
+        wait_until("the turn seen working", lambda: chip_state(driver, "painter") == "working")
+        wait_until("the turn seen over", lambda: chip_state(driver, "painter") == "finished", timeout=30)
+        open_from_bar(driver, "painter")
+        drawn = wait_until("both images drawn", lambda: self.drawn() if len(self.drawn()) == 2 and all(width for _, width in self.drawn()) else None)
+        self.assertEqual(drawn, [["shot.png", 8], ["plot.png", 8]])
+
+        type_in_pane(driver, "now write text work:3")
+        wait_until("the next turn seen working", lambda: chip_state(driver, "painter") == "working")
+        wait_until("the next turn seen over", lambda: chip_state(driver, "painter") in ("waiting", "finished"), timeout=30)
+        time.sleep(1)
+        self.assertEqual(self.drawn(), [], "the band of the turn before")
+
+
+CLAUDE_HOME = os.path.join(HOME, ".claude")
+ARROW_UP = ""
+
+
+def environments(folder: str) -> list[tuple[str, list[str]]]:
+    """What the fake claude noted of each call in an account's folder: its first words, and which of
+    CLAUDE_CONFIG_DIR and the billing variables it had."""
+    try:
+        with open(os.path.join(folder, "fake/env.log")) as log:
+            lines = [line.rstrip("\n").split("\t") for line in log if line.strip()]
+    except OSError:
+        return []
+    # `--version` and `--help`, for the setup checklist, touch no account: they keep the environment.
+    return [(words, present.split()) for words, present in lines if words not in ("--version", "--help")]
+
+
+class DefaultAccount(Journey):
+    """Claude Code's own configuration, ~/.claude, logged in: the account `default`, first in the
+    Ctrl+N form. Its session starts, shows and stops through `claude` without CLAUDE_CONFIG_DIR, and
+    no call of claude, on any account, gets the billing variable the app has."""
+
+    @classmethod
+    def prepare(cls) -> None:
+        os.makedirs(os.path.join(CLAUDE_HOME, "fake"), exist_ok=True)
+        write(os.path.join(CLAUDE_HOME, "fake/logged-in"), "")
+
+    def test_default_without_config_dir_nor_billing(self) -> None:
+        driver = self.driver
+        self.assertIn("ANTHROPIC_API_KEY", os.environ, "the journey needs the billing variable of inside.sh")
+        driver.press(CONTROL, "n")
+        wait_until("the new session form", lambda: dialog_open(driver, "new-session"))
+        accounts_listed = wait_until("both accounts in the form", lambda: texts(driver, "#new-account .launch-list li") if len(texts(driver, "#new-account .launch-list li")) == 2 else None)
+        self.assertTrue(accounts_listed[0].startswith("default"), accounts_listed)
+        for _ in accounts_listed:
+            driver.press(ARROW_UP)
+        wait_until("default picked", lambda: texts(driver, "#new-account .launch-list li.selected")[0].startswith("default"))
+        directory = driver.find("#new-form input[name=directory]")
+        driver.clear(directory)
+        driver.type_into(directory, PROJECT)
+        driver.type_into(driver.find("#new-form input[name=name]"), "mine" + ENTER)
+        wait_until("the session open in a pane", lambda: (chip(driver, "mine") or ("", False))[1])
+        session = wait_until("the session in ~/.claude", lambda: next((s for s in sessions_of_folder(CLAUDE_HOME) if s.get("name") == "mine"), None))
+        self.assertEqual(session["cwd"], PROJECT)
+
+        driver.press(CONTROL, SHIFT, "k")
+        wait_until("the question before hiding", lambda: dialog_open(driver, "confirm-hide"))
+        driver.click(driver.find("#hide-form button[type=submit]"))
+        wait_until("the session stopped", lambda: not next(s for s in sessions_of_folder(CLAUDE_HOME) if s.get("name") == "mine").get("pid"))
+
+        calls = environments(CLAUDE_HOME)
+        for words in ("auth status", "agents --json", "--bg", "attach", "stop"):
+            self.assertTrue(any(words in called for called, _ in calls), f"no {words} on default: {calls}")
+        self.assertEqual([(called, present) for called, present in calls if present], [], "default given CLAUDE_CONFIG_DIR or billing")
+        work = environments(ACCOUNT_DIR)
+        self.assertTrue(work, "no call on the account work")
+        self.assertEqual([(called, present) for called, present in work if present != ["CLAUDE_CONFIG_DIR"]], [], "work given billing")
+
+
+def sessions_of_folder(folder: str) -> list[dict[str, Any]]:
+    try:
+        with open(os.path.join(folder, "fake/sessions.json")) as source:
+            sessions: list[dict[str, Any]] = json.load(source)
+            return sessions
+    except (OSError, ValueError):
+        return []
+
+
+class ProgressLine(Journey):
+    """What a session working for long last said it does, from its job file: in the tip of its
+    chip, the head of its pane and Ctrl+P. Once it is stopped, from the history of the job file."""
+
+    started = [("long-one", "a long task work:25")]
+    STEP = "step 1 of: a long task work:25"
+
+    def tip(self) -> str:
+        return str(self.driver.script("""const chip = [...document.querySelectorAll('#chips li.chip:not(.more)')].find(
+          (chip) => chip.querySelector('.chip-title').textContent === arguments[0]);
+          chip.dispatchEvent(new MouseEvent('mouseenter'));
+          const progress = document.querySelector('#tip .progress');
+          return progress ? progress.textContent : '';""", "long-one"))
+
+    def picker_progress(self) -> str | None:
+        found = self.driver.script("""const row = [...document.querySelectorAll('#picker-results li.session')].find(
+          (row) => row.querySelector('.name').textContent === arguments[0]);
+          const progress = row && row.querySelector('.progress');
+          return progress ? progress.textContent : null;""", "long-one")
+        return None if found is None else str(found)
+
+    def find(self) -> None:
+        driver = self.driver
+        driver.press(CONTROL, "p")
+        wait_until("the session finder", lambda: dialog_open(driver, "picker"))
+        driver.type_into(driver.find("#picker-query"), "long-one")
+
+    def test_tip_head_finder_then_history(self) -> None:
+        driver = self.driver
+        wait_until("the session at work", lambda: chip_state(driver, "long-one") == "working")
+        wait_until("its first step in the tip", lambda: self.tip() == self.STEP or None, timeout=20)
+        open_from_bar(driver, "long-one")
+        wait_until("its step in the pane's head", lambda: texts(driver, "#panes .tab-page:not([hidden]) .pane.active .head-progress") == [f"· {self.STEP}"] or None)
+        self.find()
+        wait_until("its step in the finder", lambda: self.picker_progress() == self.STEP or None)
+        driver.press(ESCAPE)
+        wait_until("the finder closed", lambda: not dialog_open(driver, "picker"))
+
+        driver.press(CONTROL, SHIFT, "k")
+        wait_until("the question before hiding", lambda: dialog_open(driver, "confirm-hide"))
+        driver.click(driver.find("#hide-form button[type=submit]"))
+        wait_until("the session stopped", lambda: not fake_running("long-one"))
+        self.find()
+        wait_until("its last step, from the history, in the finder", lambda: self.picker_progress() == self.STEP or None)
+
+
+VISIBLE_PANES = "#panes .tab-page:not([hidden]) .pane"
+
+
+class BackWhereLeft(Journey):
+    """Closed on a project tab with two panes, the app starts again on that tab, its active pane's
+    session open in a single pane (splits are not kept). The first visit of the other tab opens
+    the session it showed."""
+
+    started = [("first", "a task work:0"), ("second", "another task work:0")]
+
+    @classmethod
+    def before_app(cls) -> None:
+        subprocess.run(["kindric-accounts", "run", ACCOUNT, "--bg", "-n", "elsewhere", "out of the project work:0"],
+                       cwd=HOME, check=True, capture_output=True, timeout=30)
+
+    def shown(self) -> list[str]:
+        """The titles of the chips shown in a pane."""
+        chips: list[list[Any]] = self.driver.script(CHIPS)
+        return [str(title) for _, title, open_ in chips if open_]
+
+    def test_tab_and_active_session_again(self) -> None:
+        driver = self.driver
+        wait_until("the session of the other tab", lambda: chip_state(driver, "elsewhere"))
+        open_from_bar(driver, "elsewhere")
+        add_project(driver)
+        wait_until("both sessions in the project's bar", lambda: chip_state(driver, "first") and chip_state(driver, "second"))
+        open_from_bar(driver, "first")
+        driver.press(CONTROL, SHIFT, "d")
+        wait_until("two panes", lambda: len(driver.find_all(VISIBLE_PANES)) == 2)
+        open_from_bar(driver, "second")
+        self.assertEqual(sorted(self.shown()), ["first", "second"])
+
+        driver.quit()
+        os.remove(TRACE)
+        type(self).driver = driver = Driver.start(application())
+        wait_until("the page ready again", page_ready)
+        wait_until("the project tab, active", lambda: ("project", True) in tabs(driver) or None)
+        self.assertTrue(overview_hidden(driver), "started on the control center")
+        wait_until("the active pane's session open", lambda: self.shown() == ["second"] or None)
+        self.assertEqual(len(driver.find_all(VISIBLE_PANES)), 1, "the split kept")
+
+        driver.press(CONTROL, SHIFT, "1")
+        wait_until("the other tab", lambda: ("other", True) in tabs(driver) or None)
+        wait_until("its session open again", lambda: self.shown() == ["elsewhere"] or None)
+
+
+class SplitStepAndClose(Journey):
+    """Ctrl+Shift+D splits the active pane side by side when it is wider than tall, one above the
+    other otherwise; Ctrl+H and Ctrl+L go from pane to pane; a separator dragged keeps its place;
+    Ctrl+Shift+W closes a pane and its session keeps running."""
+
+    started = [("left", "a task work:0"), ("top", "a task work:0"), ("bottom", "a task work:0")]
+
+    def active_title(self) -> str:
+        return texts(self.driver, f"{VISIBLE_PANES}.active .head-title")[0]
+
+    def splits(self) -> list[str]:
+        """The splits of the visible tab, outer first: "row" side by side, "column" one above the other."""
+        found: list[str] = self.driver.script("""return [...document.querySelectorAll('#panes .tab-page:not([hidden]) .split')]
+          .map((split) => split.classList.contains('row') ? 'row' : 'column');""")
+        return [str(name) for name in found]
+
+    def left_share(self) -> float:
+        return float(self.driver.script("""const split = document.querySelector('#panes .tab-page:not([hidden]) .split.row');
+          return split.firstElementChild.getBoundingClientRect().width / split.getBoundingClientRect().width;"""))
+
+    def test_split_step_drag_close(self) -> None:
+        driver = self.driver
+        wait_until("the sessions in the bar", lambda: all(chip_state(driver, name) for name in ("left", "top", "bottom")))
+        open_from_bar(driver, "left")
+        driver.press(CONTROL, SHIFT, "d")
+        wait_until("two panes side by side", lambda: self.splits() == ["row"] or None)
+        open_from_bar(driver, "top")
+        driver.press(CONTROL, SHIFT, "d")
+        wait_until("the right pane cut in two, one above the other", lambda: self.splits() == ["row", "column"] or None)
+        open_from_bar(driver, "bottom")
+        self.assertEqual(len(driver.find_all(VISIBLE_PANES)), 3)
+
+        driver.press(CONTROL, "h")
+        wait_until("the previous pane", lambda: self.active_title() == "top" or None)
+        driver.press(CONTROL, "l")
+        wait_until("the next pane", lambda: self.active_title() == "bottom" or None)
+
+        self.assertAlmostEqual(self.left_share(), 0.5, delta=0.02)
+        divider = driver.find("#panes .tab-page:not([hidden]) .split.row > .divider")
+        driver.drag(divider, driver.find(f"{VISIBLE_PANES} .screen"))
+        share = wait_until("the separator moved", lambda: self.left_share() if self.left_share() < 0.4 else None)
+        driver.press(CONTROL, "l")
+        time.sleep(0.5)
+        self.assertAlmostEqual(self.left_share(), share, delta=0.02, msg="the separator went back")
+
+        for _ in range(3):
+            if self.active_title() == "bottom":
+                break
+            driver.press(CONTROL, "l")
+            time.sleep(0.2)
+        self.assertEqual(self.active_title(), "bottom")
+        driver.press(CONTROL, SHIFT, "w")
+        wait_until("two panes left", lambda: len(driver.find_all(VISIBLE_PANES)) == 2 or None)
+        self.assertEqual(self.splits(), ["row"])
+        wait_until("bottom no longer shown", lambda: (chip(driver, "bottom") or ("", True))[1] is False or None)
+        self.assertTrue(fake_running("bottom"), "the session stopped with its pane")
+
+
+class DoneInThePane(Journey):
+    """A session shown in a pane that is not the active one finishes its turn: its pane gets the
+    green border and "✓ done", until it is looked at. One whose turn ends on a question does not."""
+
+    started = [("worker", "a task work:8"), ("asker", "a task that asks work:8 ask:permission_prompt"), ("watched", "a task work:0")]
+
+    def marks(self) -> dict[str, tuple[bool, bool]]:
+        """For each pane of the visible tab, by its session: its border marked, its "done" shown."""
+        found: list[list[Any]] = self.driver.script("""return [...document.querySelectorAll(arguments[0])].map((pane) =>
+          [pane.querySelector('.head-title').textContent, pane.classList.contains('finished'), !pane.querySelector('.head-done').hidden]);""", VISIBLE_PANES)
+        return {str(title): (bool(border), bool(done)) for title, border, done in found}
+
+    def active_title(self) -> str:
+        return texts(self.driver, f"{VISIBLE_PANES}.active .head-title")[0]
+
+    def test_done_until_looked_at(self) -> None:
+        driver = self.driver
+        wait_until("the sessions in the bar", lambda: all(chip_state(driver, name) for name in ("worker", "asker", "watched")))
+        open_from_bar(driver, "worker")
+        driver.press(CONTROL, SHIFT, "d")
+        wait_until("two panes", lambda: len(driver.find_all(VISIBLE_PANES)) == 2)
+        open_from_bar(driver, "asker")
+        driver.press(CONTROL, SHIFT, "d")
+        wait_until("three panes", lambda: len(driver.find_all(VISIBLE_PANES)) == 3)
+        open_from_bar(driver, "watched")
+        self.assertEqual(self.marks(), {"worker": (False, False), "asker": (False, False), "watched": (False, False)})
+
+        wait_until("worker's turn over", lambda: chip_state(driver, "worker") == "finished", timeout=30)
+        wait_until("asker asking", lambda: chip_state(driver, "asker") == "asking", timeout=30)
+        wait_until("worker's pane marked done", lambda: self.marks()["worker"] == (True, True) or None)
+        self.assertEqual(self.marks()["asker"], (False, False), "a question marked done")
+
+        for _ in range(3):
+            if self.active_title() == "worker":
+                break
+            driver.press(CONTROL, "h")
+            time.sleep(0.2)
+        self.assertEqual(self.active_title(), "worker")
+        wait_until("the mark gone once looked at", lambda: self.marks()["worker"] == (False, False) or None)
+        self.assertNotEqual(chip_state(driver, "worker"), "finished")
+
+
+SETTINGS = os.path.join(HOME, ".local/share/kindric/settings.json")
+EMBER, PAPER = "#1a0e06", "#f7efe4"
+
+
+def background(driver: Driver) -> str:
+    return str(driver.script("return getComputedStyle(document.documentElement).getPropertyValue('--background').trim()"))
+
+
+class ShortcutChanged(Journey):
+    """The settings give "next theme" new keys: keys already taken are refused with the name of
+    their action; the new keys work, the old ones no longer do, F1 shows them, and they are kept
+    after a restart. "reset" gives the old keys back."""
+
+    def shortcut_row(self, help_text: str) -> str:
+        found = self.driver.script("""return [...document.querySelectorAll('#settings .shortcut')].find(
+          (row) => row.querySelector('.shortcut-help').textContent === arguments[0]);""", help_text)
+        if not isinstance(found, dict) or ELEMENT_KEY not in found:
+            raise AssertionError(f"no shortcut {help_text!r} in the settings")
+        return str(found[ELEMENT_KEY])
+
+    def keys_shown(self) -> str:
+        """The keys the settings show for "next theme"."""
+        return str(self.driver.script("return arguments[0].querySelector('kbd').textContent;", {ELEMENT_KEY: self.shortcut_row("next theme")}))
+
+    def press_in_row(self, label: str) -> None:
+        found = self.driver.script("""return [...arguments[0].querySelectorAll('.shortcut-actions button')].find((button) => button.textContent === arguments[1]);""",
+                                   {ELEMENT_KEY: self.shortcut_row("next theme")}, label)
+        if not isinstance(found, dict) or ELEMENT_KEY not in found:
+            raise AssertionError(f"no {label} on the row of next theme")
+        self.driver.click(str(found[ELEMENT_KEY]))
+
+    def open_shortcuts(self) -> None:
+        driver = self.driver
+        driver.press(CONTROL, ",")
+        wait_until("the settings", lambda: dialog_open(driver, "settings"))
+        click_text(driver, "#settings .settings-categories li", "shortcuts")
+        wait_until("the shortcuts", lambda: self.keys_shown())
+
+    def close_settings(self) -> None:
+        driver = self.driver
+        for _ in range(2):
+            if dialog_open(driver, "settings"):
+                driver.press(ESCAPE)
+                time.sleep(0.2)
+        wait_until("the settings closed", lambda: not dialog_open(driver, "settings"))
+
+    def test_change_refuse_keep_reset(self) -> None:
+        driver = self.driver
+        self.open_shortcuts()
+        self.assertEqual(self.keys_shown(), "Ctrl+Shift+E")
+        self.press_in_row("change")
+        wait_until("waiting for the keys", lambda: self.keys_shown() == "press keys…" or None)
+        driver.press(CONTROL, SHIFT, "k")
+        try:
+            wait_until("taken keys refused", lambda: texts(driver, "#settings .shortcuts-message")[0].startswith('Ctrl+Shift+K is already "stop and hide') or None)
+        except AssertionError as error:
+            focus = driver.script("const a = document.activeElement; return a ? `${a.tagName}.${a.className}` : 'none';")
+            raise AssertionError(f"{error}; message {texts(driver, '#settings .shortcuts-message')!r}, keys {self.keys_shown()!r}, focus {focus}") from error
+        driver.press(CONTROL, ALT, "t")
+        wait_until("the new keys", lambda: self.keys_shown() == "Ctrl+Alt+T" or None)
+        with open(SETTINGS) as source:
+            self.assertEqual(json.load(source).get("keys", {}).get("next-theme"), "ctrl+alt+t")
+        self.close_settings()
+
+        driver.press(CONTROL, SHIFT, "e")
+        time.sleep(0.5)
+        self.assertEqual(background(driver), EMBER, "the old keys still change the theme")
+        driver.press(CONTROL, ALT, "t")
+        wait_until("the next theme from the new keys", lambda: background(driver) == PAPER or None)
+        driver.press("")
+        wait_until("the help", lambda: dialog_open(driver, "help"))
+        helped = driver.script("""return [...document.querySelectorAll('#help kbd')].map((keys) => [keys.textContent, keys.nextElementSibling?.textContent]);""")
+        self.assertIn(["Ctrl+Alt+T", "next theme"], helped)
+        driver.press(ESCAPE)
+        wait_until("the help closed", lambda: not dialog_open(driver, "help"))
+
+        type(self).restart()
+        driver = self.driver
+        driver.press(CONTROL, ALT, "t")
+        wait_until("the new keys after a restart", lambda: background(driver) not in (EMBER, PAPER) or None)
+
+        self.open_shortcuts()
+        self.press_in_row("reset")
+        wait_until("the old keys back", lambda: self.keys_shown() == "Ctrl+Shift+E" or None)
+        self.close_settings()
+        driver.press(CONTROL, SHIFT, "e")
+        wait_until("the old keys working", lambda: background(driver) == EMBER or None)
+
+
+PROJECTS_FILE = os.path.join(HOME, ".local/share/kindric/projects.json")
+THEMES = os.path.join(CLAUDE_HOME, "themes")
+
+
+def project_themes() -> list[str | None]:
+    """The theme of each project of projects.json."""
+    try:
+        with open(PROJECTS_FILE) as source:
+            saved = json.load(source)
+    except (OSError, ValueError):
+        return []
+    projects = saved.get("projects", saved) if isinstance(saved, dict) else saved
+    return [project.get("theme") for project in projects]
+
+
+class ProjectTheme(Journey):
+    """Ctrl+Alt+E in a project tab goes through the themes for that project: its sessions' panes
+    show in it while the window keeps kindric's, Claude Code gets a theme of the project, a session
+    started there uses it, and after the last theme the project is back to kindric's."""
+
+    def pane_background(self) -> str:
+        return str(self.driver.script("return document.querySelector(arguments[0]).style.getPropertyValue('--background')", f"{VISIBLE_PANES}.active"))
+
+    def test_project_theme_then_back(self) -> None:
+        driver = self.driver
+        add_project(driver)
+        start_in_project(driver)
+        driver.press(CONTROL, ALT, "e")
+        wait_until("ember for the project", lambda: project_themes() == ["ember"] or None)
+        driver.press(CONTROL, ALT, "e")
+        wait_until("paper in the project's pane", lambda: self.pane_background() == PAPER or None)
+        self.assertEqual(background(driver), EMBER, "the window left kindric's theme")
+        self.assertEqual(project_themes(), ["paper"])
+        written = wait_until("Claude Code's theme of the project", lambda: [name for name in os.listdir(THEMES) if name.startswith("kindric-")] if os.path.isdir(THEMES) and any(name.startswith("kindric-") for name in os.listdir(THEMES)) else None)
+        self.assertEqual(len(written), 1, written)
+        theme = written[0].removesuffix(".json")
+        with open(os.path.join(THEMES, written[0])) as source:
+            self.assertTrue(str(json.load(source).get("base", "")).startswith("light"), "paper drawn dark")
+
+        driver.press(CONTROL, "n")
+        wait_until("the accounts to start with", lambda: dialog_open(driver, "quick-launch"))
+        driver.press(ENTER)
+        wait_until("a second session", lambda: len(fake_sessions()) == 2)
+        with open(settings_path(fake_sessions()[1])) as source:
+            self.assertIn(theme, source.read(), "the session started without the project's theme")
+
+        driver.press(CONTROL, ALT, "e")
+        wait_until("graphite for the project", lambda: project_themes() == ["graphite"] or None)
+        driver.press(CONTROL, ALT, "e")
+        wait_until("back to kindric's theme", lambda: project_themes() == [None] or None)
+        wait_until("the pane in kindric's theme", lambda: self.pane_background() == "" or None)
+
+
+def settings_path(session: dict[str, Any]) -> str:
+    args = [str(arg) for arg in session.get("args", [])]
+    if "--settings" not in args:
+        raise AssertionError(f"started without --settings: {args}")
+    return args[args.index("--settings") + 1]
+
+
+def trusted_by_account(directory: str) -> bool:
+    try:
+        with open(os.path.join(ACCOUNT_DIR, ".claude.json")) as source:
+            return bool(json.load(source).get("projects", {}).get(directory, {}).get("hasTrustDialogAccepted"))
+    except (OSError, ValueError):
+        return False
+
+
+class TrustAFolder(Journey):
+    """Ctrl+N in a folder the account never trusted: Claude Code refuses, the form offers "trust it";
+    Claude Code asks in the helper window, Down and Enter answer yes, and "done" starts the session."""
+
+    @classmethod
+    def prepare(cls) -> None:
+        os.makedirs(os.path.join(ACCOUNT_DIR, "fake"), exist_ok=True)
+        write(os.path.join(ACCOUNT_DIR, "fake/require-trust"), "")
+
+    def test_refused_trusted_started(self) -> None:
+        driver = self.driver
+        driver.press(CONTROL, "n")
+        wait_until("the new session form", lambda: dialog_open(driver, "new-session"))
+        directory = driver.find("#new-form input[name=directory]")
+        driver.clear(directory)
+        driver.type_into(directory, PROJECT)
+        driver.type_into(driver.find("#new-form input[name=name]"), "trusted" + ENTER)
+        wait_until("the refusal, with trust it", lambda: "trust it" in texts(driver, "#new-message button") or None)
+        self.assertIn("work has not trusted this folder yet.", texts(driver, "#new-message")[0])
+        self.assertEqual(fake_sessions(), [])
+
+        click_text(driver, "#new-message button", "trust it")
+        wait_until("the helper window", lambda: dialog_open(driver, "helper"))
+        # The terminal draws with WebGL: its text is not in the page. The pty keeps what is typed
+        # until the fake claude reads its answer.
+        driver.type_into(driver.find("#helper-screen .xterm-helper-textarea"), ARROW_DOWN + ENTER)
+        wait_until("the folder trusted", lambda: trusted_by_account(PROJECT))
+        driver.click(driver.find("#helper-done"))
+        wait_until("the helper closed", lambda: not dialog_open(driver, "helper"))
+        wait_until("the session started", lambda: chip_state(driver, "trusted"))
+        self.assertEqual(fake_sessions()[0]["cwd"], PROJECT)
+
+
+class AccountAddedThenRemoved(Journey):
+    """The settings add an account: kindric-accounts creates it and Claude Code's login runs in the
+    helper window. "remove" asks first, then takes it off the list and leaves its folder on disk."""
+
+    EXTRA_DIR = os.path.join(HOME, ".local/share/kindric-accounts/extra")
+
+    def account_names(self) -> list[str]:
+        return texts(self.driver, "#settings li.account .account-name")
+
+    def test_add_log_in_remove(self) -> None:
+        driver = self.driver
+        driver.press(CONTROL, ",")
+        wait_until("the settings", lambda: dialog_open(driver, "settings"))
+        click_text(driver, "#settings .settings-categories li", "accounts")
+        wait_until("the account work", lambda: self.account_names() == ["work"] or None)
+
+        driver.type_into(driver.find("#settings .accounts-add input[name=name]"), "extra" + ENTER)
+        wait_until("Claude Code's login of extra", lambda: os.path.exists(os.path.join(self.EXTRA_DIR, "fake/logins.log")))
+        if dialog_open(driver, "helper"):
+            driver.click(driver.find("#helper-done"))
+        wait_until("the login window closed", lambda: not dialog_open(driver, "helper"))
+        wait_until("extra listed", lambda: "extra" in self.account_names() or None)
+        self.assertIn("extra", accounts("list"))
+
+        found = driver.script("""const row = [...document.querySelectorAll('#settings li.account')].find((item) => item.querySelector('.account-name').textContent === 'extra');
+          return [...row.querySelectorAll('.account-actions button')].find((button) => button.textContent === 'remove');""")
+        driver.click(str(found[ELEMENT_KEY]))
+        question = wait_until("the question", lambda: texts(driver, "#settings .account-confirm") or None)
+        self.assertEqual(question, [f"take extra off the list? its folder stays: {self.EXTRA_DIR}."])
+        self.assertIn("extra", accounts("list"), "removed before the answer")
+        click_text(driver, "#settings li.account .account-actions button.danger", "remove")
+        wait_until("extra off the list", lambda: self.account_names() == ["work"] or None)
+        self.assertNotIn("extra", accounts("list"))
+        self.assertTrue(os.path.isdir(self.EXTRA_DIR), "the account's folder removed")
+
+
+class ControlCenterKeysAndPromptAll(Journey):
+    """In the control center: a paused session's "resume" opens it in a pane, started again;
+    "prompt all" asks to confirm, then types the same message into each session of the project;
+    Escape goes back to all projects, n picks the session that asks, a allows its permission,
+    Enter goes into the picked row's field, o opens the picked session in a pane."""
+
+    started = [("alpha", "first task work:0"), ("beta", "second task work:0"), ("dozing", "third task work:0")]
+
+    @classmethod
+    def before_app(cls) -> None:
+        wait_until("dozing's turn over", lambda: fake_detail("dozing") == "waiting for you", timeout=30)
+        accounts("run", ACCOUNT, "stop", next(s["id"] for s in fake_sessions() if s.get("name") == "dozing"))
+
+    def heading(self) -> list[str]:
+        return texts(self.driver, ".control-head h1")
+
+    def picked(self) -> list[str]:
+        return texts(self.driver, "article.control-row.selected .row-name")
+
+    def to_control_center(self) -> None:
+        self.driver.press(CONTROL, SHIFT, "0")
+        wait_until("the control center", lambda: not overview_hidden(self.driver))
+
+    def test_resume_prompt_all_and_keys(self) -> None:
+        driver = self.driver
+        carry_messages(driver)
+        add_project(driver)
+        self.to_control_center()
+        click_text(driver, ".control-project .control-project-name", "project")
+        wait_until("the project's rows", lambda: sorted(texts(driver, "article.control-row .row-name")) == ["alpha", "beta", "dozing"] or None)
+        # Paused not long ago, it comes right after what needs you (overview-board.js projectView).
+        self.assertEqual(texts(driver, "article.control-row .row-name")[0], "dozing")
+
+        click_text(driver, "article.control-row button.row-resume", "resume")
+        wait_until("dozing open in a pane", lambda: overview_hidden(driver) and (chip(driver, "dozing") or ("", False))[1] or None)
+        wait_until("dozing started again", lambda: fake_running("dozing"))
+
+        self.to_control_center()
+        wait_until("the project shown", lambda: self.heading() == ["project"] or None)
+        wait_until("prompt all for the three", lambda: "prompt all 3" in texts(driver, ".control-actions button") or None)
+        click_text(driver, ".control-actions button", "prompt all 3")
+        field = wait_until("the field for all", lambda: driver.find("[data-key='prompt/all']"))
+        driver.type_into(field, "together work:0" + ENTER)
+        wait_until("the question before sending", lambda: "send to 3 sessions?" in texts(driver, ".prompt-all button") or None)
+        self.assertEqual([name for name in ("alpha", "beta", "dozing") if "together work:0" in prompts_of(session_id_of(name))], [], "sent before the answer")
+        click_text(driver, ".prompt-all button", "send to 3 sessions?")
+        wait_until("the message typed into each", lambda: all("together work:0" in prompts_of(session_id_of(name)) for name in ("alpha", "beta", "dozing")) or None, timeout=30)
+
+        # The button pressed is gone with the redraw, the focus with it: a click in the page first.
+        driver.click(driver.find(".control-head h1"))
+        driver.press(ESCAPE)
+        wait_until("all projects", lambda: self.heading() == ["all projects"] or None)
+        hook = asked_by_hook(session_id_of("beta"), "Bash", {"command": "make", "description": "Build"})
+        wait_until("beta's permission in its row", lambda: any("make" in text for text in texts(driver, "article.control-row .request-command")) or None)
+        driver.press("n")
+        wait_until("beta picked", lambda: self.picked() == ["beta"] or None)
+        driver.press("a")
+        self.assertEqual(decision_of(hook)["behavior"], "allow")
+
+        driver.press(ENTER)
+        focused = wait_until("beta's field focused", lambda: driver.script("return document.activeElement?.dataset?.key ?? null"))
+        self.assertEqual(focused, f"prompt/{session_id_of('beta')}")
+        # Escape leaves the field for the row: o then opens its session.
+        driver.press(ESCAPE)
+        wait_until("out of the field", lambda: driver.script("return document.activeElement?.dataset?.key ?? null") != f"prompt/{session_id_of('beta')}" or None)
+        driver.press("o")
+        wait_until("beta open in a pane", lambda: overview_hidden(driver) and (chip(driver, "beta") or ("", False))[1] or None)
+
+
+def status_line(session_id: str, context: float, five_hour: float, seven_day: float) -> None:
+    """kindric-accounts' status line run by Claude Code for a session of the account, with the
+    figures Claude Code gives it."""
+    given = {"session_id": session_id, "context_window": {"used_percentage": context},
+             "rate_limits": {"five_hour": {"used_percentage": five_hour, "resets_at": time.time() + 3600},
+                             "seven_day": {"used_percentage": seven_day, "resets_at": time.time() + 86400}}}
+    done = subprocess.run(["kindric-accounts", "statusline"], input=json.dumps(given), capture_output=True, text=True, timeout=30,
+                          cwd=PROJECT, env=dict(os.environ, CLAUDE_CONFIG_DIR=ACCOUNT_DIR))
+    if done.returncode != 0:
+        raise AssertionError(f"the status line exited {done.returncode}: {done.stderr.strip()}")
+
+
+class ControlCenterFigures(Journey):
+    """What the status line wrote down shows in the control center: the account's 5 h and 7 day
+    limits, framed past 80 %, with when the 5 h window starts again, and how full each session's
+    context is. A row counts the files its session kept for the user, the new ones too; a click
+    opens the artifacts window, after which none is new."""
+
+    started = [("alpha", "make touch:a.txt touch:b.txt work:0"), ("beta", "rest work:0")]
+
+    def cell(self, name: str, css: str) -> str:
+        found = self.driver.script("""const row = [...document.querySelectorAll('article.control-row')].find((row) => row.querySelector('.row-name').textContent === arguments[0]);
+          const cell = row && row.querySelector(arguments[1]);
+          return cell ? cell.textContent : null;""", name, css)
+        return "" if found is None else str(found)
+
+    def test_limits_context_and_kept(self) -> None:
+        driver = self.driver
+        carry_messages(driver)
+        add_project(driver)
+        wait_until("alpha's files", lambda: all(os.path.exists(os.path.join(PROJECT, name)) for name in ("a.txt", "b.txt")))
+        alpha = session_id_of("alpha")
+        status_line(alpha, 42.4, 85, 30)
+        for name in ("a.txt", "b.txt"):
+            mcp_call(alpha, "keep_artifact", {"path": name, "for": "user"})
+
+        driver.press(CONTROL, SHIFT, "0")
+        wait_until("the control center", lambda: not overview_hidden(driver))
+        click_text(driver, ".control-project .control-project-name", "project")
+        wait_until("the account's limits", lambda: texts(driver, ".account-card .account-percent") == ["85%", "30%"] or None)
+        self.assertTrue(driver.script("return document.querySelector('.account-card').classList.contains('hot')"), "past 80 % and not framed")
+        self.assertTrue(any(note.startswith("5h resets at ") for note in texts(driver, ".account-card .account-note")))
+        wait_until("alpha's context", lambda: self.cell("alpha", ".row-ctx") == "ctx42%" or None)
+        self.assertEqual(self.cell("beta", ".row-ctx"), "ctx—")
+
+        wait_until("alpha's kept files, new", lambda: self.cell("alpha", ".row-kept") == "2 kept · 2 new" or None)
+        self.assertEqual(self.cell("beta", ".row-kept"), "nothing kept")
+        found = driver.script("""return [...document.querySelectorAll('article.control-row')].find((row) => row.querySelector('.row-name').textContent === 'alpha').querySelector('.row-kept');""")
+        driver.click(str(found[ELEMENT_KEY]))
+        wait_until("the artifacts window", lambda: dialog_open(driver, "artifacts"))
+        driver.press(ESCAPE)
+        wait_until("the artifacts window closed", lambda: not dialog_open(driver, "artifacts"))
+        wait_until("none new once seen", lambda: self.cell("alpha", ".row-kept") == "2 kept" or None)
+
+
 SECOND_PROJECT = os.path.join(HOME, "second")
 THIRD_PROJECT = os.path.join(HOME, "third")
 
@@ -1074,6 +2001,390 @@ def add_project_at(driver: Driver, directory: str) -> None:
     driver.click(driver.find("#project-form button[type=submit]"))
     name = os.path.basename(directory)
     wait_until(f"the tab {name}, active", lambda: (name, True) in tabs(driver))
+
+
+class NestedProjects(Journey):
+    """A project inside another: a session working in the inner folder, or below it, belongs to the
+    inner project's tab; one in the outer folder stays in the outer tab."""
+
+    INNER = os.path.join(PROJECT, "inner")
+
+    @classmethod
+    def before_app(cls) -> None:
+        os.makedirs(os.path.join(cls.INNER, "deep"), exist_ok=True)
+        for name, folder in (("outer-one", PROJECT), ("inner-one", cls.INNER), ("deep-one", os.path.join(cls.INNER, "deep"))):
+            done = subprocess.run(["kindric-accounts", "run", ACCOUNT, "--bg", "-n", name, "a task work:0"], cwd=folder, capture_output=True, text=True, timeout=30)
+            if done.returncode != 0:
+                raise AssertionError(f"{name} not started in {folder}: {done.stderr.strip()}")
+
+    def test_deepest_project_wins(self) -> None:
+        driver = self.driver
+        wait_until("the sessions in the bar", lambda: sorted(chip_titles(driver)) == ["deep-one", "inner-one", "outer-one"] or None)
+        add_project_at(driver, PROJECT)
+        add_project_at(driver, self.INNER)
+        wait_until("the inner tab's sessions", lambda: sorted(chip_titles(driver)) == ["deep-one", "inner-one"] or None)
+        driver.press(CONTROL, SHIFT, "h")
+        wait_until("the outer tab", lambda: ("project", True) in tabs(driver) or None)
+        wait_until("the outer tab's session", lambda: chip_titles(driver) == ["outer-one"] or None)
+
+
+def stop_hook(command: str, session: dict[str, Any], stop_hook_active: bool = False) -> str:
+    """What the Stop hook `kindric <command>` answers Claude Code at the end of the session's turn."""
+    folder = re.sub(r"[/.]", "-", str(session["cwd"]))
+    given = {"hook_event_name": "Stop", "session_id": session["sessionId"], "cwd": session["cwd"], "stop_hook_active": stop_hook_active,
+             "transcript_path": os.path.join(ACCOUNT_DIR, "projects", folder, f"{session['sessionId']}.jsonl")}
+    done = subprocess.run(["kindric", command], input=json.dumps(given), capture_output=True, text=True, timeout=30)
+    return done.stdout.strip()
+
+
+class HooksOfTheTurn(Journey):
+    """A session started by kindric gets the hooks `overview-start` (SessionStart), which tells it to
+    ask with `kindric ask`, and `artifact-check` (Stop): a turn that made an image and kept none is
+    asked once to keep it; a turn that kept it, or the second stop of a turn, is let go."""
+
+    started = [("drawer", "draw image:logo.png work:0")]
+
+    def test_overview_start_and_artifact_check(self) -> None:
+        wait_until("the turn over", lambda: fake_detail("drawer") == "waiting for you", timeout=30)
+        session = next(s for s in fake_sessions() if s.get("name") == "drawer")
+        hooks = hook_commands(settings_of(session))
+        self.assertTrue(any(command.endswith("overview-start") for command in hooks.get("SessionStart", [])), hooks)
+        self.assertTrue(any(command.endswith("artifact-check") for command in hooks.get("Stop", [])), hooks)
+        started = subprocess.run(["kindric", "overview-start"], capture_output=True, text=True, timeout=30)
+        self.assertIn('kindric ask "<question>" "<context>"', started.stdout)
+
+        answer = json.loads(stop_hook("artifact-check", session))
+        self.assertEqual(answer["decision"], "block")
+        self.assertIn("logo.png", answer["reason"])
+        self.assertEqual(stop_hook("artifact-check", session, stop_hook_active=True), "", "asked twice in a turn")
+
+        attached = subprocess.run(["kindric-accounts", "run", ACCOUNT, "attach", session["id"]], input="draw again image:logo2.png keep:logo2.png work:0\n",
+                                  cwd=PROJECT, capture_output=True, text=True, timeout=30)
+        self.assertEqual(attached.returncode, 0, attached.stderr)
+        wait_until("the second turn over", lambda: len(prompts_of(session["sessionId"])) == 2 and fake_detail("drawer") == "waiting for you", timeout=30)
+        self.assertEqual(stop_hook("artifact-check", session), "", "asked although the turn kept its image")
+
+
+def tab_button(driver: Driver, name: str) -> str:
+    found = driver.script("""return [...document.querySelectorAll('#tabs button.tab')].find((tab) => tab.querySelector('.tab-name').textContent === arguments[0]);""", name)
+    if not isinstance(found, dict) or ELEMENT_KEY not in found:
+        raise AssertionError(f"no tab {name}")
+    return str(found[ELEMENT_KEY])
+
+
+class TabMovedByMouse(Journey):
+    """A project tab dragged along the bar takes its new place, which "other" never leaves, and
+    keeps it after a restart."""
+
+    SECOND = os.path.join(HOME, "second")
+
+    def names(self) -> list[str]:
+        return [name for name, _ in tabs(self.driver)]
+
+    def test_drag_then_kept(self) -> None:
+        driver = self.driver
+        os.makedirs(self.SECOND, exist_ok=True)
+        add_project_at(driver, PROJECT)
+        add_project_at(driver, self.SECOND)
+        start = self.names()
+        self.assertEqual(start[-3:], ["other", "project", "second"])
+
+        driver.drag(tab_button(driver, "second"), tab_button(driver, "other"))
+        wait_until("second before project", lambda: self.names()[-3:] == ["other", "second", "project"] or None)
+        type(self).restart()
+        wait_until("the order after a restart", lambda: self.names()[-3:] == ["other", "second", "project"] or None)
+
+
+class AltKeysAndAnotherTerminal(Journey):
+    """A session in a terminal of its own shows last, with its own mark, and cannot be opened:
+    Alt+n on its chip opens nothing, and Alt+L and Alt+H go round the others without it."""
+
+    started = [("one", "a task work:0"), ("two", "a task work:0")]
+
+    @classmethod
+    def before_app(cls) -> None:
+        subprocess.run(["kindric-accounts", "run", ACCOUNT, "--bg", "-n", "term", "typing in a terminal work:300"], cwd=PROJECT,
+                       check=True, capture_output=True, timeout=30, env=dict(os.environ, FAKE_INTERACTIVE="1"))
+
+    def opened(self) -> list[str]:
+        chips: list[list[Any]] = self.driver.script(CHIPS)
+        return [str(title) for _, title, shown in chips if shown]
+
+    def test_numbers_steps_and_elsewhere(self) -> None:
+        driver = self.driver
+        wait_until("three chips", lambda: len(chip_titles(driver)) == 3 or None)
+        wait_until("one and two at rest", lambda: chip_state(driver, "one") == "waiting" and chip_state(driver, "two") == "waiting" or None, timeout=30)
+        titles = chip_titles(driver)
+        self.assertEqual(titles[-1], "term", "the session of another terminal not last")
+        self.assertEqual(chip_state(driver, "term"), "elsewhere")
+        first, second = titles[0], titles[1]
+
+        driver.press(ALT, "2")
+        wait_until("chip 2 open", lambda: self.opened() == [second] or None)
+        driver.press(ALT, "3")
+        time.sleep(1)
+        self.assertEqual(self.opened(), [second], "the session of another terminal opened")
+        driver.press(ALT, "l")
+        wait_until("Alt+L round to chip 1, over the other terminal", lambda: self.opened() == [first] or None)
+        driver.press(ALT, "h")
+        wait_until("Alt+H round to chip 2", lambda: self.opened() == [second] or None)
+        driver.press(ALT, "1")
+        wait_until("chip 1 open", lambda: self.opened() == [first] or None)
+
+
+class OldClaudeCodeWarned(Journey):
+    """F1 lists what is left to set up: a Claude Code older than the one kindric was tested with
+    gets a warning and the command that updates it, then every shortcut."""
+
+    @classmethod
+    def prepare(cls) -> None:
+        os.makedirs(os.path.join(CLAUDE_HOME, "fake"), exist_ok=True)
+        write(os.path.join(CLAUDE_HOME, "fake/version"), "2.1.300")
+
+    def test_warning_in_f1(self) -> None:
+        driver = self.driver
+        driver.press("")
+        wait_until("the help", lambda: dialog_open(driver, "help"))
+        checks = wait_until("Claude Code's line", lambda: [found for found in driver.script("""return [...document.querySelectorAll('#help li.check')].map(
+          (item) => [item.querySelector('.check-state').textContent, item.querySelector('.check-text').textContent,
+                     [...item.querySelectorAll('.check-copy code')].map((node) => node.textContent)]);""") if str(found[1]).startswith("Claude Code")] or None)
+        state, text, copies = checks[0]
+        self.assertEqual(state, "warning")
+        self.assertTrue(str(text).startswith("Claude Code 2.1.300"), text)
+        self.assertEqual(copies, ["claude update"])
+        self.assertTrue(driver.find_all("#help kbd"), "the shortcuts after the list")
+
+
+class DirectoryFieldCompletion(Journey):
+    """The directory field of Ctrl+Shift+T lists the folders in use before anything is typed, then
+    the folders that can follow what is typed, case ignored, hidden ones only after a dot; Tab
+    completes, Down and Enter take one."""
+
+    WORK = os.path.join(HOME, "work")
+    # How the field writes it: the home folder as ~.
+    SHOWN = "~/work"
+
+    @classmethod
+    def prepare(cls) -> None:
+        shutil.rmtree(cls.WORK, ignore_errors=True)
+        for folder in ("Alpha/sub", "beta", ".hidden", "known"):
+            os.makedirs(os.path.join(cls.WORK, folder))
+
+    @classmethod
+    def before_app(cls) -> None:
+        subprocess.run(["kindric-accounts", "run", ACCOUNT, "--bg", "-n", "in-known", "a task work:0"], cwd=os.path.join(cls.WORK, "known"),
+                       check=True, capture_output=True, timeout=30)
+
+    def suggestions(self) -> list[str]:
+        return [item.rstrip("/") for item in texts(self.driver, "#new-project .suggestions li")]
+
+    def value(self) -> str:
+        return str(self.driver.script("return document.querySelector('#project-form input[name=directory]').value")).rstrip("/")
+
+    def test_known_then_typed_tab_and_enter(self) -> None:
+        driver = self.driver
+        wait_until("the session in the bar", lambda: chip_state(driver, "in-known"))
+        driver.press(CONTROL, SHIFT, "t")
+        wait_until("the project form", lambda: dialog_open(driver, "new-project"))
+        field = driver.find("#project-form input[name=directory]")
+        wait_until("the folders in use", lambda: f"{self.SHOWN}/known" in self.suggestions() or None)
+
+        driver.clear(field)
+        driver.type_into(field, f"{self.SHOWN}/a")
+        wait_until("the folders that follow, case ignored", lambda: self.suggestions() == [f"{self.SHOWN}/Alpha"] or None)
+        driver.type_into(field, TAB)
+        wait_until("completed by Tab", lambda: self.value() == f"{self.SHOWN}/Alpha" or None)
+        wait_until("its own folders next", lambda: self.suggestions() == [f"{self.SHOWN}/Alpha/sub"] or None)
+
+        driver.clear(field)
+        driver.type_into(field, f"{self.SHOWN}/")
+        wait_until("the folders of work, no hidden one", lambda: sorted(self.suggestions()) == sorted(f"{self.SHOWN}/{name}" for name in ("Alpha", "beta", "known")) or None)
+        driver.type_into(field, ".")
+        wait_until("the hidden one after a dot", lambda: self.suggestions() == [f"{self.SHOWN}/.hidden"] or None)
+        driver.type_into(field, ARROW_DOWN + ENTER)
+        wait_until("taken by Down and Enter", lambda: self.value() == f"{self.SHOWN}/.hidden" or None)
+        self.assertTrue(dialog_open(driver, "new-project"), "Enter on a suggestion submitted the form")
+
+
+class CopyAndPaste(Journey):
+    """Text selected with the mouse in a pane, Ctrl+Shift+C copies it; Ctrl+Shift+V pastes it into
+    the session of the pane, as one block, and Enter sends it."""
+
+    started = [("pasted", "a task work:0")]
+
+    def select_first_line(self) -> None:
+        """Presses the mouse at the start of the pane's first line and lets go at its end."""
+        screen = self.driver.find(f"{VISIBLE_PANES}.active .xterm-screen")
+        box = self.driver.script("const box = arguments[0].getBoundingClientRect(); return [box.width, box.height];", {ELEMENT_KEY: screen})
+        width, height = float(box[0]), float(box[1])
+        origin = {ELEMENT_KEY: screen}
+        top = int(-height / 2 + 6)
+        moves = [{"type": "pointerMove", "origin": origin, "x": int(-width / 2 + 2), "y": top}, {"type": "pointerDown", "button": 0},
+                 {"type": "pointerMove", "origin": origin, "x": int(width / 2 - 4), "y": top, "duration": 200}, {"type": "pointerUp", "button": 0}]
+        self.driver._command("POST", "/actions", {"actions": [{"type": "pointer", "id": "mouse", "parameters": {"pointerType": "mouse"}, "actions": moves}]})
+        self.driver._command("DELETE", "/actions")
+
+    def test_select_copy_paste(self) -> None:
+        driver = self.driver
+        wait_until("the turn over", lambda: fake_detail("pasted") == "waiting for you", timeout=30)
+        open_from_bar(driver, "pasted")
+        time.sleep(1)
+        self.select_first_line()
+        driver.press(CONTROL, SHIFT, "c")
+        time.sleep(0.5)
+        self.assertNotIn("cannot copy", driver.text(driver.find("#status")))
+        driver.press(CONTROL, SHIFT, "v")
+        time.sleep(0.5)
+        self.assertNotIn("cannot paste", driver.text(driver.find("#status")))
+        type_in_pane(driver, "")
+        session = session_id_of("pasted")
+        last = wait_until("the pasted line sent as a turn", lambda: prompts_of(session)[1:] or None, timeout=15)
+        self.assertEqual(last[-1], f"fake claude · pasted · {PROJECT}")
+
+
+class AwayBackAndDone(Journey):
+    """Ctrl+Shift+Y with minutes: the pane's head says until when, and the hook keeps the session
+    working. Again with 0, the form's proposal: back, the session may stop. Away once more, then
+    the session says `kindric away done`: it may stop, and the head no longer says away."""
+
+    started = [("helper", "a task work:0")]
+
+    def head_away(self) -> str:
+        return texts(self.driver, f"{VISIBLE_PANES}.active .head-away")[0]
+
+    def away_for(self, minutes: str | None) -> None:
+        """Ctrl+Shift+Y, then `minutes` typed, or the form's proposal kept with None."""
+        driver = self.driver
+        driver.press(CONTROL, SHIFT, "y")
+        wait_until("the away form", lambda: dialog_open(driver, "away"))
+        field = driver.find("#away-form input[name=minutes]")
+        if minutes is not None:
+            driver.clear(field)
+            driver.type_into(field, minutes)
+        driver.click(driver.find("#away-form button[type=submit]"))
+        wait_until("the form closed", lambda: not dialog_open(driver, "away"))
+
+    def test_away_back_done(self) -> None:
+        driver = self.driver
+        wait_until("the turn over", lambda: fake_detail("helper") == "waiting for you", timeout=30)
+        open_from_bar(driver, "helper")
+        session = session_id_of("helper")
+
+        self.away_for("30")
+        wait_until("away in the pane's head", lambda: self.head_away().startswith("· away until ") or None)
+        self.assertIn('"decision":"block"', away_hook("Stop", session))
+
+        driver.press(CONTROL, SHIFT, "y")
+        wait_until("the away form", lambda: dialog_open(driver, "away"))
+        self.assertEqual(driver.script("return document.querySelector('#away-form input[name=minutes]').value"), "0", "back not proposed")
+        driver.press(ESCAPE)
+        wait_until("the form closed", lambda: not dialog_open(driver, "away"))
+        self.away_for("0")
+        wait_until("back, no longer away in the head", lambda: self.head_away() == "" or None)
+        self.assertEqual(away_hook("Stop", session), "", "still kept working once back")
+
+        self.away_for("60")
+        wait_until("away again", lambda: self.head_away().startswith("· away until ") or None)
+        done = subprocess.run(["kindric", "away", "done", session], capture_output=True, text=True, timeout=30)
+        self.assertEqual(done.returncode, 0, done.stderr)
+        self.assertEqual(away_hook("Stop", session), "", "still kept working after away done")
+        wait_until("no longer away in the head", lambda: self.head_away() == "" or None, timeout=30)
+
+
+class MessagesFromTheChipBadge(Journey):
+    """A click on the unread count of a chip shows that session's messages, without opening the
+    session in a pane, and reads nothing: the count stays."""
+
+    started = [("writer", "write work:0"), ("reader", "read work:0")]
+
+    def test_badge_click(self) -> None:
+        driver = self.driver
+        wait_until("both sessions in the bar", lambda: chip_state(driver, "writer") and chip_state(driver, "reader"))
+        mcp_call(session_id_of("writer"), "send_message", {"to": "reader", "text": "tests are green"})
+        wait_until("the unread count on reader", lambda: chip_badge(driver, "reader") == "1" or None)
+        badge = driver.script("""return [...document.querySelectorAll('#chips li.chip:not(.more)')].find(
+          (chip) => chip.querySelector('.chip-title').textContent === 'reader').querySelector('.badge');""")
+        driver.click(str(badge[ELEMENT_KEY]))
+        wait_until("the messages window", lambda: dialog_open(driver, "messages"))
+        wait_until("reader's message in it", lambda: "tests are green" in driver.text(driver.find("#messages-list")) or None)
+        self.assertFalse((chip(driver, "reader") or ("", True))[1], "reader opened in a pane")
+        driver.press(ESCAPE)
+        wait_until("the window closed", lambda: not dialog_open(driver, "messages"))
+        self.assertEqual(chip_badge(driver, "reader"), "1", "the message marked read")
+
+
+class AtlasKeysAndSearch(Journey):
+    """The memory atlas by the keyboard: an arrow picks the project, Enter goes in, Escape comes
+    back; typed letters search the memory, Enter goes to the first file found and shows it, and
+    Escape goes back up to the whole map. WebKit's driver drops its connection when it sends keys
+    while the atlas draws (a frame takes 60 to 100 ms under Xvfb): the keys are sent from the page."""
+
+    @classmethod
+    def prepare(cls) -> None:
+        AtlasZoomWithCtrlWheel.prepare()
+
+    def caption(self) -> str:
+        return str(self.driver.script("return document.querySelector('#atlas .atlas-caption').textContent"))
+
+    def key(self, name: str, target: str = "#atlas") -> None:
+        self.driver.script("""document.querySelector(arguments[1]).dispatchEvent(new KeyboardEvent('keydown', { key: arguments[0], bubbles: true, cancelable: true }));""", name, target)
+
+    def test_keys_search_and_back(self) -> None:
+        driver = self.driver
+        driver.press(CONTROL, ",")
+        wait_until("the settings", lambda: dialog_open(driver, "settings"))
+        click_text(driver, "#settings .settings-categories li", "memory")
+        driver.click(driver.find("#settings .memory-atlas-open"))
+        wait_until("the atlas", lambda: dialog_open(driver, "atlas"))
+        wait_until("the memory read", lambda: "2 files" in str(driver.script("return document.querySelector('#atlas .atlas-cartouche-count').textContent")) or None)
+
+        self.key("ArrowRight")
+        # The caption names what the arrow picked instead of the hints.
+        wait_until("something picked", lambda: not self.caption().startswith("type to search") or None)
+        self.key("Enter")
+        wait_until("one level down", lambda: self.caption().startswith("click a ") or None)
+        self.key("Escape")
+        wait_until("the whole map again", lambda: self.caption().startswith("type to search") or None)
+
+        for letter in "chose":
+            self.key(letter)
+        wait_until("one file found", lambda: "1 files hold “chose”" in self.caption() or None)
+        self.key("Enter", "#atlas .atlas-search")
+        wait_until("the file shown", lambda: "we chose" in str(driver.script("return document.querySelector('#atlas .atlas-note').textContent")) or None)
+        self.assertTrue(self.caption().startswith("esc comes back"), self.caption())
+        for _ in range(4):
+            self.key("Escape")
+            time.sleep(0.3)
+        wait_until("the whole map, the search gone", lambda: self.caption() == "type to search · drag or two fingers sideways to turn · pinch or wheel in and out · click a project · esc closes" or None)
+
+    @classmethod
+    def tearDownClass(cls) -> None:
+        super().tearDownClass()
+        shutil.rmtree(MEMORY, ignore_errors=True)
+
+
+class SignalWithoutLayerShell(Journey):
+    """`kindric-desktop signal` on a screen without Wayland's layer shell (X here): `on` says it
+    cannot and exits with 1, `off` with nothing shown does nothing and exits with 0, a wrong
+    command line exits with 2."""
+
+    def signal(self, *words: str) -> subprocess.CompletedProcess[str]:
+        # A Linux desktop always has XDG_RUNTIME_DIR, where the signal keeps its file; the image has none.
+        runtime = os.path.join(HOME, "runtime")
+        os.makedirs(runtime, mode=0o700, exist_ok=True)
+        environment = {name: value for name, value in os.environ.items() if name != "WAYLAND_DISPLAY"}
+        environment["XDG_RUNTIME_DIR"] = runtime
+        return subprocess.run([application(), "signal", *words], capture_output=True, text=True, timeout=15, env=environment)
+
+    def test_refused_off_and_usage(self) -> None:
+        on = self.signal("on")
+        self.assertEqual(on.returncode, 1, on.stderr)
+        self.assertTrue(on.stderr.startswith("kindric-desktop: "), on.stderr)
+        off = self.signal("off")
+        self.assertEqual((off.returncode, off.stderr), (0, ""))
+        wrong = self.signal("blink")
+        self.assertEqual(wrong.returncode, 2, wrong.stderr)
+
 
 
 def shown_tab(driver: Driver) -> str:
