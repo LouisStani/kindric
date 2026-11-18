@@ -1444,5 +1444,51 @@ def sessions_of_folder(folder: str) -> list[dict[str, Any]]:
         return []
 
 
+class ProgressLine(Journey):
+    """What a session working for long last said it does, from its job file: in the tip of its
+    chip, the head of its pane and Ctrl+P. Once it is stopped, from the history of the job file."""
+
+    started = [("long-one", "a long task work:25")]
+    STEP = "step 1 of: a long task work:25"
+
+    def tip(self) -> str:
+        return str(self.driver.script("""const chip = [...document.querySelectorAll('#chips li.chip:not(.more)')].find(
+          (chip) => chip.querySelector('.chip-title').textContent === arguments[0]);
+          chip.dispatchEvent(new MouseEvent('mouseenter'));
+          const progress = document.querySelector('#tip .progress');
+          return progress ? progress.textContent : '';""", "long-one"))
+
+    def picker_progress(self) -> str | None:
+        found = self.driver.script("""const row = [...document.querySelectorAll('#picker-results li.session')].find(
+          (row) => row.querySelector('.name').textContent === arguments[0]);
+          const progress = row && row.querySelector('.progress');
+          return progress ? progress.textContent : null;""", "long-one")
+        return None if found is None else str(found)
+
+    def find(self) -> None:
+        driver = self.driver
+        driver.press(CONTROL, "p")
+        wait_until("the session finder", lambda: dialog_open(driver, "picker"))
+        driver.type_into(driver.find("#picker-query"), "long-one")
+
+    def test_tip_head_finder_then_history(self) -> None:
+        driver = self.driver
+        wait_until("the session at work", lambda: chip_state(driver, "long-one") == "working")
+        wait_until("its first step in the tip", lambda: self.tip() == self.STEP or None, timeout=20)
+        open_from_bar(driver, "long-one")
+        wait_until("its step in the pane's head", lambda: texts(driver, "#panes .tab-page:not([hidden]) .pane.active .head-progress") == [f"· {self.STEP}"] or None)
+        self.find()
+        wait_until("its step in the finder", lambda: self.picker_progress() == self.STEP or None)
+        driver.press(ESCAPE)
+        wait_until("the finder closed", lambda: not dialog_open(driver, "picker"))
+
+        driver.press(CONTROL, SHIFT, "k")
+        wait_until("the question before hiding", lambda: dialog_open(driver, "confirm-hide"))
+        driver.click(driver.find("#hide-form button[type=submit]"))
+        wait_until("the session stopped", lambda: not fake_running("long-one"))
+        self.find()
+        wait_until("its last step, from the history, in the finder", lambda: self.picker_progress() == self.STEP or None)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

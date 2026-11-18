@@ -28,7 +28,8 @@ and writes the files kindric reads, in the shapes Claude Code 2.1.323 gives, wit
 Options kindric-accounts adds (--settings, --mcp-config=…, --append-system-prompt-file …) are
 ignored, but a session keeps the words it was started with ("args"). Each call notes in
 fake/env.log whether it had CLAUDE_CONFIG_DIR and the billing variables. Everything lives in the
-account's folder: fake/sessions.json, sessions/<pid>.json, jobs/<id>/state.json, and the transcript
+account's folder: fake/sessions.json, sessions/<pid>.json, jobs/<id>/state.json and its history
+jobs/<id>/timeline.jsonl, and the transcript
 projects/<folder>/<session id>.jsonl, a prompt and an answer per turn.
 """
 import json
@@ -119,11 +120,19 @@ def set_state(session_id, status, state, detail, waiting_for=None):
             process["waitingFor"] = waiting_for
         write_json(os.path.join(config_dir(), "sessions", f"{session['pid']}.json"), process)
     tempo = {"busy": "active", "waiting": "blocked"}.get(status, "idle")
-    write_json(os.path.join(config_dir(), "jobs", session["id"], "state.json"), {
+    write_job(session, {
         "state": state, "detail": detail, "tempo": tempo,
         "name": session.get("name", ""), "sessionId": session["sessionId"], "cliVersion": VERSION,
         "cwd": session["cwd"], "createdAt": iso(session["startedAt"]), "updatedAt": iso(now_ms()),
     })
+
+
+def write_job(session, value):
+    """The session's job file, jobs/<id>/state.json, and a line of its history, timeline.jsonl."""
+    job = os.path.join(config_dir(), "jobs", session["id"])
+    write_json(os.path.join(job, "state.json"), value)
+    with open(os.path.join(job, "timeline.jsonl"), "a") as timeline:
+        timeline.write(json.dumps({"state": value.get("state"), "detail": value.get("detail"), "at": iso(now_ms())}) + "\n")
 
 
 def transcript_path(session):
@@ -193,7 +202,7 @@ def job_progress(session_id, detail):
     session = find(load(), session_id)
     if session is None:
         return
-    write_json(os.path.join(config_dir(), "jobs", session["id"], "state.json"), {
+    write_job(session, {
         "state": "working", "detail": detail, "tempo": "active",
         "name": session.get("name", ""), "sessionId": session["sessionId"], "cliVersion": VERSION,
         "cwd": session["cwd"], "createdAt": iso(session["startedAt"]), "updatedAt": iso(now_ms()),
@@ -401,7 +410,7 @@ def stop(wanted, remove):
         sessions.remove(session)
     save(sessions)
     if not remove:
-        write_json(os.path.join(config_dir(), "jobs", session["id"], "state.json"), {"state": "stopped", "detail": "Stopped", "tempo": "idle"})
+        write_job(session, {"state": "stopped", "detail": "Stopped", "tempo": "idle"})
     print(f"{'removed' if remove else 'stopped'} {session['id']}")
     return 0
 
