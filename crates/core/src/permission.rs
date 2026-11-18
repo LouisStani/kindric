@@ -160,7 +160,11 @@ fn answer(input: &str, root: &Path, away_root: &Path, config_dir: &Path, started
         root,
         &request,
         || session_status(config_dir, &request.session_id),
-        || thread::sleep(POLL),
+        || {
+            thread::sleep(POLL);
+            // Tells kindric that someone still waits for this answer.
+            let _ = overview::beat(root, &request);
+        },
         || started.elapsed() >= GIVE_UP,
     );
     let _ = overview::settle(root, &request.session_id, &request.id);

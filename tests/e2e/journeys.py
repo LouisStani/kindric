@@ -640,6 +640,35 @@ class AnswerFromTheControlCenter(Journey):
         self.answered()
 
 
+class HookGoneLeavesTheOverview(Journey):
+    """A permission whose hook still waits stays in the control center, however long it waits; once
+    Claude Code ends that hook without a word (killed with its session), the request leaves the
+    page instead of taking an answer nobody reads (356, case of 2026-11-18)."""
+
+    started = [("asks", "a task that asks work:0")]
+
+    def requests(self) -> list[str]:
+        return texts(self.driver, "article.control-row .request")
+
+    def test_waiting_hook_stays_killed_hook_goes(self) -> None:
+        driver = self.driver
+        carry_messages(driver)
+        driver.press(CONTROL, SHIFT, "0")
+        wait_until("the control center", lambda: not overview_hidden(driver))
+        wait_until("the session's row", lambda: texts(driver, "article.control-row .row-name") == ["asks"])
+        hook = asked_by_hook(session_id_of("asks"), "Bash", {"command": "touch e2e-made.txt", "description": "Create a file"})
+        wait_until("the command in the row", lambda: any("touch e2e-made.txt" in text for text in texts(driver, "article.control-row .request-command")))
+        # Longer than the 10 s after which a request nobody touches is taken for gone.
+        time.sleep(13)
+        self.assertEqual(len(self.requests()), 1, "the hook still waits: the request stays")
+        self.assertEqual(len(overview_requests()), 1)
+
+        hook.kill()
+        hook.wait()
+        wait_until("the request gone from the row", lambda: self.requests() == [] or None, timeout=20)
+        self.assertEqual(overview_requests(), [], "its file goes too")
+        wait_until("nothing needs you", lambda: texts(driver, "h2.control-group.is-need") == [] or None, timeout=10)
+
 # The mark of each tab of the bar, as the page draws it: [name, state class, sign in its dot].
 TAB_MARKS = """return [...document.querySelectorAll('#tabs button.tab')].map((tab) => {
   const dot = tab.querySelector('.dot');

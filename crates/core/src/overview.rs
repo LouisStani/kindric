@@ -2,12 +2,17 @@
 //! A request is `overview/<session id>/<request id>.json` in kindric's data; its answer, written by
 //! the page, is `<request id>.answer` next to it. One answer file per request: a hook left waiting
 //! after the user answered in the terminal must never read the answer meant for the next request.
+//!
+//! A permission or a question of AskUserQuestion has a hook waiting for its answer, which touches
+//! the request every second (`beat`). Claude Code may end that hook without a word (with its
+//! session, or killed): a request left untouched for `GONE_SECONDS` has nobody waiting, and goes
+//! (decision 356, case of 2026-11-18).
 
 use std::collections::BTreeMap;
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
-use std::time::UNIX_EPOCH;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use kindric_accounts::files::{create_private_dir, write_atomic};
 use serde::{Deserialize, Serialize};
@@ -95,19 +100,59 @@ pub fn ask(root: &Path, request: &Request) -> io::Result<()> {
     write_atomic(&path, &serde_json::to_string(request).map_err(io::Error::other)?)
 }
 
-/// The requests waiting for the user, oldest first. A file that cannot be read is left out.
-pub fn pending(root: &Path) -> Vec<Request> {
-    let mut requests: Vec<Request> = fs::read_dir(root)
+/// A request of a waiting hook untouched for this long has nobody waiting for its answer.
+pub const GONE_SECONDS: u64 = 10;
+
+/// The requests waiting for the user, oldest first, with their files. A file that cannot be read
+/// is left out.
+fn pending_files(root: &Path) -> Vec<(PathBuf, Request)> {
+    let mut requests: Vec<(PathBuf, Request)> = fs::read_dir(root)
         .into_iter()
         .flatten()
         .flatten()
         .flat_map(|session| fs::read_dir(session.path()).into_iter().flatten().flatten())
         .map(|entry| entry.path())
         .filter(|path| path.extension().is_some_and(|extension| extension == REQUEST))
-        .filter_map(|path| serde_json::from_str(&fs::read_to_string(path).ok()?).ok())
+        .filter_map(|path| {
+            let request = serde_json::from_str(&fs::read_to_string(&path).ok()?).ok()?;
+            Some((path, request))
+        })
         .collect();
-    requests.sort_by(|a, b| (a.asked_at, &a.id).cmp(&(b.asked_at, &b.id)));
+    requests.sort_by(|(_, a), (_, b)| (a.asked_at, &a.id).cmp(&(b.asked_at, &b.id)));
     requests
+}
+
+/// The requests waiting for the user, oldest first. A file that cannot be read is left out.
+pub fn pending(root: &Path) -> Vec<Request> {
+    pending_files(root).into_iter().map(|(_, request)| request).collect()
+}
+
+/// Whether the hook that asked `request` is gone: a permission or a question whose file was not
+/// touched for `GONE_SECONDS` before `now`. A `kindric ask` has no hook waiting.
+fn hook_gone(path: &Path, request: &Request, now: SystemTime) -> bool {
+    let waits = matches!(request.body, Body::Permission { .. } | Body::Question { .. });
+    let touched = fs::metadata(path).and_then(|meta| meta.modified()).ok();
+    waits && touched.and_then(|touched| now.duration_since(touched).ok()).is_some_and(|age| age.as_secs() >= GONE_SECONDS)
+}
+
+/// The requests still waiting, once those whose hook is gone are settled. One that cannot be
+/// removed stays.
+pub fn live_pending(root: &Path, now: SystemTime) -> Vec<Request> {
+    pending_files(root)
+        .into_iter()
+        .filter(|(path, request)| !(hook_gone(path, request, now) && settle(root, &request.session_id, &request.id).is_ok()))
+        .map(|(_, request)| request)
+        .collect()
+}
+
+/// The hook waiting for `request` is still there: it touches the file, or writes it again if it
+/// was taken for gone meanwhile (the computer slept longer than `GONE_SECONDS`).
+pub fn beat(root: &Path, request: &Request) -> io::Result<()> {
+    match fs::File::options().write(true).open(file(root, &request.session_id, &request.id, REQUEST)?) {
+        Ok(opened) => opened.set_modified(SystemTime::now()),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => ask(root, request),
+        Err(error) => Err(error),
+    }
 }
 
 /// The user answers the request `id` of `session`. A request already settled (answered in the
@@ -145,12 +190,12 @@ fn written_after(path: &Path, at: i64) -> bool {
 }
 
 /// The requests still waiting, once those of `kindric ask` the user answered by typing into their
-/// session are settled (decision 363). `account_dir(session id)` is the folder of the session's
+/// session are settled (decision 363), and those whose hook is gone too. `account_dir(session id)` is the folder of the session's
 /// account, `None` for a session kindric does not know. A transcript is read only when it was
 /// written after the question.
 pub fn pending_after_typed_answers(root: &Path, account_dir: impl Fn(&str) -> Option<PathBuf>) -> Vec<Request> {
     let mut waiting = Vec::new();
-    for request in pending(root) {
+    for request in live_pending(root, SystemTime::now()) {
         let answered = matches!(request.body, Body::Ask { .. })
             && account_dir(&request.session_id)
                 .and_then(|dir| transcript_of(&dir, &request.session_id))
@@ -450,5 +495,61 @@ mod tests {
         let json = serde_json::to_string(&asked).unwrap();
         assert!(json.contains(r#""kind":"ask""#), "{json}");
         assert_eq!(serde_json::from_str::<Request>(&json).unwrap(), asked);
+    }
+
+    fn touched_at(root: &Path, request: &Request, when: SystemTime) {
+        let path = file(root, &request.session_id, &request.id, REQUEST).unwrap();
+        fs::File::options().write(true).open(path).unwrap().set_modified(when).unwrap();
+    }
+
+    /// The case of 2026-11-18: the hook was killed, the answer written, the request stayed.
+    #[test]
+    fn a_request_whose_hook_stopped_touching_it_goes_with_its_answer() {
+        let root = temp_root("gone");
+        let now = SystemTime::now();
+        let ago = |seconds: u64| now - std::time::Duration::from_secs(seconds);
+        let killed = request("aaaa-1111", "1-1", 1, Body::Permission { tool: "Bash".into(), input: serde_json::json!({"command": "ls"}) });
+        let waiting = request("aaaa-1111", "1-2", 2, Body::Question { questions: serde_json::json!([]) });
+        // From its JSON: the fields of an ask may grow.
+        let ask_body: Body = serde_json::from_value(serde_json::json!({"kind": "ask", "question": "q", "context": "c"})).unwrap();
+        let asked = request("bbbb-2222", "1-3", 3, ask_body);
+        for each in [&killed, &waiting, &asked] {
+            ask(&root, each).unwrap();
+        }
+        answer(&root, "aaaa-1111", "1-1", &Answer::Allow).unwrap();
+        touched_at(&root, &killed, ago(GONE_SECONDS));
+        touched_at(&root, &waiting, ago(GONE_SECONDS - 2));
+        touched_at(&root, &asked, ago(3600));
+        let ids: Vec<String> = live_pending(&root, now).into_iter().map(|each| each.id).collect();
+        assert_eq!(ids, ["1-2", "1-3"], "a hook still touching it, and a kindric ask, which no hook waits for");
+        assert!(!file(&root, "aaaa-1111", "1-1", ANSWER).unwrap().exists(), "its answer goes too");
+        assert_eq!(pending(&root).len(), 2);
+        fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn the_bar_does_not_ask_for_a_request_whose_hook_is_gone() {
+        let root = temp_root("gone-bar");
+        let killed = request("aaaa-1111", "1-1", 1, Body::Permission { tool: "Bash".into(), input: serde_json::json!({"command": "ls"}) });
+        ask(&root, &killed).unwrap();
+        touched_at(&root, &killed, SystemTime::now() - std::time::Duration::from_secs(GONE_SECONDS + 1));
+        assert_eq!(pending_after_typed_answers(&root, |_| None), []);
+        assert_eq!(pending(&root), [], "settled");
+        fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn the_beat_of_the_hook_touches_its_request_and_writes_it_again_once_taken_for_gone() {
+        let root = temp_root("beat");
+        let waiting = request("aaaa-1111", "1-1", 1, Body::Permission { tool: "Bash".into(), input: serde_json::json!({"command": "ls"}) });
+        ask(&root, &waiting).unwrap();
+        let old = SystemTime::now() - std::time::Duration::from_secs(3600);
+        touched_at(&root, &waiting, old);
+        beat(&root, &waiting).unwrap();
+        assert_eq!(live_pending(&root, SystemTime::now()), std::slice::from_ref(&waiting), "touched: alive");
+        settle(&root, "aaaa-1111", "1-1").unwrap();
+        beat(&root, &waiting).unwrap();
+        assert_eq!(pending(&root), [waiting], "written again after the computer slept");
+        fs::remove_dir_all(&root).unwrap();
     }
 }
