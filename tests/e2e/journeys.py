@@ -1858,5 +1858,71 @@ class AccountAddedThenRemoved(Journey):
         self.assertTrue(os.path.isdir(self.EXTRA_DIR), "the account's folder removed")
 
 
+class ControlCenterKeysAndPromptAll(Journey):
+    """In the control center: a paused session's "resume" opens it in a pane, started again;
+    "prompt all" asks to confirm, then types the same message into each session of the project;
+    Escape goes back to all projects, n picks the session that asks, a allows its permission,
+    Enter goes into the picked row's field, o opens the picked session in a pane."""
+
+    started = [("alpha", "first task work:0"), ("beta", "second task work:0"), ("dozing", "third task work:0")]
+
+    @classmethod
+    def before_app(cls) -> None:
+        wait_until("dozing's turn over", lambda: fake_detail("dozing") == "waiting for you", timeout=30)
+        accounts("run", ACCOUNT, "stop", next(s["id"] for s in fake_sessions() if s.get("name") == "dozing"))
+
+    def heading(self) -> list[str]:
+        return texts(self.driver, ".control-head h1")
+
+    def picked(self) -> list[str]:
+        return texts(self.driver, "article.control-row.selected .row-name")
+
+    def to_control_center(self) -> None:
+        self.driver.press(CONTROL, SHIFT, "0")
+        wait_until("the control center", lambda: not overview_hidden(self.driver))
+
+    def test_resume_prompt_all_and_keys(self) -> None:
+        driver = self.driver
+        carry_messages(driver)
+        add_project(driver)
+        self.to_control_center()
+        click_text(driver, ".control-project .control-project-name", "project")
+        wait_until("the project's rows", lambda: sorted(texts(driver, "article.control-row .row-name")) == ["alpha", "beta", "dozing"] or None)
+        # Paused not long ago, it comes right after what needs you (overview-board.js projectView).
+        self.assertEqual(texts(driver, "article.control-row .row-name")[0], "dozing")
+
+        click_text(driver, "article.control-row button.row-resume", "resume")
+        wait_until("dozing open in a pane", lambda: overview_hidden(driver) and (chip(driver, "dozing") or ("", False))[1] or None)
+        wait_until("dozing started again", lambda: fake_running("dozing"))
+
+        self.to_control_center()
+        wait_until("the project shown", lambda: self.heading() == ["project"] or None)
+        click_text(driver, ".control-actions button", "prompt all 3")
+        field = wait_until("the field for all", lambda: driver.find("[data-key='prompt/all']"))
+        driver.type_into(field, "together work:0" + ENTER)
+        wait_until("the question before sending", lambda: "send to 3 sessions?" in texts(driver, ".prompt-all button") or None)
+        self.assertEqual([name for name in ("alpha", "beta", "dozing") if "together work:0" in prompts_of(session_id_of(name))], [], "sent before the answer")
+        click_text(driver, ".prompt-all button", "send to 3 sessions?")
+        wait_until("the message typed into each", lambda: all("together work:0" in prompts_of(session_id_of(name)) for name in ("alpha", "beta", "dozing")) or None, timeout=30)
+
+        # The button pressed is gone with the redraw, the focus with it: a click in the page first.
+        driver.click(driver.find(".control-head h1"))
+        driver.press(ESCAPE)
+        wait_until("all projects", lambda: self.heading() == ["all projects"] or None)
+        hook = asked_by_hook(session_id_of("beta"), "Bash", {"command": "make", "description": "Build"})
+        wait_until("beta's permission in its row", lambda: any("make" in text for text in texts(driver, "article.control-row .request-command")) or None)
+        driver.press("n")
+        wait_until("beta picked", lambda: self.picked() == ["beta"] or None)
+        driver.press("a")
+        self.assertEqual(decision_of(hook)["behavior"], "allow")
+
+        driver.press(ENTER)
+        focused = wait_until("beta's field focused", lambda: driver.script("return document.activeElement?.dataset?.key ?? null"))
+        self.assertEqual(focused, f"prompt/{session_id_of('beta')}")
+        driver.click(driver.find(".control-head h1"))
+        driver.press("o")
+        wait_until("beta open in a pane", lambda: overview_hidden(driver) and (chip(driver, "beta") or ("", False))[1] or None)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
