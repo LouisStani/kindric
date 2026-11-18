@@ -924,6 +924,68 @@ def account_actions(driver: Driver, account: str) -> list[str]:
     return [str(text) for text in found]
 
 
+def write_task(folder: str, number: int, subject: str, status: str, at: float, about: str = "") -> None:
+    """A task as Claude Code writes it for TaskCreate and TaskUpdate, last changed at `at`."""
+    path = os.path.join(folder, f"{number}.json")
+    with open(path, "w") as task:
+        json.dump({"id": str(number), "subject": subject, "description": about, "activeForm": f"{subject}…",
+                   "status": status, "blocks": [], "blockedBy": []}, task)
+    os.utime(path, (at, at))
+
+
+class TaskListOnThePage(Journey):
+    """A session's task list (Claude Code's TaskCreate and TaskUpdate) shows on its row: the task in
+    progress, how many are done and the time left; its detail lists them all. kindric-accounts gives
+    the session the hook that has a long turn make that list (368)."""
+
+    # At rest by the time its tasks are written: after a restart, only the full list reads them.
+    started = [("builds", "a task work:1")]
+
+    def test_task_in_progress_count_and_time_left(self) -> None:
+        driver = self.driver
+        carry_messages(driver)
+        session = next(each for each in fake_sessions() if each.get("name") == "builds")
+        self.assertTrue(any(command.endswith(" task-check") for command in hook_commands(settings_of(session)).get("PreToolUse", [])),
+                        "the session was started with the task-check hook")
+        driver.press(CONTROL, SHIFT, "0")
+        wait_until("the control center", lambda: not overview_hidden(driver))
+        wait_until("the session's row", lambda: texts(driver, "article.control-row .row-name") == ["builds"])
+        wait_until("the session at rest", lambda: fake_detail("builds") == "waiting for you", timeout=30)
+
+        folder = os.path.join(ACCOUNT_DIR, "tasks", session["sessionId"])
+        os.makedirs(folder)
+        start = time.time() - 600
+        open(os.path.join(folder, ".lock"), "w").close()
+        os.utime(os.path.join(folder, ".lock"), (start, start))
+        write_task(folder, 1, "Write the reader", "completed", start + 120)
+        write_task(folder, 2, "Write the statistics", "in_progress", start + 121, "hours, codes, top paths")
+        write_task(folder, 3, "Write the README", "pending", start)
+        # Claude Code writes the job's state at each tool, which wakes kindric's list.
+        os.utime(os.path.join(ACCOUNT_DIR, "jobs", session["id"], "state.json"))
+        wait_until("the task under the row", lambda: texts(driver, "article.control-row .row-task") == ["▸ Write the statistics… · hours, codes, top paths"] or None, timeout=40)
+        self.assertEqual(texts(driver, "article.control-row .row-badge.tasks"), ["1/3 · ~4 min left"])
+
+        # At start, kindric lists every session at once: the list is read there too.
+        type(self).restart()
+        driver = self.driver
+        driver.press(CONTROL, SHIFT, "0")
+        wait_until("the control center again", lambda: not overview_hidden(driver))
+        wait_until("the task under the row after a restart", lambda: texts(driver, "article.control-row .row-task") == ["▸ Write the statistics… · hours, codes, top paths"] or None, timeout=20)
+
+        click_text(driver, "article.control-row .row-name", "builds")
+        wait_until("the list in the detail", lambda: texts(driver, ".detail-tasks .task") or None)
+        self.assertEqual(texts(driver, ".detail-tasks .detail-title"), ["tasks · 1/3 · ~4 min left"])
+        self.assertEqual(texts(driver, ".detail-tasks .task"), ["✓ Write the reader", "▸ Write the statistics", "○ Write the README"])
+        self.assertEqual(texts(driver, ".detail-tasks .task-about"), ["hours, codes, top paths"])
+        driver.screenshot(os.path.join(OUT, "TaskListOnThePage-detail.png"))
+
+        for number, subject in [(2, "Write the statistics"), (3, "Write the README")]:
+            write_task(folder, number, subject, "completed", time.time())
+        os.utime(os.path.join(ACCOUNT_DIR, "jobs", session["id"], "state.json"))
+        wait_until("the list gone once all is done", lambda: not texts(driver, ".detail-tasks .task") or None, timeout=40)
+        self.assertEqual(texts(driver, "article.control-row .row-badge.tasks"), [], "no badge once all is done")
+        self.assertEqual(texts(driver, "article.control-row .row-task"), [])
+
 class RenewFromSettings(Journey):
     """A login that runs out in two days: the settings offer "renew" on the account's row; it runs
     Claude Code's `auth login` in the helper window, and once done the row no longer offers it.

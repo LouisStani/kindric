@@ -169,7 +169,7 @@ fn answer(input: &str, root: &Path, away_root: &Path, config_dir: &Path, started
 
 /// The account's folder for the hook: the `CLAUDE_CONFIG_DIR` the session runs with, else
 /// Claude Code's own default.
-fn config_dir() -> Option<PathBuf> {
+pub(crate) fn config_dir() -> Option<PathBuf> {
     std::env::var_os("CLAUDE_CONFIG_DIR").map(PathBuf::from).or_else(|| Some(std::env::home_dir()?.join(".claude")))
 }
 

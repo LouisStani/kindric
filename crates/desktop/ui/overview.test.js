@@ -20,6 +20,7 @@ import {
   keptLabel,
   keptText,
   keptTime,
+  leftText,
   lineOf,
   nextAsking,
   permissionText,
@@ -29,7 +30,10 @@ import {
   requestsBySession,
   sentText,
   standing,
+  showsTasks,
   summaryOf,
+  taskLine,
+  tasksBadge,
 } from "./overview-board.js";
 
 function row(label, tab, extra = {}) {
@@ -285,4 +289,26 @@ test("the files a session kept and not seen are named, the latest first, three a
   const four = ["a.png", "b.png", "c.png", "d.png"].map(kept);
   assert.equal(keptText(four), "kept d.png, c.png, b.png +1");
   assert.deepEqual([...requestsBySession(four).keys()], ["s-logo"], "grouped by session like the requests");
+});
+
+// Decision 368: the task list of a session says what it does, how far it is and the time left.
+const list = { doing: "Writing the tests", about: "tests/test_cli.py", done: 3, total: 5, left_seconds: 130, tasks: [] };
+
+test("the time left reads at a glance", () => {
+  assert.equal(leftText(20), "<1 min");
+  assert.equal(leftText(130), "~2 min");
+  assert.equal(leftText(3900), "~1 h 05");
+});
+
+test("a row with a task list says the task in progress, and its badge how many are done and the time left", () => {
+  assert.equal(tasksBadge(list), "3/5 · ~2 min left");
+  assert.equal(tasksBadge({ ...list, left_seconds: null }), "3/5", "no time before a task is done");
+  assert.equal(taskLine(list), "Writing the tests · tests/test_cli.py");
+  assert.equal(taskLine({ ...list, about: null }), "Writing the tests");
+  assert.equal(taskLine({ ...list, doing: null, about: null }), "between tasks");
+  const busy = row("a", 1, { ...working, tasks: list, progress: "Running the tests" });
+  assert.equal(lineOf(busy), "Running the tests", "the row keeps what it does right now");
+  assert.ok(showsTasks(busy));
+  assert.ok(!showsTasks(row("a", 1, { ...asking, tasks: list })), "what waits for you comes first");
+  assert.ok(!showsTasks(row("a", 1, working)));
 });

@@ -11,6 +11,7 @@ use crate::accounts::{self, Found, SessionInfo, Snapshot};
 use crate::mailbox::{self, Mailbox};
 use crate::overview;
 use crate::progress;
+use crate::task_list;
 use crate::watcher::{self, ChangeWatcher, Wake};
 use kindric_accounts::files::create_private_dir;
 
@@ -93,14 +94,16 @@ fn to_query(change: &Change, accounts: &[String], known: &BTreeMap<String, Found
         .collect()
 }
 
-/// Reads again the progress line of the jobs `ids` among the account's `sessions`, from the
-/// account directory `dir`. False when one of them is not a known session: a query must list it.
+/// Reads again the progress line and the task list of the jobs `ids` among the account's
+/// `sessions`, from the account directory `dir`: Claude Code writes the job's state at each tool,
+/// TaskUpdate included. False when one of them is not a known session: a query must list it.
 fn reread_progress(sessions: &mut [SessionInfo], dir: &Path, ids: &BTreeSet<String>) -> bool {
     for id in ids {
         let Some(session) = sessions.iter_mut().find(|session| session.short_id.as_deref() == Some(id.as_str())) else {
             return false;
         };
         session.progress = progress::progress(dir, id);
+        session.tasks = task_list::progress(dir, &session.session_id);
     }
     true
 }
@@ -352,19 +355,24 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(dir.join("jobs/abc")).unwrap();
         std::fs::write(dir.join("jobs/abc/state.json"), r#"{"state":"working","detail":"reading progress.rs"}"#).unwrap();
+        std::fs::create_dir_all(dir.join("tasks/abcd-1234")).unwrap();
+        let task = r#"{"id":"1","subject":"Read","description":"d","activeForm":"Reading","status":"in_progress"}"#;
+        std::fs::write(dir.join("tasks/abcd-1234/1.json"), task).unwrap();
         let mut sessions = vec![SessionInfo {
             account: "pro".to_string(),
             state: accounts::SessionState::Working,
             short_id: Some("abc".to_string()),
-            session_id: String::new(),
+            session_id: "abcd-1234".to_string(),
             name: String::new(),
             cwd: String::new(),
             isolated: false,
             progress: None,
+            tasks: None,
             waiting_for: None,
         }];
         assert!(reread_progress(&mut sessions, &dir, &BTreeSet::from(["abc".to_string()])));
         assert_eq!(sessions[0].progress.as_deref(), Some("reading progress.rs"));
+        assert_eq!(sessions[0].tasks.as_ref().and_then(|tasks| tasks.doing.as_deref()), Some("Reading"), "TaskUpdate writes the job's state too");
         assert!(!reread_progress(&mut sessions, &dir, &BTreeSet::from(["zzz".to_string()])));
         std::fs::remove_dir_all(dir).unwrap();
     }

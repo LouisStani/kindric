@@ -11,6 +11,7 @@ use kindric_accounts::{Paths, account, launch, memory, registry, status, usage};
 use serde::{Deserialize, Serialize};
 
 use crate::progress;
+use crate::task_list;
 
 pub(crate) const LAUNCHER: &str = "kindric-accounts";
 pub const MIN_LAUNCHER_VERSION: (u32, u32, u32) = (1, 2, 0);
@@ -47,6 +48,8 @@ pub struct SessionInfo {
     pub isolated: bool,
     /// What the session last said it is doing (see `progress`); background sessions only.
     pub progress: Option<String>,
+    /// How far it is in its task list (see `task_list`), while a task is left to do.
+    pub tasks: Option<task_list::TaskProgress>,
     /// What the session waits for from the user, in Claude Code's words ("permission prompt",
     /// "input needed"), while a question of Claude Code is on its screen.
     pub waiting_for: Option<String>,
@@ -134,6 +137,7 @@ fn parse_agents_with(account: &str, json: &str, session_file: impl Fn(u32) -> Se
                 cwd: raw.cwd.unwrap_or_default(),
                 isolated: false,
                 progress: None,
+                tasks: None,
                 waiting_for: file.waiting_for,
             }
         })
@@ -346,6 +350,7 @@ fn account_sessions(paths: &Paths, account: &str, implicit_default: bool, includ
         parse_agents_with(account, &json, |pid| read_session_file(&dir, pid)).map_err(io::Error::other)?;
     for session in &mut sessions {
         session.progress = session.short_id.as_deref().and_then(|short_id| progress::progress(&dir, short_id));
+        session.tasks = task_list::progress(&dir, &session.session_id);
     }
     Ok(sessions)
 }

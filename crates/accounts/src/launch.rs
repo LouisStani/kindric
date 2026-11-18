@@ -125,12 +125,18 @@ fn apply_theme(
 }
 
 /// The hooks of kindric a session gets. An isolated account gets those of the user being away
-/// (309) and of the overview (329): they only put its questions before the user and give back
-/// the user's answers, while messages and waking would let something cross from one account to
-/// another (039), and it has no artifacts (206).
+/// (309) and of the overview (329, 368): they only put its questions and its progress before the
+/// user and give back the user's answers, while messages and waking would let something cross
+/// from one account to another (039), and it has no artifacts (206).
 fn hooks_for(isolated: bool, all: usage::KindricHooks) -> usage::KindricHooks {
     if isolated {
-        usage::KindricHooks { away: all.away, permission: all.permission, start: all.start, ..usage::KindricHooks::default() }
+        usage::KindricHooks {
+            away: all.away,
+            permission: all.permission,
+            start: all.start,
+            tasks: all.tasks,
+            ..usage::KindricHooks::default()
+        }
     } else {
         all
     }
@@ -235,12 +241,14 @@ mod tests {
             permission: Some("k permission-hook".into()),
             start: Some("k overview-start".into()),
             artifacts: Some("k artifact-check".into()),
+            tasks: Some("k task-check".into()),
         };
         let isolated = hooks_for(true, all.clone());
         let expected = usage::KindricHooks {
             away: Some("k away-hook".into()),
             permission: Some("k permission-hook".into()),
             start: Some("k overview-start".into()),
+            tasks: Some("k task-check".into()),
             ..usage::KindricHooks::default()
         };
         assert_eq!(isolated, expected, "no messages, no waking, no artifacts");

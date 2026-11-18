@@ -79,6 +79,7 @@ mod tests {
             state: SessionState::Waiting,
             isolated: false,
             progress: None,
+            tasks: None,
             waiting_for: None,
         }
     }
