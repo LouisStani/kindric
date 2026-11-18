@@ -15,7 +15,7 @@ import time
 import unittest
 from typing import Any
 
-from driver import ALT, ARROW_DOWN, CONTROL, DELETE, ELEMENT_KEY, ENTER, ESCAPE, F2, SHIFT, Driver, wait_until
+from driver import ALT, ARROW_DOWN, CONTROL, DELETE, ELEMENT_KEY, ENTER, ESCAPE, F2, SHIFT, TAB, Driver, wait_until
 
 HOME = os.path.expanduser("~")
 ACCOUNT = "work"
@@ -2139,6 +2139,57 @@ class OldClaudeCodeWarned(Journey):
         self.assertTrue(str(text).startswith("Claude Code 2.1.300"), text)
         self.assertEqual(copies, ["claude update"])
         self.assertTrue(driver.find_all("#help kbd"), "the shortcuts after the list")
+
+
+class DirectoryFieldCompletion(Journey):
+    """The directory field of Ctrl+Shift+T lists the folders in use before anything is typed, then
+    the folders that can follow what is typed, case ignored, hidden ones only after a dot; Tab
+    completes, Down and Enter take one."""
+
+    WORK = os.path.join(HOME, "work")
+    # How the field writes it: the home folder as ~.
+    SHOWN = "~/work"
+
+    @classmethod
+    def prepare(cls) -> None:
+        shutil.rmtree(cls.WORK, ignore_errors=True)
+        for folder in ("Alpha/sub", "beta", ".hidden", "known"):
+            os.makedirs(os.path.join(cls.WORK, folder))
+
+    @classmethod
+    def before_app(cls) -> None:
+        subprocess.run(["kindric-accounts", "run", ACCOUNT, "--bg", "-n", "in-known", "a task work:0"], cwd=os.path.join(cls.WORK, "known"),
+                       check=True, capture_output=True, timeout=30)
+
+    def suggestions(self) -> list[str]:
+        return [item.rstrip("/") for item in texts(self.driver, "#new-project .suggestions li")]
+
+    def value(self) -> str:
+        return str(self.driver.script("return document.querySelector('#project-form input[name=directory]').value")).rstrip("/")
+
+    def test_known_then_typed_tab_and_enter(self) -> None:
+        driver = self.driver
+        wait_until("the session in the bar", lambda: chip_state(driver, "in-known"))
+        driver.press(CONTROL, SHIFT, "t")
+        wait_until("the project form", lambda: dialog_open(driver, "new-project"))
+        field = driver.find("#project-form input[name=directory]")
+        wait_until("the folders in use", lambda: f"{self.SHOWN}/known" in self.suggestions() or None)
+
+        driver.clear(field)
+        driver.type_into(field, f"{self.SHOWN}/a")
+        wait_until("the folders that follow, case ignored", lambda: self.suggestions() == [f"{self.SHOWN}/Alpha"] or None)
+        driver.type_into(field, TAB)
+        wait_until("completed by Tab", lambda: self.value() == f"{self.SHOWN}/Alpha" or None)
+        wait_until("its own folders next", lambda: self.suggestions() == [f"{self.SHOWN}/Alpha/sub"] or None)
+
+        driver.clear(field)
+        driver.type_into(field, f"{self.SHOWN}/")
+        wait_until("the folders of work, no hidden one", lambda: sorted(self.suggestions()) == sorted(f"{self.SHOWN}/{name}" for name in ("Alpha", "beta", "known")) or None)
+        driver.type_into(field, ".")
+        wait_until("the hidden one after a dot", lambda: self.suggestions() == [f"{self.SHOWN}/.hidden"] or None)
+        driver.type_into(field, ARROW_DOWN + ENTER)
+        wait_until("taken by Down and Enter", lambda: self.value() == f"{self.SHOWN}/.hidden" or None)
+        self.assertTrue(dialog_open(driver, "new-project"), "Enter on a suggestion submitted the form")
 
 
 if __name__ == "__main__":
