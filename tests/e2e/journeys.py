@@ -1987,15 +1987,20 @@ class ControlCenterFigures(Journey):
         wait_until("none new once seen", lambda: self.cell("alpha", ".row-kept") == "2 kept" or None)
 
 
-def add_project_at(driver: Driver, directory: str, name: str) -> None:
-    """Ctrl+Shift+T on `directory`: its tab, named `name`, active."""
+SECOND_PROJECT = os.path.join(HOME, "second")
+THIRD_PROJECT = os.path.join(HOME, "third")
+
+
+def add_project_at(driver: Driver, directory: str) -> None:
+    """Ctrl+Shift+T on `directory`: its tab, named after the folder, active."""
     driver.press(CONTROL, SHIFT, "t")
     wait_until("the project form", lambda: dialog_open(driver, "new-project"))
     field = driver.find("#project-form input[name=directory]")
     driver.clear(field)
     driver.type_into(field, directory)
     driver.click(driver.find("#project-form button[type=submit]"))
-    wait_until(f"the tab {name}, active", lambda: (name, True) in tabs(driver) or None)
+    name = os.path.basename(directory)
+    wait_until(f"the tab {name}, active", lambda: (name, True) in tabs(driver))
 
 
 class NestedProjects(Journey):
@@ -2015,8 +2020,8 @@ class NestedProjects(Journey):
     def test_deepest_project_wins(self) -> None:
         driver = self.driver
         wait_until("the sessions in the bar", lambda: sorted(chip_titles(driver)) == ["deep-one", "inner-one", "outer-one"] or None)
-        add_project_at(driver, PROJECT, "project")
-        add_project_at(driver, self.INNER, "inner")
+        add_project_at(driver, PROJECT)
+        add_project_at(driver, self.INNER)
         wait_until("the inner tab's sessions", lambda: sorted(chip_titles(driver)) == ["deep-one", "inner-one"] or None)
         driver.press(CONTROL, SHIFT, "h")
         wait_until("the outer tab", lambda: ("project", True) in tabs(driver) or None)
@@ -2079,8 +2084,8 @@ class TabMovedByMouse(Journey):
     def test_drag_then_kept(self) -> None:
         driver = self.driver
         os.makedirs(self.SECOND, exist_ok=True)
-        add_project_at(driver, PROJECT, "project")
-        add_project_at(driver, self.SECOND, "second")
+        add_project_at(driver, PROJECT)
+        add_project_at(driver, self.SECOND)
         start = self.names()
         self.assertEqual(start[-3:], ["other", "project", "second"])
 
@@ -2380,6 +2385,54 @@ class SignalWithoutLayerShell(Journey):
         wrong = self.signal("blink")
         self.assertEqual(wrong.returncode, 2, wrong.stderr)
 
+
+
+def shown_tab(driver: Driver) -> str:
+    """The name of the tab shown, "0" for the control center."""
+    if not overview_hidden(driver):
+        return "0"
+    return next((name for name, active in tabs(driver) if active), "")
+
+
+class TabStepAcrossEmptyTabs(Journey):
+    """Ctrl+Shift+H and Ctrl+Shift+L go through every tab, the control center included, and wrap
+    around, while the project tabs have no session (reported by Louis on 2026-11-16: the keys
+    stopped there). First with the welcome list over the empty tabs, then with the list of
+    accounts, which takes the focus, once nothing is left to set up."""
+
+    # A session in the test project, which gets no tab: it belongs to "other", and the two
+    # project tabs stay empty.
+    started = [("elsewhere", "somewhere else work:0")]
+
+    @classmethod
+    def prepare(cls) -> None:
+        os.makedirs(SECOND_PROJECT, exist_ok=True)
+        os.makedirs(THIRD_PROJECT, exist_ok=True)
+
+    def step(self, key: str, expected: str) -> None:
+        self.driver.press(CONTROL, SHIFT, key)
+        wait_until(f"Ctrl+Shift+{key.upper()} to {expected}", lambda: shown_tab(self.driver) == expected, timeout=5)
+
+    def round_trip(self) -> None:
+        for expected in ["second", "other", "0", "third"]:
+            self.step("h", expected)
+        for expected in ["0", "other", "second", "third"]:
+            self.step("l", expected)
+
+    def test_every_tab_in_both_directions(self) -> None:
+        driver = self.driver
+        add_project_at(driver, SECOND_PROJECT)
+        add_project_at(driver, THIRD_PROJECT)
+        wait_until("the welcome list over the empty tab", lambda: not driver.script("return document.getElementById('welcome').hidden"))
+        self.round_trip()
+
+        carry_messages(driver)
+        wait_until("the list of accounts in the empty tab", lambda: not driver.script("return document.getElementById('quick').hidden"))
+        self.round_trip()
+        # The same once the list of accounts is clicked, as the user would: on its title, since a
+        # click on a row starts a session or opens the form.
+        driver.click(driver.find("#quick-title"))
+        self.round_trip()
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
