@@ -1098,7 +1098,7 @@ const SHORTCUTS = [
   { group: "tabs", id: "overview", keys: "ctrl+shift+0", help: "overview: every session, what needs you", run: () => panes.goTab(0) },
   { group: "app", id: "artifacts", keys: "ctrl+shift+a", help: "artifacts of this project", run: openArtifacts },
   { group: "app", id: "worktrees", keys: "ctrl+shift+b", help: "worktrees of this project: merged or not, remove", run: openWorktrees },
-  { group: "app", id: "settings", keys: "ctrl+comma", help: "settings: accounts, memory, shortcuts", run: openSettings },
+  { group: "app", id: "settings", keys: "ctrl+comma", help: "settings: accounts, memory, sessions, shortcuts", run: openSettings },
   { group: "app", id: "next-theme", keys: "ctrl+shift+e", help: "next theme", run: cycleTheme },
   { group: "app", id: "project-theme", keys: "ctrl+alt+e", help: "theme of this project: the next, then kindric's", run: cycleProjectTheme },
   { group: "app", id: "help", keys: "f1", help: "what is left to set up, and these shortcuts", run: openHelp },
