@@ -2,16 +2,28 @@
 """A fake Claude Code for kindric's end-to-end tests (decision 310): it answers what kindric asks
 and writes the files kindric reads, in the shapes Claude Code 2.1.323 gives, without any model.
 
-    claude --version                      "2.1.323 (Claude Code)"
-    claude auth status --json             logged in for an account (CLAUDE_CONFIG_DIR set), not for ~/.claude;
+    claude --version                      "2.1.323 (Claude Code)", or the version in ~/.claude/fake/version
+    claude auth status --json             logged in for an account (CLAUDE_CONFIG_DIR set), for ~/.claude
+                                          only once ~/.claude/fake/logged-in exists;
                                           the login expires at the date in fake/login-expires, else 2027
     claude auth login                     a new login, noted in fake/logins.log: it expires in 2027
     claude agents --json [--all]          the sessions of the account, stopped ones with --all
     claude [options] --bg [-n name] TASK  a background session; TASK may hold "work:N": it works N
                                           seconds (2 by default), then waits for the user;
-                                          each "touch:NAME" writes the file NAME in its folder;
+                                          each "touch:NAME" writes the file NAME in its folder,
+                                          "cd:PATH" goes into PATH, "commit:MESSAGE" commits there;
+                                          each "image:NAME" writes a PNG (a Write in the transcript)
+                                          its answer cites; "keep:NAME" notes a keep_artifact call;
                                           "ask:WHAT" ends the turn on a question of Claude Code
-                                          (waitingFor WHAT, "_" for spaces) instead of waiting
+                                          (waitingFor WHAT, "_" for spaces) instead of waiting;
+                                          at its start and after each turn, the asyncRewake hooks of
+                                          its --settings run in the background: exit code 2 starts a
+                                          turn with their error output; with FAKE_INTERACTIVE=1, the
+                                          session is listed as one in a terminal of its own
+                                          refused in a folder not trusted when the account's
+                                          fake/require-trust exists
+    claude                                interactive: Claude Code's trust question first in such a
+                                          folder (Down then Enter trusts it), then lines said back
     claude attach ID                      a terminal on the session: each line typed (or pasted, with
                                           bracketed paste) is a new turn; a stopped session is
                                           started again, waiting
@@ -20,18 +32,22 @@ and writes the files kindric reads, in the shapes Claude Code 2.1.323 gives, wit
     claude mcp add [-s user] NAME -- CMD  the server in the account's .claude.json (~/.claude.json without one)
 
 Options kindric-accounts adds (--settings, --mcp-config=…, --append-system-prompt-file …) are
-ignored, but a session keeps the words it was started with ("args"). Everything lives in the
-account's folder: fake/sessions.json, sessions/<pid>.json, jobs/<id>/state.json, and the transcript
+ignored, but a session keeps the words it was started with ("args"). Each call notes in
+fake/env.log whether it had CLAUDE_CONFIG_DIR and the billing variables. Everything lives in the
+account's folder: fake/sessions.json, sessions/<pid>.json, jobs/<id>/state.json and its history
+jobs/<id>/timeline.jsonl, and the transcript
 projects/<folder>/<session id>.jsonl, a prompt and an answer per turn.
 """
 import json
 import os
 import re
 import signal
+import struct
 import subprocess
 import sys
 import time
 import uuid
+import zlib
 
 VERSION = "2.1.323"
 # Options that take the next word as their value, when not written with "=".
@@ -103,18 +119,26 @@ def set_state(session_id, status, state, detail, waiting_for=None):
     if session.get("pid"):
         process = {
             "pid": session["pid"], "sessionId": session["sessionId"], "cwd": session["cwd"], "startedAt": session["startedAt"],
-            "version": VERSION, "kind": "bg", "name": session.get("name", ""), "jobId": session["id"],
+            "version": VERSION, "kind": "interactive" if session.get("interactive") else "bg", "name": session.get("name", ""), "jobId": session["id"],
             "updatedAt": now_ms(), "status": status, "statusUpdatedAt": now_ms(),
         }
         if waiting_for:
             process["waitingFor"] = waiting_for
         write_json(os.path.join(config_dir(), "sessions", f"{session['pid']}.json"), process)
     tempo = {"busy": "active", "waiting": "blocked"}.get(status, "idle")
-    write_json(os.path.join(config_dir(), "jobs", session["id"], "state.json"), {
+    write_job(session, {
         "state": state, "detail": detail, "tempo": tempo,
         "name": session.get("name", ""), "sessionId": session["sessionId"], "cliVersion": VERSION,
         "cwd": session["cwd"], "createdAt": iso(session["startedAt"]), "updatedAt": iso(now_ms()),
     })
+
+
+def write_job(session, value):
+    """The session's job file, jobs/<id>/state.json, and a line of its history, timeline.jsonl."""
+    job = os.path.join(config_dir(), "jobs", session["id"])
+    write_json(os.path.join(job, "state.json"), value)
+    with open(os.path.join(job, "timeline.jsonl"), "a") as timeline:
+        timeline.write(json.dumps({"state": value.get("state"), "detail": value.get("detail"), "at": iso(now_ms())}) + "\n")
 
 
 def transcript_path(session):
@@ -123,27 +147,45 @@ def transcript_path(session):
     return os.path.join(config_dir(), "projects", folder, f"{session['sessionId']}.jsonl")
 
 
-def write_transcript(session_id, entry):
-    """Adds one entry to the session's transcript, in the shape Claude Code 2.1.323 writes."""
+def write_transcript(session_id, entry, cwd=None):
+    """Adds one entry to the session's transcript, in the shape Claude Code 2.1.323 writes; `cwd`
+    the folder the session is in, its own by default."""
     session = find(load(), session_id)
     if session is None:
         return
     path = transcript_path(session)
     os.makedirs(os.path.dirname(path), exist_ok=True)
-    entry.update(sessionId=session["sessionId"], cwd=session["cwd"], timestamp=iso(now_ms()), uuid=str(uuid.uuid4()))
+    entry.update(sessionId=session["sessionId"], cwd=cwd or session["cwd"], timestamp=iso(now_ms()), uuid=str(uuid.uuid4()))
     with open(path, "a") as out:
         # Compact, as Claude Code writes it: kindric looks for "name":"value" in the bytes.
         out.write(json.dumps(entry, separators=(",", ":")) + "\n")
 
 
+def tool_result(session_id, cwd, output):
+    """What a tool gave back, as Claude Code writes it in the transcript, in the folder `cwd`."""
+    write_transcript(session_id, {"type": "user", "message": {"role": "user", "content": [
+        {"type": "tool_result", "tool_use_id": f"toolu_{uuid.uuid4().hex[:12]}", "content": output}]}}, cwd)
+
+
 def write_files(session_id, task):
-    """Each "touch:NAME" of the task: the session writes the file NAME in its folder."""
+    """The steps of the task, in order: "touch:NAME" writes the file NAME in the folder the session
+    is in, "cd:PATH" goes into PATH (relative to its own folder), "commit:MESSAGE" commits every
+    change of that folder with git ("_" for spaces), its output in the transcript."""
     session = find(load(), session_id)
     if session is None:
         return
-    for name in re.findall(r"touch:(\S+)", task or ""):
-        with open(os.path.join(session["cwd"], name), "w") as out:
-            out.write(f"written by {session.get('name') or session['id']}\n")
+    here = session["cwd"]
+    for step, value in re.findall(r"\b(touch|cd|commit):(\S+)", task or ""):
+        if step == "touch":
+            with open(os.path.join(here, value), "w") as out:
+                out.write(f"written by {session.get('name') or session['id']}\n")
+        elif step == "cd":
+            here = os.path.normpath(os.path.join(here, value))
+            tool_result(session_id, here, "")
+        else:
+            subprocess.run(["git", "add", "-A"], cwd=here, capture_output=True)
+            done = subprocess.run(["git", "commit", "-m", value.replace("_", " ")], cwd=here, capture_output=True, text=True)
+            tool_result(session_id, here, done.stdout + done.stderr)
 
 
 def question_of(task):
@@ -166,7 +208,7 @@ def job_progress(session_id, detail):
     session = find(load(), session_id)
     if session is None:
         return
-    write_json(os.path.join(config_dir(), "jobs", session["id"], "state.json"), {
+    write_job(session, {
         "state": "working", "detail": detail, "tempo": "active",
         "name": session.get("name", ""), "sessionId": session["sessionId"], "cliVersion": VERSION,
         "cwd": session["cwd"], "createdAt": iso(session["startedAt"]), "updatedAt": iso(now_ms()),
@@ -190,14 +232,91 @@ def turn(session_id, task):
         # Seen on Claude Code 2.1.326: "waiting" in the process file and in agents --json.
         set_state(session_id, "waiting", "blocked", "waiting for you", question)
         return
-    write_transcript(session_id, {"type": "assistant", "message": {"role": "assistant", "content": [{"type": "text", "text": f"done: {task}"}]}})
+    answer = f"done: {task}"
+    images = write_images(session_id, task)
+    if images:
+        answer += "\n\nI made " + ", ".join(f"`{name}`" for name in images) + "."
+    # The tools the turn called, as Claude Code writes them: Write for each image, keep_artifact
+    # (for the user) for each "keep:NAME".
+    calls = [("Write", {"file_path": name, "content": "…"}) for name in images]
+    calls += [("mcp__kindric__keep_artifact", {"path": name, "for": "user"}) for name in re.findall(r"\bkeep:(\S+)", task or "")]
+    for name, given in calls:
+        write_transcript(session_id, {"type": "assistant", "message": {"role": "assistant", "content": [
+            {"type": "tool_use", "id": f"toolu_{uuid.uuid4().hex[:12]}", "name": name, "input": given}]}})
+    write_transcript(session_id, {"type": "assistant", "message": {"role": "assistant", "content": [{"type": "text", "text": answer}]}})
     set_state(session_id, "idle", "blocked", "waiting for you")
+    start_rewake(session_id, "Stop")
+
+
+def png(width, height, rgb):
+    """A PNG of one colour."""
+    def chunk(kind, data):
+        return struct.pack(">I", len(data)) + kind + data + struct.pack(">I", zlib.crc32(kind + data) & 0xFFFFFFFF)
+    rows = b"".join(b"\x00" + bytes(rgb) * width for _ in range(height))
+    header = struct.pack(">IIBBBBB", width, height, 8, 2, 0, 0, 0)
+    return b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", header) + chunk(b"IDAT", zlib.compress(rows)) + chunk(b"IEND", b"")
+
+
+def write_images(session_id, task):
+    """Each "image:NAME" of the task: a PNG written in the session's folder, which its answer cites."""
+    session = find(load(), session_id)
+    names = re.findall(r"\bimage:(\S+)", task or "")
+    for name in names if session else []:
+        with open(os.path.join(session["cwd"], name), "wb") as out:
+            out.write(png(8, 6, (200, 80, 30)))
+    return names if session else []
+
+
+def rewake_hooks(session, event):
+    """The commands the session's settings (--settings) run in the background for `event`, the
+    hooks marked asyncRewake: Claude Code starts a turn with the error output of one that exits 2."""
+    args = session.get("args", [])
+    try:
+        with open(args[args.index("--settings") + 1]) as source:
+            settings = json.load(source)
+    except (ValueError, IndexError, OSError):
+        return []
+    return [hook["command"] for matcher in settings.get("hooks", {}).get(event, []) for hook in matcher.get("hooks", [])
+            if hook.get("asyncRewake") and hook.get("command")]
+
+
+def start_rewake(session_id, event):
+    """Runs the session's asyncRewake hooks of `event`, each in a process of its own, noted in the
+    session's "hooks" so that stopping the session ends them."""
+    sessions = load()
+    session = find(sessions, session_id)
+    if session is None:
+        return
+    for command in rewake_hooks(session, event):
+        process = subprocess.Popen([sys.executable, os.path.abspath(__file__), "--fake-rewake", session_id, event, command],
+                                   stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True)
+        session.setdefault("hooks", []).append(process.pid)
+    save(sessions)
+
+
+def rewake(session_id, event, command):
+    """One asyncRewake hook: given what Claude Code gives a hook; exit code 2 wakes the session,
+    its error output the prompt of the new turn."""
+    session = find(load(), session_id)
+    if session is None:
+        return
+    asked = {"session_id": session["sessionId"], "transcript_path": transcript_path(session), "cwd": session["cwd"], "hook_event_name": event}
+    done = subprocess.run(command, shell=True, input=json.dumps(asked), capture_output=True, text=True, cwd=session["cwd"])
+    session = find(load(), session_id)
+    if done.returncode == 2 and session is not None and alive(session.get("pid")):
+        turn(session_id, done.stderr.strip())
 
 
 def worker(session_id, task):
     """The session's process: it lives until stopped, like a background session of Claude Code.
     Without a task, it was stopped and is started again: it waits for the user."""
     signal.signal(signal.SIGTERM, lambda *_: sys.exit(0))
+    # The registry is written by the process that started this one once it has its pid: writing
+    # it before would lose that pid.
+    deadline = time.time() + 5
+    while time.time() < deadline and (find(load(), session_id) or {}).get("pid") != os.getpid():
+        time.sleep(0.05)
+    start_rewake(session_id, "SessionStart")
     if task is None:
         set_state(session_id, "idle", "blocked", "waiting for you")
     else:
@@ -223,7 +342,8 @@ def background(args, task):
             name = args[index + 1]
     sessions = load()
     session = {"id": uuid.uuid4().hex[:8], "sessionId": str(uuid.uuid4()), "name": name or "", "cwd": os.getcwd(),
-               "startedAt": now_ms(), "pid": None, "status": "busy", "state": "working", "detail": "", "args": args}
+               "startedAt": now_ms(), "pid": None, "status": "busy", "state": "working", "detail": "", "args": args,
+               "interactive": os.environ.get("FAKE_INTERACTIVE") == "1"}
     sessions.append(session)
     save(sessions)
     spawn(session["sessionId"], task or "")
@@ -237,6 +357,12 @@ def agents(args):
     for session in load():
         running = alive(session.get("pid"))
         if not running and not show_all:
+            continue
+        if session.get("interactive"):
+            # A session in a terminal of its own, as 2.1.325 lists it: no job id, nothing to attach.
+            if running:
+                listed.append({"name": session.get("name", ""), "kind": "interactive", "status": session["status"], "pid": session["pid"],
+                               "cwd": session["cwd"], "sessionId": session["sessionId"]})
             continue
         entry = {"id": session["id"], "cwd": session["cwd"], "kind": "background", "startedAt": session["startedAt"],
                  "sessionId": session["sessionId"]}
@@ -289,6 +415,11 @@ def stop(wanted, remove):
         return 1
     if alive(session.get("pid")):
         os.kill(session["pid"], signal.SIGTERM)
+    for hook in session.pop("hooks", []):
+        try:
+            os.killpg(hook, signal.SIGTERM)
+        except OSError:
+            pass
     if session.get("pid"):
         try:
             os.remove(os.path.join(config_dir(), "sessions", f"{session['pid']}.json"))
@@ -299,8 +430,43 @@ def stop(wanted, remove):
         sessions.remove(session)
     save(sessions)
     if not remove:
-        write_json(os.path.join(config_dir(), "jobs", session["id"], "state.json"), {"state": "stopped", "detail": "Stopped", "tempo": "idle"})
+        write_job(session, {"state": "stopped", "detail": "Stopped", "tempo": "idle"})
     print(f"{'removed' if remove else 'stopped'} {session['id']}")
+    return 0
+
+
+def trusted(directory):
+    """Whether the account trusts `directory`, as Claude Code keeps it in its .claude.json; every
+    folder is, unless fake/require-trust exists in the account's folder."""
+    if not os.path.exists(os.path.join(config_dir(), "fake", "require-trust")):
+        return True
+    try:
+        with open(state_file()) as source:
+            state = json.load(source)
+    except (OSError, ValueError):
+        return False
+    return bool(state.get("projects", {}).get(directory, {}).get("hasTrustDialogAccepted"))
+
+
+def interactive():
+    """`claude` in a terminal: in a folder not trusted, Claude Code's question first ("No, exit"
+    chosen; Down then Enter says yes, kept in .claude.json); then each line typed is said back."""
+    here = os.getcwd()
+    if not trusted(here):
+        print(f"Do you trust the files in this folder?\n\n{here}\n\n❯ 1. No, exit\n  2. Yes, I trust this folder", flush=True)
+        answer = sys.stdin.readline()
+        if "\x1b[B" not in answer and answer.strip() != "2":
+            return 1
+        try:
+            with open(state_file()) as source:
+                state = json.load(source)
+        except (OSError, ValueError):
+            state = {}
+        state.setdefault("projects", {}).setdefault(here, {})["hasTrustDialogAccepted"] = True
+        write_json(state_file(), state)
+    print(f"fake claude · {here}", flush=True)
+    for line in sys.stdin:
+        print(f"you said: {line.strip()}", flush=True)
     return 0
 
 
@@ -321,6 +487,23 @@ def mcp_add(name, command):
     write_json(state_file(), state)
     print(f"Added stdio MCP server {name} with command: {' '.join(command)} to user config")
     return 0
+
+
+# What kindric must give claude, or not: the account's folder, and no billing variable.
+WATCHED_ENV = ("CLAUDE_CONFIG_DIR", "ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "CLAUDE_CODE_OAUTH_TOKEN")
+
+
+def note_environment(argv):
+    """fake/env.log of the account: per call, its words and which WATCHED_ENV it had."""
+    present = [name for name in WATCHED_ENV if name in os.environ]
+    os.makedirs(os.path.join(config_dir(), "fake"), exist_ok=True)
+    with open(os.path.join(config_dir(), "fake", "env.log"), "a") as log:
+        log.write(f"{' '.join(argv).replace(chr(9), ' ')}\t{' '.join(present)}\n")
+
+
+def default_logged_in():
+    """~/.claude, the implicit default account, is logged in once fake/logged-in is there."""
+    return os.path.exists(os.path.join(os.path.expanduser("~"), ".claude", "fake", "logged-in"))
 
 
 LOGIN_EXPIRES = "2027-01-01T00:00:00.000Z"
@@ -356,6 +539,9 @@ def main(argv):
     if argv[:1] == ["--fake-resume"]:
         worker(argv[1], None)
         return 0
+    if argv[:1] == ["--fake-rewake"]:
+        rewake(argv[1], argv[2], argv[3])
+        return 0
     if argv[:1] == ["--fake-turn"]:
         turn(argv[1], argv[2])
         return 0
@@ -365,6 +551,7 @@ def main(argv):
     if calls:
         with open(calls, "a") as log:
             log.write(f"{time.time():.3f} {' '.join(argv)}\n")
+    note_environment(argv)
     # Words that are not options or their values: the subcommand and the task.
     words = []
     index = 0
@@ -377,10 +564,16 @@ def main(argv):
             words.append(arg)
         index += 1
     if "--version" in argv or "-v" in argv:
-        print(f"{VERSION} (Claude Code)")
+        # Another version for the journey that needs one: ~/.claude/fake/version.
+        try:
+            with open(os.path.join(os.path.expanduser("~"), ".claude", "fake", "version")) as source:
+                shown = source.read().strip() or VERSION
+        except OSError:
+            shown = VERSION
+        print(f"{shown} (Claude Code)")
         return 0
     if words[:2] == ["auth", "status"]:
-        logged_in = "CLAUDE_CONFIG_DIR" in os.environ
+        logged_in = "CLAUDE_CONFIG_DIR" in os.environ or default_logged_in()
         print(json.dumps({"loggedIn": logged_in, "authMethod": "claude.ai" if logged_in else "none", "loginExpiresAt": login_expires() if logged_in else None}))
         return 0 if logged_in else 1
     if words[:2] == ["auth", "login"]:
@@ -394,7 +587,12 @@ def main(argv):
     if words[:1] in (["stop"], ["rm"]) and len(words) > 1:
         return stop(words[1], remove=words[0] == "rm")
     if "--bg" in argv:
+        if not trusted(os.getcwd()):
+            print(f"Workspace not trusted. Run `claude` in {os.getcwd()} once and accept the trust prompt, then retry.", file=sys.stderr)
+            return 1
         return background(argv, " ".join(words))
+    if not words:
+        return interactive()
     print(f"fake claude: not imitated: {' '.join(argv)}", file=sys.stderr)
     return 2
 
