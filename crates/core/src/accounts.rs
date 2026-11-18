@@ -393,6 +393,11 @@ pub struct Queried {
     pub found: Found,
 }
 
+/// The usage noted over time for each of `names`, for the statistics.
+pub fn histories(paths: &Paths, names: &[String]) -> BTreeMap<String, Vec<usage::Usage>> {
+    names.iter().map(|name| (name.clone(), usage::read_history(paths, name))).collect()
+}
+
 /// The accounts registered, then those kept out of messages: two small files.
 pub fn registered(paths: &Paths) -> io::Result<(Vec<String>, Vec<String>)> {
     let accounts = registry::list_accounts(paths).map_err(library_error)?;
