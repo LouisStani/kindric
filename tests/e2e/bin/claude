@@ -18,6 +18,10 @@ and writes the files kindric reads, in the shapes Claude Code 2.1.323 gives, wit
                                           at its start and after each turn, the asyncRewake hooks of
                                           its --settings run in the background: exit code 2 starts a
                                           turn with their error output
+                                          refused in a folder not trusted when the account's
+                                          fake/require-trust exists
+    claude                                interactive: Claude Code's trust question first in such a
+                                          folder (Down then Enter trusts it), then lines said back
     claude attach ID                      a terminal on the session: each line typed (or pasted, with
                                           bracketed paste) is a new turn; a stopped session is
                                           started again, waiting
@@ -415,6 +419,41 @@ def stop(wanted, remove):
     return 0
 
 
+def trusted(directory):
+    """Whether the account trusts `directory`, as Claude Code keeps it in its .claude.json; every
+    folder is, unless fake/require-trust exists in the account's folder."""
+    if not os.path.exists(os.path.join(config_dir(), "fake", "require-trust")):
+        return True
+    try:
+        with open(state_file()) as source:
+            state = json.load(source)
+    except (OSError, ValueError):
+        return False
+    return bool(state.get("projects", {}).get(directory, {}).get("hasTrustDialogAccepted"))
+
+
+def interactive():
+    """`claude` in a terminal: in a folder not trusted, Claude Code's question first ("No, exit"
+    chosen; Down then Enter says yes, kept in .claude.json); then each line typed is said back."""
+    here = os.getcwd()
+    if not trusted(here):
+        print(f"Do you trust the files in this folder?\n\n{here}\n\n❯ 1. No, exit\n  2. Yes, I trust this folder", flush=True)
+        answer = sys.stdin.readline()
+        if "\x1b[B" not in answer and answer.strip() != "2":
+            return 1
+        try:
+            with open(state_file()) as source:
+                state = json.load(source)
+        except (OSError, ValueError):
+            state = {}
+        state.setdefault("projects", {}).setdefault(here, {})["hasTrustDialogAccepted"] = True
+        write_json(state_file(), state)
+    print(f"fake claude · {here}", flush=True)
+    for line in sys.stdin:
+        print(f"you said: {line.strip()}", flush=True)
+    return 0
+
+
 def state_file():
     """Where Claude Code keeps an account's state: beside ~/.claude for the default account."""
     if os.environ.get("CLAUDE_CONFIG_DIR"):
@@ -526,7 +565,12 @@ def main(argv):
     if words[:1] in (["stop"], ["rm"]) and len(words) > 1:
         return stop(words[1], remove=words[0] == "rm")
     if "--bg" in argv:
+        if not trusted(os.getcwd()):
+            print(f"Workspace not trusted. Run `claude` in {os.getcwd()} once and accept the trust prompt, then retry.", file=sys.stderr)
+            return 1
         return background(argv, " ".join(words))
+    if not words:
+        return interactive()
     print(f"fake claude: not imitated: {' '.join(argv)}", file=sys.stderr)
     return 2
 

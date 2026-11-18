@@ -1781,5 +1781,46 @@ def settings_path(session: dict[str, Any]) -> str:
     return args[args.index("--settings") + 1]
 
 
+def trusted_by_account(directory: str) -> bool:
+    try:
+        with open(os.path.join(ACCOUNT_DIR, ".claude.json")) as source:
+            return bool(json.load(source).get("projects", {}).get(directory, {}).get("hasTrustDialogAccepted"))
+    except (OSError, ValueError):
+        return False
+
+
+class TrustAFolder(Journey):
+    """Ctrl+N in a folder the account never trusted: Claude Code refuses, the form offers "trust it";
+    Claude Code asks in the helper window, Down and Enter answer yes, and "done" starts the session."""
+
+    @classmethod
+    def prepare(cls) -> None:
+        os.makedirs(os.path.join(ACCOUNT_DIR, "fake"), exist_ok=True)
+        write(os.path.join(ACCOUNT_DIR, "fake/require-trust"), "")
+
+    def test_refused_trusted_started(self) -> None:
+        driver = self.driver
+        driver.press(CONTROL, "n")
+        wait_until("the new session form", lambda: dialog_open(driver, "new-session"))
+        directory = driver.find("#new-form input[name=directory]")
+        driver.clear(directory)
+        driver.type_into(directory, PROJECT)
+        driver.type_into(driver.find("#new-form input[name=name]"), "trusted" + ENTER)
+        wait_until("the refusal, with trust it", lambda: "trust it" in texts(driver, "#new-message button") or None)
+        self.assertIn("work has not trusted this folder yet.", texts(driver, "#new-message")[0])
+        self.assertEqual(fake_sessions(), [])
+
+        click_text(driver, "#new-message button", "trust it")
+        wait_until("the helper window", lambda: dialog_open(driver, "helper"))
+        # The terminal draws with WebGL: its text is not in the page. The pty keeps what is typed
+        # until the fake claude reads its answer.
+        driver.type_into(driver.find("#helper-screen .xterm-helper-textarea"), ARROW_DOWN + ENTER)
+        wait_until("the folder trusted", lambda: trusted_by_account(PROJECT))
+        driver.click(driver.find("#helper-done"))
+        wait_until("the helper closed", lambda: not dialog_open(driver, "helper"))
+        wait_until("the session started", lambda: chip_state(driver, "trusted"))
+        self.assertEqual(fake_sessions()[0]["cwd"], PROJECT)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
