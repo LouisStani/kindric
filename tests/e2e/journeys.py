@@ -14,7 +14,7 @@ import time
 import unittest
 from typing import Any
 
-from driver import ARROW_DOWN, CONTROL, DELETE, ELEMENT_KEY, ENTER, ESCAPE, F2, SHIFT, Driver, wait_until
+from driver import ALT, ARROW_DOWN, CONTROL, DELETE, ELEMENT_KEY, ENTER, ESCAPE, F2, SHIFT, Driver, wait_until
 
 HOME = os.path.expanduser("~")
 ACCOUNT = "work"
@@ -1634,6 +1634,91 @@ class DoneInThePane(Journey):
         self.assertEqual(self.active_title(), "worker")
         wait_until("the mark gone once looked at", lambda: self.marks()["worker"] == (False, False) or None)
         self.assertNotEqual(chip_state(driver, "worker"), "finished")
+
+
+SETTINGS = os.path.join(HOME, ".local/share/kindric/settings.json")
+EMBER, PAPER = "#1a0e06", "#f7efe4"
+
+
+def background(driver: Driver) -> str:
+    return str(driver.script("return getComputedStyle(document.documentElement).getPropertyValue('--background').trim()"))
+
+
+class ShortcutChanged(Journey):
+    """The settings give "next theme" new keys: keys already taken are refused with the name of
+    their action; the new keys work, the old ones no longer do, F1 shows them, and they are kept
+    after a restart. "reset" gives the old keys back."""
+
+    def shortcut_row(self, help_text: str) -> str:
+        found = self.driver.script("""return [...document.querySelectorAll('#settings .shortcut')].find(
+          (row) => row.querySelector('.shortcut-help').textContent === arguments[0]);""", help_text)
+        if not isinstance(found, dict) or ELEMENT_KEY not in found:
+            raise AssertionError(f"no shortcut {help_text!r} in the settings")
+        return str(found[ELEMENT_KEY])
+
+    def keys_shown(self) -> str:
+        """The keys the settings show for "next theme"."""
+        return str(self.driver.script("return arguments[0].querySelector('kbd').textContent;", {ELEMENT_KEY: self.shortcut_row("next theme")}))
+
+    def press_in_row(self, label: str) -> None:
+        found = self.driver.script("""return [...arguments[0].querySelectorAll('.shortcut-actions button')].find((button) => button.textContent === arguments[1]);""",
+                                   {ELEMENT_KEY: self.shortcut_row("next theme")}, label)
+        if not isinstance(found, dict) or ELEMENT_KEY not in found:
+            raise AssertionError(f"no {label} on the row of next theme")
+        self.driver.click(str(found[ELEMENT_KEY]))
+
+    def open_shortcuts(self) -> None:
+        driver = self.driver
+        driver.press(CONTROL, ",")
+        wait_until("the settings", lambda: dialog_open(driver, "settings"))
+        click_text(driver, "#settings .settings-categories li", "shortcuts")
+        wait_until("the shortcuts", lambda: self.keys_shown())
+
+    def close_settings(self) -> None:
+        driver = self.driver
+        for _ in range(2):
+            if dialog_open(driver, "settings"):
+                driver.press(ESCAPE)
+                time.sleep(0.2)
+        wait_until("the settings closed", lambda: not dialog_open(driver, "settings"))
+
+    def test_change_refuse_keep_reset(self) -> None:
+        driver = self.driver
+        self.open_shortcuts()
+        self.assertEqual(self.keys_shown(), "Ctrl+Shift+E")
+        self.press_in_row("change")
+        wait_until("waiting for the keys", lambda: self.keys_shown() == "press keys…" or None)
+        driver.press(CONTROL, SHIFT, "k")
+        wait_until("taken keys refused", lambda: texts(driver, "#settings .shortcuts-message")[0].startswith('Ctrl+Shift+K is already "stop and hide') or None)
+        driver.press(CONTROL, ALT, "t")
+        wait_until("the new keys", lambda: self.keys_shown() == "Ctrl+Alt+T" or None)
+        with open(SETTINGS) as source:
+            self.assertEqual(json.load(source).get("keys", {}).get("next-theme"), "ctrl+alt+t")
+        self.close_settings()
+
+        driver.press(CONTROL, SHIFT, "e")
+        time.sleep(0.5)
+        self.assertEqual(background(driver), EMBER, "the old keys still change the theme")
+        driver.press(CONTROL, ALT, "t")
+        wait_until("the next theme from the new keys", lambda: background(driver) == PAPER or None)
+        driver.press("")
+        wait_until("the help", lambda: dialog_open(driver, "help"))
+        helped = driver.script("""return [...document.querySelectorAll('#help kbd')].map((keys) => [keys.textContent, keys.nextElementSibling?.textContent]);""")
+        self.assertIn(["Ctrl+Alt+T", "next theme"], helped)
+        driver.press(ESCAPE)
+        wait_until("the help closed", lambda: not dialog_open(driver, "help"))
+
+        type(self).restart()
+        driver = self.driver
+        driver.press(CONTROL, ALT, "t")
+        wait_until("the new keys after a restart", lambda: background(driver) not in (EMBER, PAPER) or None)
+
+        self.open_shortcuts()
+        self.press_in_row("reset")
+        wait_until("the old keys back", lambda: self.keys_shown() == "Ctrl+Shift+E" or None)
+        self.close_settings()
+        driver.press(CONTROL, SHIFT, "e")
+        wait_until("the old keys working", lambda: background(driver) == EMBER or None)
 
 
 if __name__ == "__main__":
