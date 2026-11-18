@@ -3,11 +3,12 @@
 //! to are queried again; the others keep what they gave last.
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::io;
 use std::path::{Path, PathBuf};
 use std::thread;
 use std::time::Duration;
 
-use crate::accounts::{self, Found, SessionInfo, Snapshot};
+use crate::accounts::{self, Found, SessionInfo, SessionState, Snapshot};
 use crate::mailbox::{self, Mailbox};
 use crate::overview;
 use crate::progress;
@@ -23,9 +24,22 @@ const CALM_FALLBACK: Duration = Duration::from_secs(300);
 const SETTLE: Duration = Duration::from_millis(300);
 const MAX_SETTLE: Duration = Duration::from_secs(1);
 const WITHOUT_WATCHER: Duration = Duration::from_secs(10);
+/// A session at rest counts only the messages of the last day: older ones, never read, kept it
+/// at the top of the bar and of Ctrl+P for good (decision 375). A day, as for the wake by message.
+const RESTING_MESSAGES_SECONDS: u64 = 24 * 60 * 60;
 
 /// The session list with unread message counts by session id, or why it could not be read.
 pub type Update = Result<(Snapshot, HashMap<String, usize>), String>;
+
+/// The unread messages of `session` that count: all of them for a live session, those of the
+/// last day for one at rest. None is hidden from the session itself, nor from Ctrl+Shift+M.
+fn shown_unread(mailbox: &Mailbox, session: &SessionInfo, now: u64) -> io::Result<usize> {
+    if session.state == SessionState::Paused {
+        mailbox.unread_count_since(&session.session_id, now.saturating_sub(RESTING_MESSAGES_SECONDS))
+    } else {
+        mailbox.unread_count(&session.session_id)
+    }
+}
 
 /// What to read again: every account, or only those written to. A write in the mailbox or in the
 /// requests of the overview alone queries none: the unread counts and the requests are always
@@ -196,7 +210,7 @@ impl Refresher {
             .iter()
             .filter(|session| !session.isolated)
             .filter_map(|session| {
-                let count = mailbox.unread_count(&session.session_id).ok()?;
+                let count = shown_unread(mailbox, session, mailbox::now_secs()).ok()?;
                 (count > 0).then(|| (session.session_id.clone(), count))
             })
             .collect()
@@ -386,5 +400,43 @@ mod tests {
         assert_eq!(to_query(&Change::Full, &registry(), &known), registry());
         let everything = self::known(&["louis", "pro", "new"]);
         assert!(to_query(&changed(&[]), &registry(), &everything).is_empty());
+    }
+
+    fn session_in(state: SessionState) -> SessionInfo {
+        SessionInfo {
+            account: "louis".into(),
+            short_id: Some("bbbbbbbb".into()),
+            session_id: "bbbb-2222".into(),
+            name: "old".into(),
+            cwd: "/home/u/old".into(),
+            state,
+            isolated: false,
+            progress: None,
+            waiting_for: None,
+        }
+    }
+
+    #[test]
+    fn a_session_at_rest_counts_only_the_messages_of_the_last_day() {
+        let root = std::env::temp_dir().join(format!("kindric-test-resting-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let mailbox = Mailbox::new(root.clone());
+        let now = 10 * RESTING_MESSAGES_SECONDS;
+        let message = |sent_at| mailbox::Message {
+            from_session: "aaaa-1111".into(),
+            from_title: "roblox".into(),
+            from_account: "louis".into(),
+            sent_at,
+            text: "hi".into(),
+            wake: false,
+        };
+        mailbox.send("bbbb-2222", &message(now - RESTING_MESSAGES_SECONDS - 1)).unwrap();
+        mailbox.send("bbbb-2222", &message(now - 60)).unwrap();
+        assert_eq!(shown_unread(&mailbox, &session_in(SessionState::Paused), now).unwrap(), 1, "the old one no longer counts");
+        for live in [SessionState::Working, SessionState::Waiting, SessionState::Elsewhere] {
+            assert_eq!(shown_unread(&mailbox, &session_in(live), now).unwrap(), 2, "a live session counts every message");
+        }
+        assert_eq!(mailbox.unread_count("bbbb-2222").unwrap(), 2, "nothing is read or removed");
+        std::fs::remove_dir_all(&root).unwrap();
     }
 }
