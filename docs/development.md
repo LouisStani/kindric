@@ -16,12 +16,13 @@ Read [CONTRIBUTING.md](../CONTRIBUTING.md) first.
 ```sh
 cargo test --workspace
 cargo clippy --workspace --all-targets -- -D warnings
+node --test crates/desktop/ui/*.test.js
 cargo run -p kindric-desktop
 ```
 
 On Linux the desktop interface needs WebKitGTK 4.1 (`webkit2gtk-4.1` on Arch, `libwebkit2gtk-4.1-dev` on Debian and Ubuntu).
 
-The tests never start Claude Code and never touch your accounts.
+The tests never start Claude Code and never touch your accounts. The JavaScript tests cover the parts of the page that need no browser (the bar's dots, the launcher, the control center, the atlas, the screen photos, the purge); they need only Node.
 
 ### End-to-end journeys
 
@@ -31,7 +32,7 @@ The tests never start Claude Code and never touch your accounts.
 
 ## CI and releases
 
-- At every push, CI runs clippy and the tests on Linux, macOS and Windows.
+- At every push to `main`, every pull request, and on demand (`gh workflow run CI --ref <branch>`), CI runs clippy and the tests on Linux, macOS and Windows, and the JavaScript tests on Linux.
 - It also runs kindric-accounts' command-line tests (`crates/accounts/tests.sh`, Linux) and smoke tests (macOS, Windows).
 - A `v*` tag publishes the kindric-accounts binaries for five targets in the release.
 
@@ -39,6 +40,7 @@ The tests never start Claude Code and never touch your accounts.
 
 The page in `crates/desktop/ui/` has no build step.
 
+- Each module of the page is a plain ES module. Those that need no browser have a `.test.js` beside them.
 - [xterm.js](https://xtermjs.org) 6.0.0 and its fit (0.11.0), WebGL (0.19.0), Unicode 11 (0.9.0) and serialize (0.14.0) addons are copied from npm into `ui/vendor/`, each with its MIT license. Unicode 11 gives emojis two cells, as Claude Code counts them in its tables. Serialize turns a pane's screen into terminal sequences, kept to show while its session attaches again; its npm package has no license file, so `LICENSE.addon-serialize` is the xterm.js MIT license with the copyright line of the addon's source.
 - The font, [JetBrains Mono](https://www.jetbrains.com/lp/mono/) 2.304 (regular and bold, from the official release), sits next to them with its OFL license, so the app looks the same on every system.
 - Colors and font are CSS variables at the top of `style.css`. Themes only replace those variables.

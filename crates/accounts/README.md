@@ -124,9 +124,9 @@ alias cw='kindric-accounts run work'
 
 ## Scripting
 
-Other programs can drive kindric-accounts through the commands below. Their output stays stable across all 1.x versions: new fields may be added, existing ones are not renamed or removed.
+Other programs can drive kindric-accounts through the commands below. Their output stays stable across all 2.x versions: new fields may be added, existing ones are not renamed or removed.
 
-[kindric](https://github.com/LouisStani/kindric) uses them to show the Claude sessions of all your accounts side by side in one terminal, and to let them send each other messages.
+[kindric](https://github.com/LouisStani/kindric) uses them to show the Claude sessions of all your accounts side by side in one window, and to let them send each other messages.
 
 | Command | Output |
 | --- | --- |
@@ -169,12 +169,12 @@ Each account gets its own `CLAUDE_CONFIG_DIR`.
 | Usage of the limits | `~/.local/share/kindric-accounts/.usage/<name>.json`, written by `kindric-accounts statusline` |
 | Context used by each session | `~/.local/share/kindric-accounts/.usage/context/<name>/<session id>.json`, written by `kindric-accounts statusline` |
 | Unread messages of kindric | Hooks added to the same `.shared-settings/<name>.json`, see below |
-| The user away, in kindric | A Stop hook added to the same `.shared-settings/<name>.json`, see below |
+| The user away, in kindric | Hooks added to the same `.shared-settings/<name>.json`, see below |
+| The overview and the artifacts of kindric | Hooks added to the same `.shared-settings/<name>.json`, see below |
+| The memory of kindric | `CLAUDE.md` and `AGENTS.md` written in the project, the rest passed with `--append-system-prompt-file` and `--plugin-dir`, see [Memory of kindric](#memory-of-kindric) |
 | Claude Code theme of the sessions kindric starts | A copy of that file with `"theme": "custom:<theme>"`, `.shared-settings/<name>.<theme>.json`; `run` never writes it |
 
 Links are checked on every launch. On Linux and macOS, account directories use `700` permissions and the account list uses `600`.
-
-When a session starts with the memory of kindric (`~/.kindric/memory`), kindric-accounts warns if that memory is above 30 KB. Nothing is cut. To change that size, write a number of KB from 1 to 1024 in `~/.config/kindric-accounts/memory-warning`.
 
 On Windows, a symbolic link needs developer mode. Without it, folders are shared through junctions and `CLAUDE.md` is copied, then refreshed from `~/.claude` at each launch. If you edit that copy inside an account, it is no longer refreshed and kindric-accounts warns you: copy your changes to `~/.claude/CLAUDE.md`. Accounts live in `%APPDATA%\kindric-accounts`.
 
@@ -255,6 +255,28 @@ kindric keeps the files a session made for you (a page, an image, a PDF) when th
 - Never for an isolated account, which has no artifacts.
 - It is added only when the `kindric` in `PATH` knows `artifact-check`.
 - Claude Code reads the settings when a session starts: only sessions started after kindric is installed have it.
+
+## Memory of kindric
+
+`~/.kindric/memory` (or the folder named by `KINDRIC_MEMORY_DIR`) holds what sessions remember from one to the next. kindric-accounts reads it when it starts a conversation. Without that folder, nothing changes.
+
+| Folder | What it holds |
+| --- | --- |
+| `global/` | Rules for every session |
+| `setup/` | Notes about this machine, for every session |
+| `perso/` | Personal notes, never given at startup |
+| `skills/<name>/SKILL.md` | Skills a project can ask for |
+| `projets/<zone>/` | One zone per project: `claude.md`, `INDEX.md`, `skills.md`, and the folders `status/`, `decisions/`, `lessons/`, `knowledge/` |
+
+A zone names its folders in the header of its `claude.md`, for example `directory: ~/Dev/api, ~/Dev/api-docs`. A session started in one of them, or below, belongs to that zone; the deepest folder wins. It then receives:
+
+- the files of `global/` and `setup/`, then the `INDEX.md` of the zone, as startup text, followed by a line on keeping files with `keep_artifact`
+- the skills listed in `skills.md`, one name per line, as `memory:<name>`
+- `CLAUDE.md` and `AGENTS.md`, written in the zone's folder from its `claude.md`, so that the project still works without kindric
+
+A generated `CLAUDE.md` or `AGENTS.md` starts with a mark that holds the fingerprint of its text. A file without that mark, or edited by hand since, is never overwritten: the session starts with a warning instead. A session outside every zone receives `global/` and `setup/` only, and a line that offers to create a zone. An isolated account receives only `global/`, see below.
+
+kindric-accounts warns when what a session opens at startup is above 30 KB. Nothing is cut. To change that size, write a number of KB from 1 to 1024 in `~/.config/kindric-accounts/memory-warning`, or use the settings of kindric. Subcommands of Claude Code that open no conversation (`claude mcp`, `claude agents`…) receive nothing.
 
 ## Isolated accounts
 
