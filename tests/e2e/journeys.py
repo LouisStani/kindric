@@ -1133,7 +1133,6 @@ class PurgeFromSettings(Journey):
         self.assertTrue(fake_running("unpushed-old"), "the refused one keeps running")
 
 
-<<<<<<< HEAD
 MAILBOX = os.path.join(HOME, ".local/share/kindric/mailbox")
 
 
@@ -2599,11 +2598,6 @@ class TabStepAcrossEmptyTabs(Journey):
         driver.click(driver.find("#quick-title"))
         self.round_trip()
 
-=======
-
-# The projects kindric keeps (projects.rs).
-PROJECTS_FILE = os.path.join(HOME, ".local/share/kindric/projects.json")
-
 
 def in_all_toggle(driver: Driver, name: str) -> str | None:
     """Whether the dot left of `name` on the control center's side shows it in "all projects":
@@ -2684,7 +2678,6 @@ class ProjectLeftOutOfAll(Journey):
         wait_until("the project back in all", lambda: self.all_rows() == ["asks", "calm"])
         self.assertEqual(in_all_toggle(driver, "project"), "true")
         self.assertEqual(kept_out_of_all(), [])
->>>>>>> worktree-projects-in-all
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
