@@ -309,11 +309,14 @@ pub struct KindricHooks {
     pub artifacts: Option<String>,
     /// Has a long turn make its task list, which kindric's page shows.
     pub tasks: Option<String>,
+    /// Puts in kindric's overview the question a session's reply asks, when Claude Code classed
+    /// its turn as waiting for the user.
+    pub question: Option<String>,
 }
 
 impl KindricHooks {
     fn is_empty(&self) -> bool {
-        [&self.unread, &self.away, &self.wake, &self.permission, &self.start, &self.artifacts, &self.tasks]
+        [&self.unread, &self.away, &self.wake, &self.permission, &self.start, &self.artifacts, &self.question, &self.tasks]
             .iter()
             .all(|hook| hook.is_none())
     }
@@ -356,6 +359,9 @@ pub fn with_additions(settings: Option<&str>, statusline: Option<&str>, hooks: &
     if let Some(command) = &hooks.start {
         add_hook(&mut settings, &START_EVENTS, &serde_json::json!({ "type": "command", "command": command }));
     }
+    if let Some(command) = &hooks.question {
+        add_hook(&mut settings, &QUESTION_EVENTS, &serde_json::json!({ "type": "command", "command": command }));
+    }
     if let Some(command) = &hooks.artifacts {
         add_hook(&mut settings, &ARTIFACT_EVENTS, &serde_json::json!({ "type": "command", "command": command }));
     }
@@ -386,6 +392,8 @@ const START_EVENTS: [(&str, Option<&str>); 1] = [("SessionStart", None)];
 
 /// The event of the task list: before each tool, whatever it is.
 const TASK_EVENTS: [(&str, Option<&str>); 1] = [("PreToolUse", None)];
+/// The event of the question a reply asks: when the turn ends.
+const QUESTION_EVENTS: [(&str, Option<&str>); 1] = [("Stop", None)];
 
 /// The event of the question about the files a turn made: when it ends.
 const ARTIFACT_EVENTS: [(&str, Option<&str>); 1] = [("Stop", None)];
@@ -440,7 +448,7 @@ const KINDRIC_NAMES: [&str; 2] = ["kindric.exe", "kindric"];
 const KINDRIC_NAMES: [&str; 1] = ["kindric"];
 
 /// kindric's hooks for a session: `"<kindric>" unread`, `away-hook`, `wait-message`,
-/// `permission-hook`, `overview-start`, `artifact-check` and `task-check`, each when
+/// `permission-hook`, `overview-start`, `question-check`, `artifact-check` and `task-check`, each when
 /// the `kindric` in `PATH` has it. An older one would answer with its usage and exit code 2, which
 /// Claude Code shows to Claude after every tool: each is tried once, with no input, and must exit 0.
 pub fn kindric_hooks() -> KindricHooks {
@@ -462,6 +470,7 @@ pub fn kindric_hooks() -> KindricHooks {
         start: answering("overview-start"),
         artifacts: answering("artifact-check"),
         tasks: answering("task-check"),
+        question: answering("question-check"),
     }
 }
 
@@ -686,6 +695,23 @@ mod tests {
         assert_eq!(pre[2]["hooks"][0], serde_json::json!({ "type": "command", "command": "k task-check" }));
         assert!(pre[2].get("matcher").is_none(), "every tool");
         let alone = KindricHooks { tasks: Some("k task-check".into()), ..KindricHooks::default() };
+        assert!(!alone.is_empty(), "enough for a settings file");
+    }
+
+    #[test]
+    fn the_question_check_comes_before_the_artifact_check() {
+        let hooks = KindricHooks {
+            question: Some("k question-check".into()),
+            artifacts: Some("k artifact-check".into()),
+            ..KindricHooks::default()
+        };
+        let settings = r#"{"hooks":{"Stop":[{"hooks":[{"type":"command","command":"mine"}]}]}}"#;
+        let (text, _) = with_additions(Some(settings), None, &hooks);
+        let stop = &serde_json::from_str::<Value>(&text).unwrap()["hooks"]["Stop"];
+        assert_eq!(stop[0]["hooks"][0]["command"], "mine");
+        assert_eq!(stop[1]["hooks"][0], serde_json::json!({ "type": "command", "command": "k question-check" }), "in the foreground, quick");
+        assert_eq!(stop[2]["hooks"][0]["command"], "k artifact-check");
+        let alone = KindricHooks { question: Some("k question-check".into()), ..KindricHooks::default() };
         assert!(!alone.is_empty(), "enough for a settings file");
     }
 

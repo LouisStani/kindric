@@ -21,6 +21,7 @@ pub mod search;
 pub mod steps;
 pub mod task_list;
 pub mod turn_files;
+pub mod turn_question;
 pub mod wake;
 pub mod watcher;
 pub mod worktrees;

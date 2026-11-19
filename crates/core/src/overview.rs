@@ -34,8 +34,15 @@ pub enum Body {
     /// The session asked with Claude Code's own question tool, AskUserQuestion: `questions` as
     /// the tool got them. The session waits for the answer.
     Question { questions: serde_json::Value },
-    /// The session asked with `kindric ask` and keeps working on what does not depend on it.
-    Ask { question: String, context: String },
+    /// The session asked with `kindric ask` and keeps working on what does not depend on it; or,
+    /// `from_reply`, its reply asked and its turn ended (`kindric question-check`, decision 366).
+    /// Answered alike, by typing into the session.
+    Ask {
+        question: String,
+        context: String,
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        from_reply: bool,
+    },
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -223,7 +230,7 @@ where the project keeps its decisions, and go on"
         session_id: session.to_string(),
         cwd: cwd.display().to_string(),
         asked_at: i64::try_from(now_millis / 1000).unwrap_or(i64::MAX),
-        body: Body::Ask { question: question.to_string(), context: context.to_string() },
+        body: Body::Ask { question: question.to_string(), context: context.to_string(), from_reply: false },
     };
     ask(root, &request).map_err(|error| format!("cannot write the question in {}: {error}", root.display()))?;
     Ok(request)
@@ -286,7 +293,7 @@ mod tests {
     #[test]
     fn a_question_is_answered_by_a_message_typed_after_it() {
         // 2026-11-17T21:46:40Z.
-        let asked = request("aaaa-1111", "1794952000000-7", 1_794_952_000, Body::Ask { question: "keep them?".into(), context: "c".into() });
+        let asked = request("aaaa-1111", "1794952000000-7", 1_794_952_000, Body::Ask { question: "keep them?".into(), context: "c".into(), from_reply: false });
         let before = [
             entry("user", "2026-11-17T21:40:00.000Z", serde_json::json!("look at the titles")),
             entry("assistant", "2026-11-17T21:46:39.000Z", serde_json::json!([{ "type": "text", "text": "I ask" }])),
@@ -306,7 +313,7 @@ mod tests {
     fn a_question_answered_in_the_session_leaves_and_the_others_wait() {
         let root = temp_root("answered-in-session");
         let account = temp_root("answered-in-session-account");
-        let ask_body = || Body::Ask { question: "keep them?".into(), context: "c".into() };
+        let ask_body = || Body::Ask { question: "keep them?".into(), context: "c".into(), from_reply: false };
         // Asked long before the transcripts below are written (now), at 2026-11-17T21:46:40Z.
         let answered = request("aaaa-1111", "1794952000000-7", 1_794_952_000, ask_body());
         let unanswered = request("bbbb-2222", "1794952000000-8", 1_794_952_000, ask_body());
@@ -332,7 +339,7 @@ mod tests {
     #[test]
     fn requests_are_listed_oldest_first_across_sessions() {
         let root = temp_root("list");
-        let ask_body = Body::Ask { question: "UTC or local time?".into(), context: "Scores store UTC only.".into() };
+        let ask_body = Body::Ask { question: "UTC or local time?".into(), context: "Scores store UTC only.".into(), from_reply: false };
         ask(&root, &request("aaaa-1111", "200-7", 200, ask_body.clone())).unwrap();
         ask(&root, &request("bbbb-2222", "100-8", 100, permission())).unwrap();
         let listed = pending(&root);
@@ -393,7 +400,7 @@ mod tests {
         let (root, away_root) = (temp_root("ask"), temp_root("ask-away"));
         let cwd = Path::new("/home/u/arcade");
         let asked = ask_from_session(&root, &away_root, Some("aaaa-1111"), cwd, " UTC or local? ", "Scores store UTC.", 5_000).unwrap();
-        assert_eq!(asked.body, Body::Ask { question: "UTC or local?".into(), context: "Scores store UTC.".into() });
+        assert_eq!(asked.body, Body::Ask { question: "UTC or local?".into(), context: "Scores store UTC.".into(), from_reply: false });
         assert_eq!((asked.asked_at, asked.cwd.as_str()), (5, "/home/u/arcade"));
         assert_eq!(pending(&root), [asked]);
         fs::remove_dir_all(root).unwrap();
@@ -419,8 +426,8 @@ mod tests {
     #[test]
     fn a_typed_answer_says_which_question_it_answers() {
         let root = temp_root("typed");
-        let first = Body::Ask { question: "UTC or local time?".into(), context: "Scores store UTC only.".into() };
-        let second = Body::Ask { question: "Keep the old board?".into(), context: "Reset on Monday.".into() };
+        let first = Body::Ask { question: "UTC or local time?".into(), context: "Scores store UTC only.".into(), from_reply: false };
+        let second = Body::Ask { question: "Keep the old board?".into(), context: "Reset on Monday.".into(), from_reply: false };
         ask(&root, &request("aaaa-1111", "100-7", 100, first)).unwrap();
         ask(&root, &request("aaaa-1111", "101-7", 101, second)).unwrap();
         ask(&root, &request("aaaa-1111", "102-7", 102, permission())).unwrap();
@@ -446,7 +453,7 @@ mod tests {
         let json = serde_json::to_string(&choices).unwrap();
         assert_eq!(json, r#"{"kind":"choices","answers":{"Red or blue?":"Blue"}}"#);
         assert_eq!(serde_json::to_string(&Answer::Allow).unwrap(), r#"{"kind":"allow"}"#);
-        let asked = request("aaaa-1111", "1-2", 3, Body::Ask { question: "q".into(), context: "c".into() });
+        let asked = request("aaaa-1111", "1-2", 3, Body::Ask { question: "q".into(), context: "c".into(), from_reply: false });
         let json = serde_json::to_string(&asked).unwrap();
         assert!(json.contains(r#""kind":"ask""#), "{json}");
         assert_eq!(serde_json::from_str::<Request>(&json).unwrap(), asked);

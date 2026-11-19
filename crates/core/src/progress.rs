@@ -45,7 +45,7 @@ pub fn one_line(text: &str) -> String {
     format!("{}…", kept.trim_end())
 }
 
-fn timeline_tail(path: &Path) -> Option<String> {
+pub(crate) fn timeline_tail(path: &Path) -> Option<String> {
     let mut file = File::open(path).ok()?;
     let length = file.metadata().ok()?.len();
     file.seek(SeekFrom::Start(length.saturating_sub(TIMELINE_TAIL))).ok()?;

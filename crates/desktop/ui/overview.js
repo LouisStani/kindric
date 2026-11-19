@@ -442,7 +442,8 @@ export class Overview {
         }),
       );
     }
-    if ((this.requests.get(row.session_id) ?? []).some((request) => request.kind === "ask")) what.append(element("span", "row-badge keeps", "keeps working meanwhile"));
+    // A question taken from its reply came with the end of its turn: it does not work meanwhile.
+    if ((this.requests.get(row.session_id) ?? []).some((request) => request.kind === "ask" && !request.from_reply)) what.append(element("span", "row-badge keeps", "keeps working meanwhile"));
     line.append(element("span", "dot"), element("span", "row-name", row.label), what, this.kept(row, tab), this.context(row), element("span", "row-account", row.account));
     if (id === "paused") {
       line.append(
