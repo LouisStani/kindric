@@ -872,6 +872,19 @@ fn set_project_theme(app: AppHandle, shared: State<'_, Shared>, theme: Option<St
     Ok(respond(&app, &shared, workspace))
 }
 
+/// The project of tab `tab` shows in the control center's "all" or is left out of it; kept in
+/// `projects.json`.
+#[tauri::command]
+fn set_in_all(app: AppHandle, shared: State<'_, Shared>, tab: PaneId, in_all: bool) -> Result<Tabs, String> {
+    let _span = shared.trace.span("set_in_all");
+    let mut workspace = shared.workspace();
+    let mut next = workspace.tabs.clone();
+    next.set_in_all(tab, in_all)?;
+    save_projects(&shared, &next)?;
+    workspace.tabs = next;
+    Ok(respond(&app, &shared, workspace))
+}
+
 /// A shortcut changed in the settings, saved before it counts; None gives it its own keys back.
 #[tauri::command]
 fn set_key(shared: State<'_, Shared>, id: String, keys: Option<String>) -> Result<(), String> {
@@ -1660,6 +1673,7 @@ fn main() -> ExitCode {
             set_theme,
             follow_claude_theme,
             set_project_theme,
+            set_in_all,
             custom_theme,
             trace_enabled,
             trace,

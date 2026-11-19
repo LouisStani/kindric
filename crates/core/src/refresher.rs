@@ -420,6 +420,7 @@ mod tests {
             state,
             isolated: false,
             progress: None,
+            tasks: None,
             waiting_for: None,
         }
     }

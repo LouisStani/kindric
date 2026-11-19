@@ -155,6 +155,15 @@ impl Tabs {
         Ok(())
     }
 
+    /// The project of tab `tab` shows in the control center's "all", or is left out of it.
+    /// "other" always shows.
+    pub fn set_in_all(&mut self, tab: PaneId, in_all: bool) -> Result<(), String> {
+        let found = self.tabs.iter_mut().find(|each| each.id == tab).ok_or("this tab is closed: open the control center again")?;
+        let project = found.project.as_mut().ok_or("\"other\" always shows in all")?;
+        project.out_of_all = !in_all;
+        Ok(())
+    }
+
     /// The tab a session working in `directory` belongs to: its project's, else "other".
     pub fn owner_tab(&self, directory: &Path) -> PaneId {
         let projects = self.tabs.iter().filter_map(|tab| tab.project.as_ref().map(|project| (tab.id, project)));
@@ -694,5 +703,21 @@ mod tests {
         assert_eq!(themes, [None, Some("paper".to_string())]);
         tabs.set_project_theme(None).unwrap();
         assert_eq!(tabs.projects()[1].theme, None, "back to kindric's");
+    }
+
+    #[test]
+    fn a_project_is_left_out_of_all_by_its_tab_and_other_always_shows() {
+        let mut tabs = Tabs::with_projects(vec![Project::new("/home/u/api".into()), Project::new("/home/u/blog".into())]);
+        let ids: Vec<PaneId> = tabs.tabs.iter().map(|tab| tab.id).collect();
+        let error = tabs.set_in_all(ids[0], false).unwrap_err();
+        assert!(error.contains("other"), "{error}");
+        tabs.set_in_all(ids[2], false).unwrap();
+        let out: Vec<_> = tabs.projects().into_iter().map(|project| project.out_of_all).collect();
+        assert_eq!(out, [false, true], "only the tab named");
+        tabs.set_in_all(ids[2], true).unwrap();
+        assert!(!tabs.projects()[1].out_of_all, "shown again");
+        tabs.go(3);
+        assert!(tabs.close_tab().is_some());
+        assert!(tabs.set_in_all(ids[2], false).is_err(), "a closed tab is refused");
     }
 }

@@ -1133,6 +1133,7 @@ class PurgeFromSettings(Journey):
         self.assertTrue(fake_running("unpushed-old"), "the refused one keeps running")
 
 
+<<<<<<< HEAD
 MAILBOX = os.path.join(HOME, ".local/share/kindric/mailbox")
 
 
@@ -2598,6 +2599,92 @@ class TabStepAcrossEmptyTabs(Journey):
         driver.click(driver.find("#quick-title"))
         self.round_trip()
 
+=======
+
+# The projects kindric keeps (projects.rs).
+PROJECTS_FILE = os.path.join(HOME, ".local/share/kindric/projects.json")
+
+
+def in_all_toggle(driver: Driver, name: str) -> str | None:
+    """Whether the dot left of `name` on the control center's side shows it in "all projects":
+    "true" or "false"; None for an entry without a dot ("all", "other")."""
+    found = driver.script("""const line = [...document.querySelectorAll('.control-project-line')].find(
+      (line) => line.querySelector('.control-project-name').textContent === arguments[0]);
+      const toggle = line && line.querySelector('button.in-all-toggle');
+      return toggle ? toggle.getAttribute('aria-pressed') : null;""", name)
+    return None if found is None else str(found)
+
+
+def kept_out_of_all() -> list[str]:
+    """The projects projects.json keeps out of "all projects"."""
+    try:
+        with open(PROJECTS_FILE) as source:
+            projects: list[dict[str, Any]] = json.load(source)
+    except (OSError, ValueError):
+        return []
+    return [str(project["name"]) for project in projects if project.get("out_of_all")]
+
+
+class ProjectLeftOutOfAll(Journey):
+    """The dot left of a project's name on the control center's side leaves it out of "all
+    projects": its group goes, what its sessions ask stays in "needs you", its own view still has
+    every session, and the next start keeps it out; the dot again brings it back (351)."""
+
+    started = [("calm", "a quiet task work:0"), ("asks", "a task that asks work:0")]
+
+    def all_rows(self) -> list[str]:
+        return sorted(texts(self.driver, "article.control-row .row-name"))
+
+    def click_dot(self, name: str) -> None:
+        found = self.driver.script("""const line = [...document.querySelectorAll('.control-project-line')].find(
+          (line) => line.querySelector('.control-project-name').textContent === arguments[0]);
+          return line && line.querySelector('button.in-all-toggle');""", name)
+        if not isinstance(found, dict) or ELEMENT_KEY not in found:
+            raise AssertionError(f"no dot left of {name} on the side")
+        self.driver.click(str(found[ELEMENT_KEY]))
+
+    def control_center(self) -> None:
+        self.driver.press(CONTROL, SHIFT, "0")
+        wait_until("the control center", lambda: not overview_hidden(self.driver))
+
+    def test_left_out_asks_still_and_kept(self) -> None:
+        driver = self.driver
+        carry_messages(driver)
+        add_project(driver)
+        self.control_center()
+        wait_until("both sessions in all", lambda: self.all_rows() == ["asks", "calm"])
+        self.assertEqual(in_all_toggle(driver, "project"), "true", "a project shows in all by default")
+        self.assertEqual((in_all_toggle(driver, "all"), in_all_toggle(driver, "other")), (None, None))
+
+        hook = asked_by_hook(session_id_of("asks"), "Bash", {"command": "touch e2e-made.txt", "description": "Create a file"})
+        # The page reads the requests every second, after the list says the session asks.
+        wait_until("the command in the row", lambda: any("touch e2e-made.txt" in text for text in texts(driver, "article.control-row .request-command")))
+        self.click_dot("project")
+        wait_until("the project left out", lambda: in_all_toggle(driver, "project") == "false")
+        wait_until("only what needs you left in all", lambda: self.all_rows() == ["asks"])
+        self.assertEqual(texts(driver, "h2.control-group.is-need"), ["needs you · 1"])
+        self.assertNotIn("project ›", texts(driver, ".control-group-name"))
+        self.assertEqual(kept_out_of_all(), ["project"])
+        driver.screenshot(os.path.join(OUT, "ProjectLeftOutOfAll-out.png"))
+
+        click_text(driver, "article.control-row .request button", "Allow")
+        self.assertEqual(decision_of(hook)["behavior"], "allow")
+        wait_until("all empty, saying why", lambda: self.all_rows() == [] and any("left out of all" in text for text in texts(driver, ".control-body .overview-note")))
+
+        type(self).restart()
+        driver = self.driver
+        self.control_center()
+        wait_until("still left out after a restart", lambda: in_all_toggle(driver, "project") == "false")
+        wait_until("all still without the project", lambda: any("left out of all" in text for text in texts(driver, ".control-body .overview-note")))
+
+        click_text(driver, ".control-project .control-project-name", "project")
+        wait_until("the project's own view with both", lambda: self.all_rows() == ["asks", "calm"])
+        click_text(driver, ".control-project .control-project-name", "all")
+        self.click_dot("project")
+        wait_until("the project back in all", lambda: self.all_rows() == ["asks", "calm"])
+        self.assertEqual(in_all_toggle(driver, "project"), "true")
+        self.assertEqual(kept_out_of_all(), [])
+>>>>>>> worktree-projects-in-all
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

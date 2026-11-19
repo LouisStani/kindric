@@ -16,13 +16,17 @@ pub struct Project {
     /// The theme its sessions are shown in, chosen with Ctrl+Alt+E; none: kindric's.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub theme: Option<String>,
+    /// Left out of the control center's "all": only its sessions that need the user show there
+    /// (decision 351).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub out_of_all: bool,
 }
 
 impl Project {
     /// Named after its folder.
     pub fn new(directory: PathBuf) -> Self {
         let name = directory.file_name().map_or_else(|| directory.display().to_string(), |name| name.to_string_lossy().into_owned());
-        Self { name, directory, account: None, theme: None }
+        Self { name, directory, account: None, theme: None, out_of_all: false }
     }
 }
 
@@ -106,6 +110,17 @@ mod tests {
         api.theme = Some("paper".into());
         let text = serde_json::to_string(&api).unwrap();
         assert_eq!(text, r#"{"name":"api","directory":"/home/u/Dev/api","theme":"paper"}"#);
+        assert_eq!(serde_json::from_str::<Project>(&text).unwrap(), api);
+    }
+
+    #[test]
+    fn a_project_left_out_of_all_is_kept_and_one_shown_writes_nothing() {
+        let mut api = project("/home/u/Dev/api");
+        assert!(!api.out_of_all, "a new project shows in all");
+        assert_eq!(serde_json::to_string(&api).unwrap(), r#"{"name":"api","directory":"/home/u/Dev/api"}"#);
+        api.out_of_all = true;
+        let text = serde_json::to_string(&api).unwrap();
+        assert_eq!(text, r#"{"name":"api","directory":"/home/u/Dev/api","out_of_all":true}"#);
         assert_eq!(serde_json::from_str::<Project>(&text).unwrap(), api);
     }
 
