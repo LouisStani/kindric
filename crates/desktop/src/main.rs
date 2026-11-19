@@ -1278,7 +1278,7 @@ fn overview_root() -> Result<PathBuf, String> {
 #[tauri::command]
 fn overview_requests(shared: State<'_, Shared>) -> Result<Vec<overview::Request>, String> {
     let _span = shared.trace.span("overview_requests");
-    Ok(overview::pending(&overview_root()?))
+    Ok(overview::live_pending(&overview_root()?, std::time::SystemTime::now()))
 }
 
 /// The user answers a permission or a question of AskUserQuestion: the hook waiting in the
