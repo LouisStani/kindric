@@ -2054,6 +2054,49 @@ input:focus, select:focus {
   color: var(--faint);
 }
 
+/* The task in progress under a row (decision 368), aligned with the session's name. */
+.row-task {
+  margin: 0;
+  padding-left: 24px;
+  overflow-wrap: anywhere;
+  color: var(--text);
+}
+
+/* The task list, above the last screen and the files kept (decision 368). */
+.detail-tasks {
+  grid-column: 1 / -1;
+}
+
+.task-list {
+  display: grid;
+  gap: 3px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.task {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--muted);
+}
+
+.task.is-in_progress {
+  font-weight: 700;
+  color: var(--text-strong);
+}
+
+.task.is-completed {
+  color: var(--faint);
+}
+
+.task-about {
+  padding-left: 18px;
+  overflow-wrap: anywhere;
+  color: var(--text);
+}
+
 .detail-kept {
   display: grid;
   gap: 6px;

@@ -307,11 +307,15 @@ pub struct KindricHooks {
     pub start: Option<String>,
     /// Asks a session, once per turn, to keep for the user the pages and images it made.
     pub artifacts: Option<String>,
+    /// Has a long turn make its task list, which kindric's page shows.
+    pub tasks: Option<String>,
 }
 
 impl KindricHooks {
     fn is_empty(&self) -> bool {
-        [&self.unread, &self.away, &self.wake, &self.permission, &self.start, &self.artifacts].iter().all(|hook| hook.is_none())
+        [&self.unread, &self.away, &self.wake, &self.permission, &self.start, &self.artifacts, &self.tasks]
+            .iter()
+            .all(|hook| hook.is_none())
     }
 }
 
@@ -355,6 +359,9 @@ pub fn with_additions(settings: Option<&str>, statusline: Option<&str>, hooks: &
     if let Some(command) = &hooks.artifacts {
         add_hook(&mut settings, &ARTIFACT_EVENTS, &serde_json::json!({ "type": "command", "command": command }));
     }
+    if let Some(command) = &hooks.tasks {
+        add_hook(&mut settings, &TASK_EVENTS, &serde_json::json!({ "type": "command", "command": command }));
+    }
     let text = serde_json::to_string_pretty(&Value::Object(settings)).unwrap_or_default();
     (text, problem)
 }
@@ -376,6 +383,9 @@ const PERMISSION_EVENTS: [(&str, Option<&str>); 1] = [("PermissionRequest", None
 
 /// The event of the overview's instruction: when a session starts.
 const START_EVENTS: [(&str, Option<&str>); 1] = [("SessionStart", None)];
+
+/// The event of the task list: before each tool, whatever it is.
+const TASK_EVENTS: [(&str, Option<&str>); 1] = [("PreToolUse", None)];
 
 /// The event of the question about the files a turn made: when it ends.
 const ARTIFACT_EVENTS: [(&str, Option<&str>); 1] = [("Stop", None)];
@@ -430,7 +440,7 @@ const KINDRIC_NAMES: [&str; 2] = ["kindric.exe", "kindric"];
 const KINDRIC_NAMES: [&str; 1] = ["kindric"];
 
 /// kindric's hooks for a session: `"<kindric>" unread`, `away-hook`, `wait-message`,
-/// `permission-hook`, `overview-start` and `artifact-check`, each when
+/// `permission-hook`, `overview-start`, `artifact-check` and `task-check`, each when
 /// the `kindric` in `PATH` has it. An older one would answer with its usage and exit code 2, which
 /// Claude Code shows to Claude after every tool: each is tried once, with no input, and must exit 0.
 pub fn kindric_hooks() -> KindricHooks {
@@ -451,6 +461,7 @@ pub fn kindric_hooks() -> KindricHooks {
         permission: answering("permission-hook"),
         start: answering("overview-start"),
         artifacts: answering("artifact-check"),
+        tasks: answering("task-check"),
     }
 }
 
@@ -661,6 +672,20 @@ mod tests {
         assert!(stop[2].get("matcher").is_none());
         assert_eq!(value["hooks"].as_object().map(Map::len), Some(3), "Stop, and the away hook's own two");
         let alone = KindricHooks { artifacts: Some("k artifact-check".into()), ..KindricHooks::default() };
+        assert!(!alone.is_empty(), "enough for a settings file");
+    }
+
+    #[test]
+    fn the_task_check_runs_before_every_tool_after_the_user_s_hooks() {
+        let hooks = KindricHooks { away: Some("k away-hook".into()), tasks: Some("k task-check".into()), ..KindricHooks::default() };
+        let settings = r#"{"hooks":{"PreToolUse":[{"matcher":"Edit","hooks":[{"type":"command","command":"mine"}]}]}}"#;
+        let (text, _) = with_additions(Some(settings), None, &hooks);
+        let pre = &serde_json::from_str::<Value>(&text).unwrap()["hooks"]["PreToolUse"];
+        assert_eq!(pre[0]["hooks"][0]["command"], "mine");
+        assert_eq!(pre[1]["matcher"], "Bash", "the away hook, shell commands only");
+        assert_eq!(pre[2]["hooks"][0], serde_json::json!({ "type": "command", "command": "k task-check" }));
+        assert!(pre[2].get("matcher").is_none(), "every tool");
+        let alone = KindricHooks { tasks: Some("k task-check".into()), ..KindricHooks::default() };
         assert!(!alone.is_empty(), "enough for a settings file");
     }
 

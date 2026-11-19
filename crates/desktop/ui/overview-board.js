@@ -223,6 +223,33 @@ export function summaryOf(rows, requests = new Map()) {
   return counts;
 }
 
+// The time left, read at a glance: "<1 min", "~4 min", "~1 h 05".
+export function leftText(seconds) {
+  if (seconds < 60) return "<1 min";
+  const minutes = Math.round(seconds / 60);
+  if (minutes < 60) return `~${minutes} min`;
+  return `~${Math.floor(minutes / 60)} h ${`${minutes % 60}`.padStart(2, "0")}`;
+}
+
+// How far a session is in its task list (decision 368): how many are done, and the time left once
+// one is done. A badge of its own on the row, so that a long task name never hides it.
+export function tasksBadge(tasks) {
+  const count = `${tasks.done}/${tasks.total}`;
+  return tasks.left_seconds != null ? `${count} · ${leftText(tasks.left_seconds)} left` : count;
+}
+
+// Whether a row shows its task list: not while it waits for you, which comes first.
+export function showsTasks(row, requests = new Map()) {
+  return Boolean(row.tasks) && standing(row, requests) !== "need";
+}
+
+// The line under a row with a task list: the task in progress and what it is about, as the
+// session wrote them.
+export function taskLine(tasks) {
+  const doing = tasks.doing ?? "between tasks";
+  return tasks.about ? `${doing} · ${tasks.about}` : doing;
+}
+
 // What a row says the session does: what it last said, else what it waits for.
 export function lineOf(row, requests = new Map()) {
   if (row.progress) return row.progress;

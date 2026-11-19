@@ -19,6 +19,7 @@ import {
   keptLabel,
   keptText,
   keptTime,
+  leftText,
   lineOf,
   nextAsking,
   permissionText,
@@ -28,7 +29,10 @@ import {
   requestsBySession,
   sentText,
   standing,
+  showsTasks,
   summaryOf,
+  taskLine,
+  tasksBadge,
 } from "./overview-board.js";
 
 function element(tag, className, text) {
@@ -70,6 +74,7 @@ const PROJECT_EVERY = 30000;
 
 // How each step of the last screen starts, as Claude Code draws them.
 const STEP_MARKS = { prompt: "›", text: "●", tool: "●", result: "⎿", error: "⎿" };
+const TASK_MARKS = { completed: "✓", in_progress: "▸", pending: "○" };
 
 export class Overview {
   // `onOpen(row)` opens the session of a row. `onAnswer(request, answer)` answers a permission or
@@ -408,6 +413,7 @@ export class Overview {
     // The badges go with what it does: the columns after it stay aligned from row to row.
     const what = element("span", "row-doing");
     what.append(element("span", "row-doing-text", doing));
+    if (showsTasks(row, this.requests)) what.append(element("span", "row-badge tasks", tasksBadge(row.tasks)));
     if (row.unread > 0) what.append(element("span", "row-badge", `${row.unread} msg`));
     if ((row.changed ?? 0) > 0 && row.short_id) {
       what.append(
@@ -428,6 +434,7 @@ export class Overview {
       );
     }
     article.append(line);
+    if (showsTasks(row, this.requests)) article.append(element("p", "row-task", `▸ ${taskLine(row.tasks)}`));
     for (const request of this.requests.get(row.session_id) ?? []) article.append(this.request(row, request));
     if (row.session_id === this.selected) article.append(this.detailBox(row));
     if (row.session_id === this.selected && canPrompt(row)) article.append(this.promptBox(row));
@@ -492,8 +499,24 @@ export class Overview {
     const fresh = this.artifactsOf(row.session_id);
     const isFresh = (file) => fresh.some((each) => each.name === file.name && (each.group ?? null) === (file.group ?? null) && (each.project ?? null) === (file.project ?? null));
     for (const file of files) kept.append(this.keptFile(file, isFresh(file), now));
+    if (row.tasks) box.append(this.taskList(row.tasks));
     box.append(screen, kept);
     return box;
+  }
+
+  // The session's task list (decision 368): each task with its state, what the one in progress is
+  // about under it.
+  taskList(tasks) {
+    const section = element("section", "detail-tasks");
+    const left = tasks.left_seconds != null ? ` · ${leftText(tasks.left_seconds)} left` : "";
+    section.append(element("h3", "detail-title", `tasks · ${tasks.done}/${tasks.total}${left}`));
+    const list = element("ol", "task-list");
+    for (const task of tasks.tasks) {
+      list.append(element("li", `task is-${task.status}`, `${TASK_MARKS[task.status] ?? "○"} ${task.subject}`));
+      if (task.status === "in_progress" && tasks.about) list.append(element("li", "task-about", tasks.about));
+    }
+    section.append(list);
+    return section;
   }
 
   keptFile(file, fresh, now) {

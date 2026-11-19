@@ -19,6 +19,7 @@ pub mod progress;
 pub mod refresher;
 pub mod search;
 pub mod steps;
+pub mod task_list;
 pub mod turn_files;
 pub mod wake;
 pub mod watcher;
