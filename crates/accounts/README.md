@@ -17,7 +17,8 @@ kindric-accounts gives each account its own directory and links the shared parts
 - Keep two accounts open at the same time, in two terminals.
 - Share one `CLAUDE.md` and one set of skills, agents, commands, plugins and themes across all accounts, plus the MCP servers you add to any of them.
 - Create a shared directory later and existing accounts pick it up on their next launch.
-- kindric-accounts never reads, copies or sends your credentials. It makes no network requests.
+- An account can also take its model from an Anthropic API key, OpenRouter, a local Ollama or any gateway that speaks Anthropic's API. See [Accounts without a Claude login](#accounts-without-a-claude-login).
+- kindric-accounts never reads, copies or sends your Claude credentials. The key of an API or gateway account stays in that account's directory and only goes to Claude Code. It makes no network requests.
 - One self-contained binary for Linux, macOS and Windows. Nothing else to install.
 
 ## Installation
@@ -104,6 +105,8 @@ Or just run `kindric-accounts` to open the menu. It shows whether each account i
 | --- | --- |
 | `kindric-accounts` | Opens the menu and starts Claude in the current terminal. |
 | `kindric-accounts add <name>` | Creates an account and its private directory. |
+| `kindric-accounts add <name> --provider <provider> [--url <address>] [--model <name>]` | Creates an account whose model comes from an API key or a gateway. See [Accounts without a Claude login](#accounts-without-a-claude-login). |
+| `kindric-accounts token <name>` | Keeps the key of such an account, read from standard input (hidden on a terminal). |
 | `kindric-accounts list [--json]` | Prints account names, one per line. |
 | `kindric-accounts status [--json]` | Shows whether each account is logged in, its plan (`pro`, `max`…) and its active sessions. |
 | `kindric-accounts remove <name> [--delete-dir \| --keep-dir]` | Removes an account from the list. Its directory is deleted only after you confirm, or as the option says. |
@@ -137,12 +140,14 @@ Other programs can drive kindric-accounts through the commands below. Their outp
 | `remove <name> --keep-dir` | Removes the account and keeps its directory, without asking. |
 | `run <name> [args]` | Replaces itself with `claude` running on this account. |
 | `isolated --json` | `["work"]`, or `[]` |
-| `--version` | `kindric-accounts 2.1.0` |
+| `token <name> --print` | The key of a provider account, for Claude Code's `apiKeyHelper`. `no-key` for Ollama without a key. Exit code 1 when a needed key is missing. |
+| `--version` | `kindric-accounts 2.2.0` |
 
 ```json
 [
-  {"name": "personal", "state": "logged-in", "sessions": 1, "plan": "pro", "dir": "/home/me/.local/share/kindric-accounts/personal", "isolated": false, "login_expires": "2026-11-13T15:45:31.701Z"},
-  {"name": "work", "state": "logged-out", "sessions": 0, "plan": null, "dir": "/home/me/.local/share/kindric-accounts/work", "isolated": true, "login_expires": null}
+  {"name": "personal", "state": "logged-in", "sessions": 1, "plan": "pro", "dir": "/home/me/.local/share/kindric-accounts/personal", "isolated": false, "login_expires": "2026-11-13T15:45:31.701Z", "provider": "claude", "model": null},
+  {"name": "work", "state": "logged-out", "sessions": 0, "plan": null, "dir": "/home/me/.local/share/kindric-accounts/work", "isolated": true, "login_expires": null, "provider": "claude", "model": null},
+  {"name": "router", "state": "logged-in", "sessions": 0, "plan": null, "dir": "/home/me/.local/share/kindric-accounts/router", "isolated": false, "login_expires": null, "provider": "openrouter", "model": "qwen/qwen3-coder"}
 ]
 ```
 
@@ -152,6 +157,8 @@ Other programs can drive kindric-accounts through the commands below. Their outp
 - `dir` is the account's `CLAUDE_CONFIG_DIR`.
 - `isolated` is `true` for an isolated account (since 1.2.0).
 - `login_expires` is when the login must be renewed, in ISO UTC as Claude Code gives it, or `null` (since 2.1.0).
+- `provider` is where the model comes from: `claude` for a Claude login, else `api`, `openrouter`, `ollama` or `gateway` (since 2.2.0). For those, `state` is `logged-in` once the account has the key it needs.
+- `model` is the model of a provider account, as the provider names it, or `null` (since 2.2.0).
 
 On error, the exit code is not 0 and stderr explains why: one line starting with `kindric-accounts:`, or the usage text for an unknown command or option. `jq` is not needed.
 
@@ -162,6 +169,8 @@ Each account gets its own `CLAUDE_CONFIG_DIR`.
 | Data | Where it lives |
 | --- | --- |
 | Credentials, sessions, history, project memory | Private to each account |
+| Provider, address and model of an API or gateway account | `kindric-provider.json` in the account's directory |
+| Key of an API or gateway account | `kindric-token` in the account's directory, `600` on Linux and macOS |
 | `CLAUDE.md`, `skills/`, `agents/`, `commands/`, `plugins/`, `themes/` | Symbolic links to `~/.claude` (see Windows below) |
 | `settings.json` | Read from `~/.claude/settings.json`, copied at launch to `~/.local/share/kindric-accounts/.shared-settings/<name>.json` with the status line of kindric-accounts, and passed with `--settings`. Your file is never written. |
 | MCP servers of the other accounts | Merged at launch and passed with `--mcp-config` |
@@ -177,6 +186,41 @@ Each account gets its own `CLAUDE_CONFIG_DIR`.
 Links are checked on every launch. On Linux and macOS, account directories use `700` permissions and the account list uses `600`.
 
 On Windows, a symbolic link needs developer mode. Without it, folders are shared through junctions and `CLAUDE.md` is copied, then refreshed from `~/.claude` at each launch. If you edit that copy inside an account, it is no longer refreshed and kindric-accounts warns you: copy your changes to `~/.claude/CLAUDE.md`. Accounts live in `%APPDATA%\kindric-accounts`.
+
+## Accounts without a Claude login
+
+An account can take its model from somewhere else than a Claude subscription. Claude Code still runs, unmodified, with all its features and kindric's. Only where its requests go and which key they carry change.
+
+```sh
+kindric-accounts add router --provider openrouter --model qwen/qwen3-coder
+kindric-accounts token router          # paste the OpenRouter key, then Enter
+kindric-accounts run router
+
+kindric-accounts add local --provider ollama --model qwen3.5:9b
+kindric-accounts run local             # Ollama needs no key
+```
+
+| Provider | Address used when `--url` is not given | Model | Key |
+| --- | --- | --- | --- |
+| `api` | Anthropic's API | optional | an Anthropic API key |
+| `openrouter` | `https://openrouter.ai/api` | required | an OpenRouter key |
+| `ollama` | `http://localhost:11434` | required | none |
+| `gateway` | none: `--url` is required | required | the gateway's key |
+
+An API key from the Claude Console can also be used without `--provider`: create a plain account and choose "Anthropic Console account" in `/login`. Claude Code then keeps the key itself.
+
+How it works:
+
+- At each launch, kindric-accounts writes `.shared-settings/provider/<name>.json`: the settings the session would get, plus `ANTHROPIC_BASE_URL`, the model in `ANTHROPIC_MODEL` and the variables of the other model slots (`ANTHROPIC_DEFAULT_OPUS_MODEL`, `ANTHROPIC_DEFAULT_SONNET_MODEL`, `ANTHROPIC_DEFAULT_HAIKU_MODEL`, `CLAUDE_CODE_SUBAGENT_MODEL`), and `apiKeyHelper`. A base address or key helper of your own `settings.json` is replaced for this account. If this file cannot be written, the session does not start, rather than go to Anthropic.
+- The key never goes into a settings file nor into the environment. Claude Code runs `kindric-accounts token <name> --print` when it needs it.
+- `run` refuses to open a conversation on an account that still needs its key, and says the command to give it.
+- These accounts have no five-hour or weekly limits: the status line notes the context used, not limits.
+
+Limits:
+
+- Anthropic documents gateways for Claude Code, but Claude Code is built for Claude models: running it with other models is not supported by Anthropic ([claude-code#5577](https://github.com/anthropics/claude-code/issues/5577)). Tools, long contexts and some features may work less well.
+- Claude Code turns Remote Control off when `ANTHROPIC_BASE_URL` is not an Anthropic host. Background sessions, which kindric uses, keep working.
+- A local model gets Claude Code's whole system prompt, tens of thousands of tokens: give Ollama a model and a context large enough, and expect the first answer to take time.
 
 ## Shared MCP servers
 
@@ -310,9 +354,9 @@ ANTHROPIC_AUTH_TOKEN
 CLAUDE_CODE_OAUTH_TOKEN
 ```
 
-A key or token exported in your shell therefore cannot override the account you picked, and you are billed on the account you chose.
+A key or token exported in your shell therefore cannot override the account you picked, and you are billed on the account you chose. An API or gateway account gets its own key through `apiKeyHelper`, see [Accounts without a Claude login](#accounts-without-a-claude-login).
 
-Login status comes from `claude auth status`, run with the same variables removed. Claude Code reads its own credentials locally; kindric-accounts only reads the exit code, the plan name and when the login expires.
+Login status comes from `claude auth status`, run with the same variables removed. Claude Code reads its own credentials locally; kindric-accounts only reads the exit code, the plan name and when the login expires. The status of an API or gateway account comes from its files: it is logged in once it has the key it needs.
 
 Active sessions are counted from the `sessions/` directory of each account, keeping only the processes that are still running `claude`. This directory is internal to Claude Code: if its layout changes, the count disappears and nothing else breaks.
 

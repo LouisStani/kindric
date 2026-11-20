@@ -7,6 +7,7 @@ use std::time::{Duration, Instant};
 
 pub use kindric_accounts::registry::DEFAULT_ACCOUNT;
 pub use kindric_accounts::status::AccountStatus;
+use kindric_accounts::provider::{self, Kind, Provider};
 use kindric_accounts::{Paths, account, launch, memory, registry, status, usage};
 use serde::{Deserialize, Serialize};
 
@@ -14,7 +15,8 @@ use crate::progress;
 use crate::task_list;
 
 pub(crate) const LAUNCHER: &str = "kindric-accounts";
-pub const MIN_LAUNCHER_VERSION: (u32, u32, u32) = (1, 2, 0);
+/// 2.2.0: `token`, the key of the accounts whose model comes from an API key or a gateway.
+pub const MIN_LAUNCHER_VERSION: (u32, u32, u32) = (2, 2, 0);
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum SessionState {
@@ -418,6 +420,68 @@ pub fn add_account(paths: &Paths, name: &str) -> io::Result<Vec<String>> {
     account::add(paths, name).map(|created| created.warnings).map_err(library_error)
 }
 
+/// Where a new account's model comes from, when it is not a Claude login: `kind` among
+/// `provider::Kind::NAMES`, the address and the model as the user typed them.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Deserialize)]
+pub struct NewProvider {
+    pub kind: String,
+    #[serde(default)]
+    pub url: Option<String>,
+    #[serde(default)]
+    pub model: Option<String>,
+}
+
+fn provider_of(new: &NewProvider) -> io::Result<Provider> {
+    let Some(kind) = Kind::parse(new.kind.trim()) else {
+        return Err(io::Error::other(format!("unknown provider {:?}: use {}", new.kind, Kind::NAMES.join(", "))));
+    };
+    Provider::new(kind, new.url.as_deref(), new.model.as_deref()).map_err(library_error)
+}
+
+/// Creates the account `name` whose requests go to `provider`, and keeps `key` if one is given,
+/// as `kindric-accounts add --provider` then `token` do. Nothing is created when the provider or
+/// the key is refused: they are checked first.
+pub fn add_provider_account(paths: &Paths, name: &str, new: &NewProvider, key: Option<&str>) -> io::Result<Vec<String>> {
+    let provider = provider_of(new)?;
+    let key = key.map(str::trim).filter(|key| !key.is_empty());
+    if let Some(key) = key
+        && key.chars().any(char::is_control)
+    {
+        return Err(io::Error::other("the key holds a line break or a control character: paste it on a single line"));
+    }
+    let created = account::add_with(paths, name, Some(&provider)).map_err(library_error)?;
+    if let Some(key) = key {
+        provider::save_token(&created.dir, key).map_err(library_error)?;
+    }
+    Ok(created.warnings)
+}
+
+/// Keeps `key` for the provider account `name`, in place of the one it had.
+pub fn set_account_key(paths: &Paths, name: &str, key: &str) -> io::Result<()> {
+    let dir = launch::require_account(paths, name).map_err(library_error)?;
+    if provider::read(&dir).map_err(library_error)?.is_none() {
+        return Err(io::Error::other(format!("{name} is a Claude account: it signs in with log in, not with a key")));
+    }
+    provider::save_token(&dir, key).map_err(library_error)
+}
+
+/// `openrouter qwen/qwen3-coder` for each of `names` whose model comes from a provider: what the
+/// overview shows in place of the limits of a Claude subscription. Read from two small files, no
+/// call to Claude Code.
+pub fn provider_labels(paths: &Paths, names: &[String]) -> BTreeMap<String, String> {
+    names
+        .iter()
+        .filter_map(|name| {
+            let provider = provider::read(&paths.account_dir(name)).ok()??;
+            let label = match &provider.model {
+                Some(model) => format!("{} {model}", provider.provider.name()),
+                None => provider.provider.name().to_string(),
+            };
+            Some((name.clone(), label))
+        })
+        .collect()
+}
+
 /// Takes `name` off the list of accounts; its directory stays.
 pub fn forget_account(paths: &Paths, name: &str) -> io::Result<()> {
     account::forget(paths, name).map_err(library_error)
@@ -546,6 +610,37 @@ mod tests {
         forget_account(&paths, "essai").expect("forget");
         assert!(registry::list_accounts(&paths).expect("list").is_empty());
         assert!(dir.is_dir(), "the directory stays");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn a_provider_account_keeps_its_provider_and_key_and_gets_a_label() {
+        let (root, paths) = scratch_paths("add-provider");
+        let router = NewProvider { kind: "openrouter".into(), url: None, model: Some("qwen/qwen3-coder".into()) };
+        add_provider_account(&paths, "router", &router, Some(" sk-or-1 ")).expect("add");
+        add_account(&paths, "plain").expect("add");
+        let dir = paths.account_dir("router");
+        assert_eq!(provider::read_token(&dir).expect("token").as_deref(), Some("sk-or-1"));
+        let names = registry::list_accounts(&paths).expect("list");
+        let labels = provider_labels(&paths, &names);
+        assert_eq!(labels.into_iter().collect::<Vec<_>>(), [("router".to_string(), "openrouter qwen/qwen3-coder".to_string())]);
+        set_account_key(&paths, "router", "sk-or-2").expect("new key");
+        assert_eq!(provider::read_token(&dir).expect("token").as_deref(), Some("sk-or-2"));
+        let claude = set_account_key(&paths, "plain", "x").expect_err("a Claude account").to_string();
+        assert!(claude.contains("log in"), "{claude}");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn a_refused_provider_or_key_creates_nothing() {
+        let (root, paths) = scratch_paths("add-provider-refused");
+        let unknown = NewProvider { kind: "gpt".into(), url: None, model: Some("m".into()) };
+        assert!(add_provider_account(&paths, "a", &unknown, None).is_err());
+        let no_model = NewProvider { kind: "ollama".into(), url: None, model: None };
+        assert!(add_provider_account(&paths, "b", &no_model, None).is_err());
+        let ollama = NewProvider { kind: "ollama".into(), url: None, model: Some("qwen3".into()) };
+        assert!(add_provider_account(&paths, "c", &ollama, Some("two\nlines")).is_err());
+        assert!(registry::list_accounts(&paths).expect("list").is_empty());
         let _ = std::fs::remove_dir_all(&root);
     }
 
@@ -750,7 +845,7 @@ mod tests {
         assert_eq!(parse_version("kindric-accounts 1.1.0\n"), Some((1, 1, 0)));
         assert_eq!(parse_version("kindric-accounts 1.0"), None);
         assert_eq!(parse_version("other 1.1.0"), None);
-        assert!(parse_version("kindric-accounts 1.0.9").unwrap() < MIN_LAUNCHER_VERSION);
-        assert!(parse_version("kindric-accounts 1.10.0").unwrap() > MIN_LAUNCHER_VERSION);
+        assert!(parse_version("kindric-accounts 2.1.9").unwrap() < MIN_LAUNCHER_VERSION);
+        assert!(parse_version("kindric-accounts 2.10.0").unwrap() > MIN_LAUNCHER_VERSION);
     }
 }

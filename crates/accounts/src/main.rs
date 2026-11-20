@@ -5,6 +5,7 @@ use std::io::{self, BufRead, IsTerminal, Read, Write};
 use std::path::PathBuf;
 use std::process::ExitCode;
 
+use kindric_accounts::provider::{self, Kind, Provider};
 use kindric_accounts::{Error, Paths, Result, account, injection, isolation, launch, mcp, registry, status, usage};
 
 const VERSION: &str = env!("CARGO_PKG_VERSION");
@@ -13,6 +14,9 @@ const USAGE: &str = "\
 Usage:
   kindric-accounts                   menu: pick an account and start claude here
   kindric-accounts add <name>        create the account and its directory (700)
+  kindric-accounts add <name> --provider api|openrouter|ollama|gateway [--url <address>] [--model <name>]
+                                     create an account whose model comes from an API key or a gateway
+  kindric-accounts token <name>      keep the key of a provider account (read from standard input)
   kindric-accounts list [--json]     list accounts
   kindric-accounts status [--json]   show login status, plan and active sessions of each account
   kindric-accounts remove <name> [--delete-dir|--keep-dir]
@@ -78,11 +82,81 @@ fn confirm(prompt: &str) -> bool {
     matches!(answer.trim(), "y" | "Y" | "o" | "O")
 }
 
-fn cmd_add(paths: &Paths, name: &str) -> Result<Exit> {
-    let created = account::add(paths, name)?;
+/// `--provider <kind> [--url <address>] [--model <name>]`, in any order; `None` for a wrong option.
+fn provider_options(args: &[String]) -> Option<Result<Option<Provider>>> {
+    let (mut kind, mut url, mut model) = (None, None, None);
+    let mut rest = args.iter();
+    while let Some(option) = rest.next() {
+        let value = rest.next()?;
+        let slot = match option.as_str() {
+            "--provider" => &mut kind,
+            "--url" => &mut url,
+            "--model" => &mut model,
+            _ => return None,
+        };
+        if slot.replace(value.as_str()).is_some() {
+            return None;
+        }
+    }
+    let Some(kind) = kind else {
+        return (url.is_none() && model.is_none()).then_some(Ok(None));
+    };
+    let Some(kind) = Kind::parse(kind) else {
+        return Some(Err(Error(format!("unknown provider {kind:?}: use {}", Kind::NAMES.join(", ")))));
+    };
+    Some(Provider::new(kind, url, model).map(Some))
+}
+
+fn cmd_add(paths: &Paths, name: &str, args: &[String]) -> Result<Exit> {
+    let Some(provider) = provider_options(args) else {
+        return Ok(Exit::Usage);
+    };
+    let provider = provider?;
+    let created = account::add_with(paths, name, provider.as_ref())?;
     print_warnings(&created.warnings);
     println!("Account \"{name}\" created: {}", created.dir.display());
-    println!("First launch: kindric-accounts run {name}, then /login");
+    match provider {
+        None => println!("First launch: kindric-accounts run {name}, then /login"),
+        Some(provider) if provider.provider.needs_token() => {
+            println!("Give its {} key: kindric-accounts token {name}", provider.provider.name());
+        },
+        Some(_) => println!("Ready: kindric-accounts run {name}"),
+    }
+    Ok(Exit::Success)
+}
+
+/// The provider of `name`, which must be a provider account.
+fn require_provider(paths: &Paths, name: &str) -> Result<(PathBuf, Provider)> {
+    let dir = launch::require_account(paths, name)?;
+    match provider::read(&dir)? {
+        Some(provider) => Ok((dir, provider)),
+        None => Err(Error(format!("{name} is a Claude account: sign in with kindric-accounts run {name}, then /login"))),
+    }
+}
+
+/// `token <name>`: keeps the key read on standard input, without echo on a terminal.
+/// `token <name> --print`: prints it, for Claude Code's `apiKeyHelper`.
+fn cmd_token(paths: &Paths, name: &str, args: &[String]) -> Result<Exit> {
+    let print = match args {
+        [] => false,
+        [flag] if flag == "--print" => true,
+        _ => return Ok(Exit::Usage),
+    };
+    let (dir, provider) = require_provider(paths, name)?;
+    if print {
+        println!("{}", provider::key_for_session(&dir, &provider, name)?);
+        return Ok(Exit::Success);
+    }
+    let token = if io::stdin().is_terminal() {
+        eprint!("{} key for {name} (not shown): ", provider.provider.name());
+        dialoguer::console::Term::stderr().read_secure_line()?
+    } else {
+        let mut line = String::new();
+        io::stdin().lock().read_line(&mut line)?;
+        line
+    };
+    provider::save_token(&dir, &token)?;
+    println!("Key of \"{name}\" kept in {}", provider::token_file(&dir).display());
     Ok(Exit::Success)
 }
 
@@ -210,8 +284,14 @@ fn conversation_dir(claude_args: &[OsString]) -> Option<PathBuf> {
 }
 
 fn cmd_run(paths: &Paths, name: &str, claude_args: &[OsString]) -> Result<Exit> {
-    launch::require_account(paths, name)?;
+    let dir = launch::require_account(paths, name)?;
     launch::require_claude()?;
+    if injection::opens_conversation(claude_args)
+        && let Some(provider) = provider::read(&dir)?
+        && !provider::is_ready(&dir, &provider)
+    {
+        return Err(Error(format!("{name} has no {} key yet: kindric-accounts token {name}", provider.provider.name())));
+    }
     let shared_mcp = mcp::prepare(paths, name)?;
     print_warnings(&shared_mcp.warnings);
     let conversation_dir = conversation_dir(claude_args);
@@ -269,7 +349,8 @@ fn dispatch(args: &[String], raw_args: &[OsString]) -> Result<Exit> {
     let name = args.get(1).filter(|name| !name.is_empty());
     match (command, name) {
         ("", _) => menu::run(&paths),
-        ("add", Some(name)) => cmd_add(&paths, name),
+        ("add", Some(name)) => cmd_add(&paths, name, &args[2..]),
+        ("token", Some(name)) => cmd_token(&paths, name, &args[2..]),
         ("list", _) => cmd_list(&paths, &args[1..]),
         ("status", _) => cmd_status(&paths, &args[1..]),
         ("remove", Some(name)) => cmd_remove(&paths, name, &args[2..]),

@@ -171,6 +171,16 @@ test("an account is shown with sessions running or figures, framed from 80% of i
   ], "the registry's order first; a paused session does not count; an account with neither is left out");
 });
 
+test("an account card names its provider, and one without a Claude login shows without sessions", () => {
+  const usages = [{ name: "louis", five_hour: 10, seven_day: 5, five_hour_resets_at: null, updated_at: 1 }];
+  const cards = accountCards([row("a", 1, { account: "louis" })], ["louis", "router", "idle"], usages, { router: "openrouter qwen3" });
+  assert.deepEqual(cards.map((card) => [card.name, card.sessions, card.provider, card.limits]), [
+    ["louis", 1, "claude", true],
+    ["router", 0, "openrouter qwen3", false],
+  ]);
+  assert.deepEqual(accountCards([], ["louis"], usages).map((card) => card.provider), ["claude"], "providers default to none");
+});
+
 test("a prompt reaches the project's sessions kindric runs, not the paused ones nor those elsewhere", () => {
   const rows = [
     row("rest", 2, { short_id: "aaaa" }),

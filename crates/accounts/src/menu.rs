@@ -24,11 +24,13 @@ fn header(count: usize) -> String {
 }
 
 fn badge(status: &AccountStatus) -> String {
-    let mut badge = match (status.state, &status.plan) {
-        (LoginState::LoggedIn, Some(plan)) => format!("logged in · {plan}"),
-        (LoginState::LoggedIn, None) => "logged in".to_string(),
-        (LoginState::LoggedOut, _) => "logged out".to_string(),
-        (LoginState::Unknown, _) => "status unknown".to_string(),
+    let plan = status::plan_label(status);
+    let mut badge = match status.state {
+        LoginState::LoggedIn if !plan.is_empty() => format!("logged in · {plan}"),
+        LoginState::LoggedIn => "logged in".to_string(),
+        LoginState::LoggedOut if status.provider != status::CLAUDE_PROVIDER => format!("no key · {plan}"),
+        LoginState::LoggedOut => "logged out".to_string(),
+        LoginState::Unknown => "status unknown".to_string(),
     };
     if status.sessions > 0 {
         badge.push_str(&format!(" · {} active", status.sessions));
@@ -130,7 +132,7 @@ pub fn run(paths: &Paths) -> Result<Exit> {
         match items[index].as_str() {
             ADD => {
                 if let Some(name) = read_new_name(paths)? {
-                    crate::cmd_add(paths, &name)?;
+                    crate::cmd_add(paths, &name, &[])?;
                     return crate::cmd_run(paths, &name, &[]);
                 }
             },
@@ -146,7 +148,7 @@ mod tests {
     use std::path::PathBuf;
 
     fn status(state: LoginState, plan: Option<&str>, sessions: usize, isolated: bool) -> AccountStatus {
-        AccountStatus { name: "x".into(), state, sessions, plan: plan.map(Into::into), dir: PathBuf::new(), isolated, login_expires: None }
+        AccountStatus { name: "x".into(), state, sessions, plan: plan.map(Into::into), dir: PathBuf::new(), isolated, login_expires: None, provider: "claude".into(), model: None }
     }
 
     #[test]

@@ -11,6 +11,7 @@ use sysinfo::{Pid, ProcessesToUpdate, System};
 use crate::error::Result;
 use crate::launch;
 use crate::paths::Paths;
+use crate::provider;
 use crate::registry;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
@@ -42,7 +43,15 @@ pub struct AccountStatus {
     pub isolated: bool,
     /// When the login must be renewed, ISO UTC as Claude Code gives it (since 2.1.0).
     pub login_expires: Option<String>,
+    /// Where the model comes from: `claude` (a Claude login), `api`, `openrouter`, `ollama` or
+    /// `gateway` (since 2.2.0).
+    pub provider: String,
+    /// The model of a provider account, as the provider names it; `null` for Claude (since 2.2.0).
+    pub model: Option<String>,
 }
+
+/// The provider name of a Claude account in `status --json`.
+pub const CLAUDE_PROVIDER: &str = "claude";
 
 /// `subscriptionType` of `claude auth status --json`, if it is a plain lowercase word.
 pub fn subscription_type(output: &str) -> Option<String> {
@@ -69,11 +78,35 @@ pub fn login_expires(output: &str) -> Option<String> {
     valid.then(|| date.to_string())
 }
 
-/// What `claude auth status --json` tells of an account.
+/// What `claude auth status --json` tells of an account, or what its provider file and key say.
 struct Login {
     state: LoginState,
     plan: Option<String>,
     expires: Option<String>,
+    provider: String,
+    model: Option<String>,
+}
+
+impl Login {
+    fn claude(state: LoginState, plan: Option<String>, expires: Option<String>) -> Self {
+        Self { state, plan, expires, provider: CLAUDE_PROVIDER.into(), model: None }
+    }
+}
+
+/// A provider account is logged in once it has the key it needs. `claude auth status` cannot tell:
+/// it does not see the key helper, which only the session's settings hold.
+fn account_login(claude: &Path, dir: &Path) -> Login {
+    match provider::read(dir) {
+        Ok(None) => login(claude, dir),
+        Ok(Some(provider)) => Login {
+            state: if provider::is_ready(dir, &provider) { LoginState::LoggedIn } else { LoginState::LoggedOut },
+            plan: None,
+            expires: None,
+            provider: provider.provider.name().into(),
+            model: provider.model,
+        },
+        Err(_) => Login { state: LoginState::Unknown, plan: None, expires: None, provider: CLAUDE_PROVIDER.into(), model: None },
+    }
 }
 
 /// Exit code 0: logged in; 1: logged out; anything else: unknown. Claude Code reads
@@ -92,10 +125,10 @@ fn login(claude: &Path, dir: &Path) -> Login {
     match output.map(|output| (output.status.code(), output.stdout)) {
         Ok((Some(0), stdout)) => {
             let text = String::from_utf8_lossy(&stdout);
-            Login { state: LoginState::LoggedIn, plan: subscription_type(&text), expires: login_expires(&text) }
+            Login::claude(LoginState::LoggedIn, subscription_type(&text), login_expires(&text))
         },
-        Ok((Some(1), _)) => Login { state: LoginState::LoggedOut, plan: None, expires: None },
-        _ => Login { state: LoginState::Unknown, plan: None, expires: None },
+        Ok((Some(1), _)) => Login::claude(LoginState::LoggedOut, None, None),
+        _ => Login::claude(LoginState::Unknown, None, None),
     }
 }
 
@@ -140,7 +173,7 @@ pub fn collect(paths: &Paths, names: &[String]) -> Result<Vec<AccountStatus>> {
                 let dir = paths.account_dir(name);
                 let claude = &claude;
                 scope.spawn(move || {
-                    let login = login(claude, &dir);
+                    let login = account_login(claude, &dir);
                     (login, active_sessions(&dir), dir)
                 })
             })
@@ -151,7 +184,7 @@ pub fn collect(paths: &Paths, names: &[String]) -> Result<Vec<AccountStatus>> {
         .iter()
         .zip(statuses)
         .map(|(name, result)| {
-            let unknown = Login { state: LoginState::Unknown, plan: None, expires: None };
+            let unknown = Login::claude(LoginState::Unknown, None, None);
             let (login, sessions, dir) = result.unwrap_or((unknown, 0, paths.account_dir(name)));
             AccountStatus {
                 name: name.clone(),
@@ -161,15 +194,28 @@ pub fn collect(paths: &Paths, names: &[String]) -> Result<Vec<AccountStatus>> {
                 dir,
                 isolated: isolated.contains(name),
                 login_expires: login.expires,
+                provider: login.provider,
+                model: login.model,
             }
         })
         .collect())
 }
 
+/// The plan of a Claude account; the provider and its model for the others.
+pub fn plan_label(status: &AccountStatus) -> String {
+    if status.provider == CLAUDE_PROVIDER {
+        return status.plan.clone().unwrap_or_default();
+    }
+    match &status.model {
+        Some(model) => format!("{} {model}", status.provider),
+        None => status.provider.clone(),
+    }
+}
+
 /// Text lines of `status`, aligned like the 1.x script.
 pub fn format_lines(statuses: &[AccountStatus]) -> Vec<String> {
     let name_width = statuses.iter().map(|status| status.name.len()).max().unwrap_or(0);
-    let plan_width = statuses.iter().map(|status| status.plan.as_deref().unwrap_or("").len()).max().unwrap_or(0);
+    let plan_width = statuses.iter().map(|status| plan_label(status).len()).max().unwrap_or(0);
     statuses
         .iter()
         .map(|status| {
@@ -178,7 +224,7 @@ pub fn format_lines(statuses: &[AccountStatus]) -> Vec<String> {
                 "{:<name_width$}  {:<10}  {:<plan_width$}  {sessions}",
                 status.name,
                 status.state.label(),
-                status.plan.as_deref().unwrap_or("")
+                plan_label(status)
             );
             let mut line = line.trim_end().to_string();
             if status.isolated {
@@ -202,6 +248,8 @@ mod tests {
             dir: PathBuf::from(format!("/d/{name}")),
             isolated,
             login_expires: None,
+            provider: CLAUDE_PROVIDER.into(),
+            model: None,
         }
     }
 
@@ -237,6 +285,20 @@ mod tests {
     #[test]
     fn json_keeps_the_1x_field_names_and_order() {
         let json = serde_json::to_string(&status("pro2", LoginState::LoggedOut, 0, None, false)).unwrap();
-        assert_eq!(json, r#"{"name":"pro2","state":"logged-out","sessions":0,"plan":null,"dir":"/d/pro2","isolated":false,"login_expires":null}"#);
+        assert_eq!(json, r#"{"name":"pro2","state":"logged-out","sessions":0,"plan":null,"dir":"/d/pro2","isolated":false,"login_expires":null,"provider":"claude","model":null}"#);
+    }
+
+    #[test]
+    fn a_provider_account_shows_its_provider_and_model_in_place_of_a_plan() {
+        let mut router = status("router", LoginState::LoggedIn, 0, None, false);
+        router.provider = "openrouter".into();
+        router.model = Some("qwen/qwen3-coder".into());
+        let mut local = status("local", LoginState::LoggedIn, 0, None, false);
+        local.provider = "api".into();
+        assert_eq!(plan_label(&router), "openrouter qwen/qwen3-coder");
+        assert_eq!(plan_label(&local), "api");
+        assert_eq!(plan_label(&status("pro", LoginState::LoggedIn, 0, Some("max"), false)), "max");
+        let json = serde_json::to_string(&router).unwrap();
+        assert!(json.ends_with(r#","provider":"openrouter","model":"qwen/qwen3-coder"}"#), "{json}");
     }
 }

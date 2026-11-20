@@ -8,6 +8,7 @@ use crate::error::{Result, fail};
 use crate::injection;
 use crate::isolation::{self, IsolatedSettings};
 use crate::paths::Paths;
+use crate::provider::{self, Provider};
 use crate::registry;
 use crate::shared;
 use crate::theme;
@@ -124,6 +125,32 @@ fn apply_theme(
     }
 }
 
+/// Sends the session to the account's provider: a copy of the settings file it would get, with the
+/// provider's address, models and key helper, in place of that file. Unlike the theme, a failure
+/// stops the launch: without it the session would go to Anthropic.
+fn apply_provider(
+    paths: &Paths,
+    name: &str,
+    provider: &Provider,
+    isolated: Option<&mut IsolatedSettings>,
+    settings: &mut Option<PathBuf>,
+) -> Result<()> {
+    let source = match (&isolated, &settings) {
+        (Some(isolated), _) => isolated.file.clone(),
+        (None, Some(file)) => file.clone(),
+        (None, None) => paths.shared_root.join("settings.json"),
+    };
+    let Some(program) = usage::program() else {
+        return fail(format!("{name} uses {}: kindric-accounts must be in PATH to give the session its key", provider.provider.name()));
+    };
+    let file = provider::write_settings(paths, name, Some(&source), provider, &program)?;
+    match isolated {
+        Some(isolated) => isolated.file = file,
+        None => *settings = Some(file),
+    }
+    Ok(())
+}
+
 /// The hooks of kindric a session gets. An isolated account gets those of the user being away
 /// (309) and of the overview (329, 366, 368): they only put its questions and its progress
 /// before the user and give back the user's answers, while messages and waking would let
@@ -169,6 +196,9 @@ pub fn prepare(
     let mut settings = usage::settings_file(paths, name, isolated_file, usage::wrapper_command().as_deref(), &hooks, &mut warnings);
     if let Some(theme) = theme {
         apply_theme(paths, name, theme, isolated.as_mut(), &mut settings, &mut warnings);
+    }
+    if let Some(provider) = provider::read(&dir)? {
+        apply_provider(paths, name, &provider, isolated.as_mut(), &mut settings)?;
     }
     let args = claude_args(paths, isolated.as_ref(), settings.as_deref(), mcp_config, conversation_dir.is_some());
     let memory = conversation_dir.map(|directory| injection::for_session(paths, name, directory)).unwrap_or_default();

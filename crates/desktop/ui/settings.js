@@ -12,6 +12,23 @@ import { purgeQuestion, purgeResult, refusalLine } from "./purge.js";
 // A login that expires within this many days can be renewed from its row.
 const RENEW_DAYS = 7;
 
+// What the form asks for each provider an account's model can come from (kindric-accounts'
+// provider.rs): the address shown when none is typed, an example model, whether a key is needed.
+// `claude` is a Claude login: only the name.
+const PROVIDERS = {
+  claude: null,
+  api: { url: null, model: "optional, e.g. claude-sonnet-4-5", key: true },
+  openrouter: { url: "https://openrouter.ai/api", model: "e.g. qwen/qwen3-coder", key: true },
+  ollama: { url: "http://localhost:11434", model: "e.g. qwen3.5:9b", key: false },
+  gateway: { url: "http://host:port", model: "as the gateway names it", key: true },
+};
+
+// The provider and model of an account whose model is not a Claude login: "openrouter qwen3".
+export function providerLabel(account) {
+  if (!account.provider || account.provider === "claude") return null;
+  return account.model ? `${account.provider} ${account.model}` : account.provider;
+}
+
 const { invoke } = window.__TAURI__.core;
 
 function element(tag, className, text) {
@@ -153,8 +170,11 @@ export class SettingsWindow {
     this.message = dialog.querySelector(".accounts-message");
     this.form = dialog.querySelector(".accounts-add");
     this.name = this.form.elements.name;
+    this.form.elements.kind.addEventListener("change", () => this.showProviderFields());
     // Name of the account whose removal waits for a yes, or null.
     this.confirming = null;
+    // Name of the provider account whose key is being typed in its row, or null.
+    this.keying = null;
     this.accounts = [];
     // A newer reading wins over one still on its way.
     this.request = 0;
@@ -172,8 +192,12 @@ export class SettingsWindow {
 
   async open() {
     this.confirming = null;
+    this.keying = null;
     this.message.textContent = "";
     this.name.value = "";
+    this.form.elements.kind.value = "claude";
+    for (const field of ["url", "model", "key"]) this.form.elements[field].value = "";
+    this.showProviderFields();
     this.memoryMessage.textContent = "";
     this.purge.reset();
     this.capturing = null;
@@ -296,10 +320,11 @@ export class SettingsWindow {
     const state = account.state.replace("-", " ");
     // Its login runs out soon: kindric renews it with the same window as "log in".
     const expiring = expiresWithin(account, RENEW_DAYS);
-    const searched = `${account.name} ${state} ${account.plan ?? ""} account${expiring ? " login expires renew" : ""}`;
+    const searched = `${account.name} ${state} ${account.plan ?? ""} ${account.provider ?? ""} ${account.model ?? ""} account${expiring ? " login expires renew" : ""}`;
     item.dataset.search = searched.toLowerCase();
     item.append(element("span", "account-name", account.name), element("span", `account-state ${account.state}`, state));
-    const details = [account.plan, account.sessions > 0 && plural(account.sessions, "session"), account.isolated && "isolated"].filter(Boolean);
+    const provider = providerLabel(account);
+    const details = [provider ?? account.plan, account.sessions > 0 && plural(account.sessions, "session"), account.isolated && "isolated"].filter(Boolean);
     const detailsNode = element("span", "account-details muted", details.join(" · "));
     if (expiring) {
       const expiry = `${details.length > 0 ? " · " : ""}login expires ${inHowLong(timeLeft(account))}`;
@@ -311,6 +336,13 @@ export class SettingsWindow {
       const running = account.sessions > 0 ? ` ${plural(account.sessions, "session")} keep running, hidden from kindric.` : "";
       item.append(element("span", "account-confirm", `take ${account.name} off the list? its folder stays: ${account.dir}.${running}`));
       actions.append(button("remove", () => this.forget(account.name), "danger"), button("cancel", () => this.confirm(null)));
+    } else if (this.keying === account.name) {
+      item.append(this.keyForm(account));
+    } else if (provider) {
+      if (PROVIDERS[account.provider]?.key) {
+        actions.append(button(account.state === "logged-in" ? "change key" : "set key", () => this.askKey(account.name)));
+      }
+      actions.append(button("remove", () => this.confirm(account.name)));
     } else {
       if (account.state !== "logged-in") actions.append(button("log in", () => this.logIn(account.name)));
       else if (expiring) actions.append(button("renew", () => this.logIn(account.name)));
@@ -325,21 +357,79 @@ export class SettingsWindow {
     this.draw();
   }
 
+  // The address, model and key fields of the provider picked; none for a Claude login.
+  showProviderFields() {
+    const shape = PROVIDERS[this.form.elements.kind.value] ?? null;
+    const fields = this.form.elements;
+    this.form.querySelector(".provider-url").hidden = !shape || shape.url === null;
+    this.form.querySelector(".provider-model").hidden = !shape;
+    this.form.querySelector(".provider-key").hidden = !shape?.key;
+    fields.url.placeholder = shape?.url ?? "";
+    fields.model.placeholder = shape?.model ?? "";
+  }
+
+  // A Claude account opens its login window; a provider account is ready once it has its key.
   async add() {
     const name = this.name.value.trim();
     if (name === "") return;
     this.message.textContent = "";
+    const fields = this.form.elements;
+    const kind = fields.kind.value;
+    const shape = PROVIDERS[kind] ?? null;
+    const request = { name };
+    if (shape) {
+      request.provider = { kind, url: fields.url.value.trim() || null, model: fields.model.value.trim() || null };
+      request.key = shape.key ? fields.key.value : null;
+    }
     let warnings;
     try {
-      warnings = await invoke("add_account", { name });
+      warnings = await invoke("add_account", request);
     } catch (error) {
       this.message.textContent = `${error}`;
       return;
+    } finally {
+      fields.key.value = "";
     }
     this.name.value = "";
+    fields.url.value = "";
+    fields.model.value = "";
     this.message.textContent = warnings.join(" ");
     await this.reload();
-    this.logIn(name);
+    if (!shape) this.logIn(name);
+  }
+
+  askKey(name) {
+    this.keying = name;
+    this.draw();
+    this.list.querySelector(".account-key input")?.focus();
+  }
+
+  // The row's field for a provider account's key: kindric hands it to kindric-accounts and keeps
+  // nothing of it.
+  keyForm(account) {
+    const form = element("form", "account-key");
+    const input = element("input");
+    input.type = "password";
+    input.spellcheck = false;
+    input.autocomplete = "off";
+    input.placeholder = `${account.provider} key for ${account.name}`;
+    const save = element("button", "", "save");
+    save.type = "submit";
+    form.append(input, save, button("cancel", () => this.askKey(null)));
+    form.addEventListener("submit", async (event) => {
+      event.preventDefault();
+      const key = input.value;
+      input.value = "";
+      try {
+        await invoke("set_account_key", { name: account.name, key });
+        this.keying = null;
+        this.message.textContent = "";
+      } catch (error) {
+        this.message.textContent = `${error}`;
+      }
+      await this.reload();
+    });
+    return form;
   }
 
   logIn(name) {

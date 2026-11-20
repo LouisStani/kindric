@@ -8,7 +8,7 @@ import { ArtifactsWindow } from "./artifacts.js";
 import { AccountList } from "./launcher.js";
 import { ChangesWindow } from "./changes.js";
 import { WorktreesWindow } from "./worktrees.js";
-import { SettingsWindow } from "./settings.js";
+import { providerLabel, SettingsWindow } from "./settings.js";
 import { AtlasWindow } from "./atlas.js";
 import { expiresWithin, inHowLong, shortly, timeLeft } from "./expiry.js";
 import { Overview } from "./overview.js";
@@ -715,7 +715,9 @@ async function accountLabels(accounts) {
 
 function accountLabel(name, usage, status, now) {
   const parts = [name];
-  if (usage) {
+  const provider = status ? providerLabel(status) : null;
+  if (provider) parts.push(provider);
+  else if (usage) {
     parts.push(`5h ${Math.round(usage.five_hour)}%`, `week ${Math.round(usage.seven_day)}%`);
     const age = now / 1000 - usage.updated_at;
     if (age > 600) parts.push(ago(age));

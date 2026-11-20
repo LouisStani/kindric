@@ -114,7 +114,7 @@ export class Overview {
     this.artifacts = new Map();
     this.seenArtifacts = "[]";
     // What `control_figures` read last: limits by account, context and files kept by session.
-    this.figures = { usages: [], contexts: {}, kept: {} };
+    this.figures = { usages: [], contexts: {}, kept: {}, providers: {} };
     this.seenFigures = "";
     this.side = element("aside", "control-side");
     this.main = element("div", "control-main");
@@ -241,7 +241,7 @@ export class Overview {
       projects.append(line);
     }
     projects.append(button("control-add", "+ add a project", () => this.onAddProject()));
-    const cards = accountCards(rows, accounts, this.figures.usages ?? []);
+    const cards = accountCards(rows, accounts, this.figures.usages ?? [], this.figures.providers ?? {});
     const title = element("h3", "control-side-title", "accounts");
     this.side.replaceChildren(projects, title, ...cards.map((card) => this.accountCard(card)));
   }
@@ -260,9 +260,9 @@ export class Overview {
     const box = element("section", card.hot ? "account-card hot" : "account-card");
     const head = element("div", "account-head");
     head.append(element("strong", "", card.name), element("span", "", card.sessions === 1 ? "1 session" : `${card.sessions} sessions`));
-    box.append(head);
+    box.append(head, element("p", "account-provider", card.provider));
     if (!card.usage) {
-      box.append(element("p", "account-note", "no figures yet"));
+      box.append(element("p", "account-note", card.limits ? "no figures yet" : "no 5h or 7d limits"));
       return box;
     }
     for (const [label, percent] of [["5h", card.usage.five_hour], ["7d", card.usage.seven_day]]) {

@@ -1369,8 +1369,43 @@ input:focus, select:focus {
 
 .accounts-add {
   display: flex;
+  flex-wrap: wrap;
   gap: 8px;
   align-items: end;
+}
+
+.accounts-add label[hidden] {
+  display: none;
+}
+
+/* The system draws a select in its own grey: drawn here like a field, with an arrow of the theme. */
+.provider-kind {
+  position: relative;
+}
+
+.provider-kind select {
+  appearance: none;
+  padding-right: 26px;
+}
+
+.provider-kind::after {
+  position: absolute;
+  right: 10px;
+  bottom: 7px;
+  color: var(--muted);
+  pointer-events: none;
+  content: "▾";
+}
+
+.account-key {
+  display: flex;
+  grid-column: 1 / -2;
+  gap: 6px;
+  align-items: center;
+}
+
+.account-key input {
+  flex: 1;
 }
 
 .accounts-add label {
@@ -1868,6 +1903,16 @@ input:focus, select:focus {
 .account-note {
   margin: 0;
   color: var(--muted);
+}
+
+/* Where the account's model comes from: claude, or the provider and its model (decision 417). */
+.account-provider {
+  margin: 0;
+  overflow: hidden;
+  font-size: 12px;
+  color: var(--muted);
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .bar {

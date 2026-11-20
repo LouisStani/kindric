@@ -13,6 +13,7 @@ pub mod launch;
 pub mod mcp;
 pub mod memory;
 pub mod paths;
+pub mod provider;
 pub mod registry;
 pub mod shared;
 pub mod status;

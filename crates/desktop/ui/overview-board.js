@@ -118,16 +118,20 @@ export function keptLabel(kept, fresh) {
 export const HOT_PERCENT = 80;
 
 // The accounts of the side: those of `accounts` (the registry's order), then any other a session
-// runs on; one is kept with sessions running or figures. `usages` as `control_figures` gives them.
-export function accountCards(rows, accounts, usages) {
+// runs on; one is kept with sessions running, figures, or a model that is not a Claude login.
+// `usages` and `providers` as `control_figures` gives them; `provider` is "claude" for a Claude
+// login, else the provider and model ("openrouter qwen3"), whose account has no five-hour or weekly
+// limits (decision 417).
+export function accountCards(rows, accounts, usages, providers = {}) {
   const names = new Set([...accounts, ...rows.map((row) => row.account)]);
   return [...names]
     .map((name) => {
       const usage = usages.find((candidate) => candidate.name === name) ?? null;
       const sessions = rows.filter((row) => row.account === name && row.state !== "paused").length;
-      return { name, sessions, usage, hot: usage !== null && usage.five_hour >= HOT_PERCENT };
+      const provider = providers[name] ?? null;
+      return { name, sessions, usage, provider: provider ?? "claude", limits: provider === null, hot: usage !== null && usage.five_hour >= HOT_PERCENT };
     })
-    .filter((card) => card.sessions > 0 || card.usage !== null);
+    .filter((card) => card.sessions > 0 || card.usage !== null || !card.limits);
 }
 
 // Whether a prompt can be typed into a session from here: one kindric runs in the background

@@ -250,17 +250,23 @@ pub fn run_user_statusline(paths: &Paths, input: &[u8]) -> io::Result<Option<(Ve
 /// this program when it is kindric-accounts, else the one in `PATH` when it is recent enough to
 /// know `statusline` (an older one would break the status line). `None` otherwise.
 pub fn wrapper_command() -> Option<String> {
-    let current = std::env::current_exe().ok().filter(|exe| {
-        exe.file_stem().is_some_and(|stem| stem == "kindric-accounts")
-    });
-    let program = match current {
-        Some(program) => program,
-        None => {
-            let path = std::env::var_os("PATH").unwrap_or_default();
-            launch::find_in(&path, &PROGRAM_NAMES).filter(|program| knows_statusline(program))?
-        },
-    };
+    let program = current_program().or_else(|| program_in_path().filter(|program| knows_statusline(program)))?;
     Some(format!("\"{}\" {SUBCOMMAND}", program.display()))
+}
+
+/// This program when it is kindric-accounts.
+fn current_program() -> Option<PathBuf> {
+    std::env::current_exe().ok().filter(|exe| exe.file_stem().is_some_and(|stem| stem == "kindric-accounts"))
+}
+
+fn program_in_path() -> Option<PathBuf> {
+    let path = std::env::var_os("PATH").unwrap_or_default();
+    launch::find_in(&path, &PROGRAM_NAMES)
+}
+
+/// kindric-accounts itself, or the one in `PATH`: what a session runs to get its key.
+pub fn program() -> Option<PathBuf> {
+    current_program().or_else(program_in_path)
 }
 
 /// The first version of kindric-accounts with `statusline`.

@@ -150,9 +150,9 @@ test_status() {
 		'! PATH=$1 "$0" status --json >/dev/null 2>&1' "$SCRIPT" "$SANDBOX/nobin:$BASE_PATH"
 	out=$(ca status --json)
 	check "status --json : compte connecté complet" jq -e --arg d "$(data_dir pro1)" \
-		'.[0] == {name: "pro1", state: "logged-in", sessions: 0, plan: "pro", dir: $d, isolated: false, login_expires: "2030-01-02T03:04:05.678Z"}' <<<"$out"
+		'.[0] == {name: "pro1", state: "logged-in", sessions: 0, plan: "pro", dir: $d, isolated: false, login_expires: "2030-01-02T03:04:05.678Z", provider: "claude", model: null}' <<<"$out"
 	check "status --json : compte déconnecté, offre null" jq -e --arg d "$(data_dir pro2)" \
-		'.[1] == {name: "pro2", state: "logged-out", sessions: 0, plan: null, dir: $d, isolated: false, login_expires: null}' <<<"$out"
+		'.[1] == {name: "pro2", state: "logged-out", sessions: 0, plan: null, dir: $d, isolated: false, login_expires: null, provider: "claude", model: null}' <<<"$out"
 	check "status refuse une option inconnue" bash -c '! "$0" status --tsv 2>/dev/null' "$SCRIPT"
 }
 
@@ -410,6 +410,36 @@ test_remove() {
 		'"$0" list | grep -qx pro7 && test -d "$1"' "$SCRIPT" "$(data_dir pro7)"
 }
 
+test_providers() {
+	local out own
+	check "add --provider sans modèle refusé, rien créé" bash -c '! "$0" add router --provider openrouter 2>/dev/null && [[ ! -d "$1" ]]' "$SCRIPT" "$(data_dir router)"
+	check "add --provider inconnu refusé" bash -c '"$0" add router --provider gpt --model m 2>&1 | grep -q "unknown provider"' "$SCRIPT"
+	check "add --model sans --provider : usage" bash -c '! "$0" add router --model m 2>/dev/null' "$SCRIPT"
+	ca add router --provider openrouter --model qwen/qwen3-coder >/dev/null
+	check "fichier du fournisseur écrit" json_true '.provider == "openrouter" and .url == "https://openrouter.ai/api" and .model == "qwen/qwen3-coder"' "$(data_dir router)/kindric-provider.json"
+	out=$(ca status --json)
+	check "status --json : compte sans clé déconnecté, fournisseur et modèle" jq -e \
+		'.[] | select(.name == "router") | .state == "logged-out" and .provider == "openrouter" and .model == "qwen/qwen3-coder" and .plan == null' <<<"$out"
+	check "run refuse un compte sans clé et dit la commande" bash -c '"$0" run router --resume 2>&1 | grep -q "kindric-accounts token router"' "$SCRIPT"
+	check "token --print sans clé échoue" bash -c '! "$0" token router --print 2>/dev/null' "$SCRIPT"
+	printf 'sk-or-test\n' | ca token router >/dev/null
+	check "clé gardée en 600" test "$(perm_of "$(data_dir router)/kindric-token")" = 600
+	check "token --print rend la clé" test "$(ca token router --print)" = sk-or-test
+	check "status : compte avec clé connecté" bash -c '"$0" status | grep -q "^router *logged in *openrouter qwen/qwen3-coder"' "$SCRIPT"
+	out=$(ca run router --resume)
+	own="$HOME/.local/share/kindric-accounts/.shared-settings/provider/router.json"
+	check "run passe les réglages du fournisseur" grep -qxF "ARGS=--settings $own --resume" <<<"$out"
+	check "réglages : adresse, modèle et assistant de clé" json_true \
+		'.env.ANTHROPIC_BASE_URL == "https://openrouter.ai/api" and .env.ANTHROPIC_MODEL == "qwen/qwen3-coder" and (.apiKeyHelper | endswith("kindric-accounts\" token router --print"))' "$own"
+	check "réglages : la clé n'y est pas" bash -c '! grep -q sk-or-test "$0"' "$own"
+	check "token sur un compte Claude refusé" bash -c '"$0" token pro1 2>&1 | grep -q "Claude account"' "$SCRIPT"
+	ca add local --provider ollama --model qwen3 >/dev/null
+	check "ollama prêt sans clé" test "$(ca token local --print)" = no-key
+	check "gateway sans adresse refusé" bash -c '"$0" add gw --provider gateway --model m 2>&1 | grep -q -- "--url"' "$SCRIPT"
+	ca remove router --delete-dir >/dev/null
+	ca remove local --delete-dir >/dev/null
+}
+
 make_minimal_path() {
 	local tool
 	mkdir -p "$SANDBOX/claude-only" "$SANDBOX/sys"
@@ -426,6 +456,7 @@ test_add_and_list
 test_run
 test_status
 test_status_json_escaping
+test_providers
 test_sessions
 test_shared_mcp
 test_isolation

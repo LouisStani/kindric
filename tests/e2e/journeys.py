@@ -2073,6 +2073,46 @@ class TrustAFolder(Journey):
         self.assertEqual(fake_sessions()[0]["cwd"], PROJECT)
 
 
+class ProviderAccountAddedWithItsKey(Journey):
+    """The settings add an account whose model comes from OpenRouter: the address, model and key
+    fields show for that provider, kindric-accounts keeps the key in the account's folder, readable
+    by the user only, and the row shows the provider and model with "change key" instead of
+    "log in". No login window opens."""
+
+    ROUTER_DIR = os.path.join(HOME, ".local/share/kindric-accounts/router")
+
+    def test_add_with_key(self) -> None:
+        driver = self.driver
+        driver.press(CONTROL, ",")
+        wait_until("the settings", lambda: dialog_open(driver, "settings"))
+        click_text(driver, "#settings .settings-categories li", "accounts")
+        wait_until("the account work", lambda: texts(driver, "#settings li.account .account-name") == ["work"] or None)
+        hidden = driver.script("return document.querySelector('#settings .provider-key').hidden;")
+        self.assertTrue(hidden, "the key field shows for a Claude login")
+
+        driver.script("""const kind = document.querySelector('#settings .accounts-add select[name=kind]');
+          kind.value = 'openrouter';
+          kind.dispatchEvent(new Event('change'));""")
+        shown = driver.script("""return ['.provider-url', '.provider-model', '.provider-key']
+          .map((selector) => !document.querySelector('#settings ' + selector).hidden);""")
+        self.assertEqual(shown, [True, True, True])
+        driver.type_into(driver.find("#settings .accounts-add input[name=name]"), "router")
+        driver.type_into(driver.find("#settings .accounts-add input[name=model]"), "qwen/qwen3-coder")
+        driver.type_into(driver.find("#settings .accounts-add input[name=key]"), "sk-or-e2e" + ENTER)
+
+        wait_until("router listed", lambda: "router" in texts(driver, "#settings li.account .account-name") or None)
+        token = os.path.join(self.ROUTER_DIR, "kindric-token")
+        with open(token, encoding="utf-8") as file:
+            self.assertEqual(file.read().strip(), "sk-or-e2e")
+        self.assertEqual(os.stat(token).st_mode & 0o777, 0o600)
+        self.assertFalse(dialog_open(driver, "helper"), "a login window opened for a provider account")
+        row = driver.script("""const row = [...document.querySelectorAll('#settings li.account')].find((item) => item.querySelector('.account-name').textContent === 'router');
+          return [row.querySelector('.account-details').textContent, [...row.querySelectorAll('.account-actions button')].map((button) => button.textContent)];""")
+        self.assertEqual(row, ["openrouter qwen/qwen3-coder", ["change key", "remove"]])
+        key_field = driver.script("return document.querySelector('#settings .accounts-add input[name=key]').value;")
+        self.assertEqual(key_field, "", "the key stays in the form")
+
+
 class AccountAddedThenRemoved(Journey):
     """The settings add an account: kindric-accounts creates it and Claude Code's login runs in the
     helper window. "remove" asks first, then takes it off the list and leaves its folder on disk."""
@@ -2220,6 +2260,7 @@ class ControlCenterFigures(Journey):
         wait_until("the account's limits", lambda: texts(driver, ".account-card .account-percent") == ["85%", "30%"] or None)
         self.assertTrue(driver.script("return document.querySelector('.account-card').classList.contains('hot')"), "past 80 % and not framed")
         self.assertTrue(any(note.startswith("5h resets at ") for note in texts(driver, ".account-card .account-note")))
+        self.assertEqual(texts(driver, ".account-card .account-provider"), ["claude"], "the card names where the model comes from (417)")
         wait_until("alpha's context", lambda: self.cell("alpha", ".row-ctx") == "ctx42%" or None)
         self.assertEqual(self.cell("beta", ".row-ctx"), "ctx—")
 

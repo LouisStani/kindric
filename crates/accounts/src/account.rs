@@ -6,6 +6,7 @@ use std::path::PathBuf;
 use crate::error::{Error, Result, fail};
 use crate::files;
 use crate::paths::Paths;
+use crate::provider::{self, Provider};
 use crate::registry;
 use crate::shared;
 
@@ -17,6 +18,12 @@ pub struct Created {
 /// Creates the account directory (700), links the shared configuration and adds the
 /// name to the list. An existing directory of the same name is reused, as in 1.x.
 pub fn add(paths: &Paths, name: &str) -> Result<Created> {
+    add_with(paths, name, None)
+}
+
+/// `add`, and with `provider` the account's requests go to that provider instead of a Claude
+/// subscription. The provider is written before the name is listed: a listed account is complete.
+pub fn add_with(paths: &Paths, name: &str, provider: Option<&Provider>) -> Result<Created> {
     registry::validate_name(name)?;
     if name == registry::DEFAULT_ACCOUNT {
         return fail(format!("'{name}' is reserved for Claude Code's own configuration (~/.claude)"));
@@ -34,6 +41,9 @@ pub fn add(paths: &Paths, name: &str) -> Result<Created> {
     }
     files::make_private(&dir)?;
     let warnings = shared::link_shared(&paths.shared_root, &dir)?;
+    if let Some(provider) = provider {
+        provider::write(&dir, provider)?;
+    }
     files::append_line(&paths.registry_file(), name)?;
     Ok(Created { dir, warnings })
 }

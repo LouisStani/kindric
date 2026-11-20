@@ -240,6 +240,8 @@ struct ControlFigures {
     contexts: std::collections::BTreeMap<String, f64>,
     /// Session id → files it kept for the user, in every project.
     kept: std::collections::BTreeMap<String, usize>,
+    /// Account → its provider and model, for the accounts whose model is not a Claude login.
+    providers: std::collections::BTreeMap<String, String>,
 }
 
 /// What the control center shows of the session picked: its last steps, when its transcript was
@@ -302,6 +304,7 @@ fn control_figures(shared: State<'_, Shared>, accounts: Vec<String>, sessions: V
         usages: accounts::usages(&paths, &accounts, unix_now()?),
         contexts: accounts::contexts(&paths, &sessions),
         kept: origins::kept_for_user(&roots),
+        providers: accounts::provider_labels(&paths, &accounts),
     })
 }
 
@@ -316,11 +319,24 @@ async fn account_statuses(shared: State<'_, Shared>) -> Result<Vec<accounts::Acc
         .map_err(|error| format!("cannot read the accounts: {error}"))
 }
 
-/// Creates an account of kindric-accounts; returns its warnings, if any.
+/// Creates an account of kindric-accounts; returns its warnings, if any. With `provider`, its
+/// model comes from an API key or a gateway, and `key` is kept for it.
 #[tauri::command]
-fn add_account(name: String) -> Result<Vec<String>, String> {
+fn add_account(name: String, provider: Option<accounts::NewProvider>, key: Option<String>) -> Result<Vec<String>, String> {
     let paths = accounts::paths().map_err(|error| error.to_string())?;
-    accounts::add_account(&paths, name.trim()).map_err(|error| error.to_string())
+    match provider {
+        None => accounts::add_account(&paths, name.trim()),
+        Some(provider) => accounts::add_provider_account(&paths, name.trim(), &provider, key.as_deref()),
+    }
+    .map_err(|error| error.to_string())
+}
+
+/// Keeps the key of a provider account. kindric does not keep it: kindric-accounts writes it in
+/// the account's folder, readable by the user only.
+#[tauri::command]
+fn set_account_key(name: String, key: String) -> Result<(), String> {
+    let paths = accounts::paths().map_err(|error| error.to_string())?;
+    accounts::set_account_key(&paths, &name, &key).map_err(|error| error.to_string())
 }
 
 /// Takes an account off the list of kindric-accounts; its directory stays.
@@ -1713,6 +1729,7 @@ fn main() -> ExitCode {
             project_figures,
             remove_worktree,
             add_account,
+            set_account_key,
             forget_account,
             memory_warning,
             set_memory_warning,
