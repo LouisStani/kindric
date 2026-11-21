@@ -7,6 +7,7 @@ use std::time::{Duration, Instant};
 
 pub use kindric_accounts::registry::DEFAULT_ACCOUNT;
 pub use kindric_accounts::status::AccountStatus;
+use kindric_accounts::agent::{self, Agent};
 use kindric_accounts::provider::{self, Kind, Provider};
 use kindric_accounts::{Paths, account, launch, memory, registry, status, usage};
 use serde::{Deserialize, Serialize};
@@ -16,7 +17,7 @@ use crate::task_list;
 
 pub(crate) const LAUNCHER: &str = "kindric-accounts";
 /// 2.2.0: `token`, the key of the accounts whose model comes from an API key or a gateway.
-pub const MIN_LAUNCHER_VERSION: (u32, u32, u32) = (2, 2, 0);
+pub const MIN_LAUNCHER_VERSION: (u32, u32, u32) = (2, 3, 0);
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum SessionState {
@@ -335,6 +336,11 @@ fn account_sessions(paths: &Paths, account: &str, implicit_default: bool, includ
     } else {
         launch::require_account(paths, account).map_err(library_error)?
     };
+    // The sessions of a Codex account live in its daemon, not in `claude agents`: listed from the
+    // next step of the Codex accounts.
+    if !is_implicit_default(account, implicit_default) && is_codex(paths, account) {
+        return Ok(Vec::new());
+    }
     let claude = launch::require_claude().map_err(library_error)?;
     let mut command = claude_command(claude);
     if is_implicit_default(account, implicit_default) {
@@ -465,13 +471,22 @@ pub fn set_account_key(paths: &Paths, name: &str, key: &str) -> io::Result<()> {
     provider::save_token(&dir, key).map_err(library_error)
 }
 
-/// `openrouter qwen/qwen3-coder` for each of `names` whose model comes from a provider: what the
-/// overview shows in place of the limits of a Claude subscription. Read from two small files, no
-/// call to Claude Code.
+/// Whether `name` is an account of kindric-accounts that runs Codex; an unreadable file counts as
+/// Claude Code, which every older account runs.
+pub fn is_codex(paths: &Paths, name: &str) -> bool {
+    agent::read(&paths.account_dir(name)).is_ok_and(|agent| agent == Agent::Codex)
+}
+
+/// `openrouter qwen/qwen3-coder` for each of `names` whose model comes from a provider, `codex` for
+/// a Codex account: what the overview shows in place of the limits of a Claude subscription. Read
+/// from small files, no call to Claude Code.
 pub fn provider_labels(paths: &Paths, names: &[String]) -> BTreeMap<String, String> {
     names
         .iter()
         .filter_map(|name| {
+            if is_codex(paths, name) {
+                return Some((name.clone(), Agent::Codex.name().to_string()));
+            }
             let provider = provider::read(&paths.account_dir(name)).ok()??;
             let label = match &provider.model {
                 Some(model) => format!("{} {model}", provider.provider.name()),
@@ -628,6 +643,21 @@ mod tests {
         assert_eq!(provider::read_token(&dir).expect("token").as_deref(), Some("sk-or-2"));
         let claude = set_account_key(&paths, "plain", "x").expect_err("a Claude account").to_string();
         assert!(claude.contains("log in"), "{claude}");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn a_codex_account_gets_its_label_and_no_claude_query() {
+        let (root, paths) = scratch_paths("cx");
+        account::add_codex(&paths, "cx").expect("add");
+        add_account(&paths, "plain").expect("add");
+        assert!(is_codex(&paths, "cx"));
+        assert!(!is_codex(&paths, "plain"));
+        let names = registry::list_accounts(&paths).expect("list");
+        let labels = provider_labels(&paths, &names);
+        assert_eq!(labels.into_iter().collect::<Vec<_>>(), [("cx".to_string(), "codex".to_string())]);
+        // No claude is called for it: an empty list even where claude is missing.
+        assert_eq!(account_sessions(&paths, "cx", false, false).expect("no session yet"), Vec::new());
         let _ = std::fs::remove_dir_all(&root);
     }
 

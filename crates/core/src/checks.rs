@@ -282,7 +282,11 @@ fn default_state_file(paths: &Paths) -> Option<std::path::PathBuf> {
 pub fn check_messages(paths: &Paths) -> Result<MessagesCheck, String> {
     let isolated = registry::list_isolated(paths).map_err(|error| error.to_string())?;
     let registered = registry::list_accounts(paths).map_err(|error| error.to_string())?;
-    let carriers: Vec<&String> = registered.iter().filter(|account| !isolated.contains(account)).collect();
+    // A Codex account takes no MCP server of Claude Code: it carries no messages yet.
+    let carriers: Vec<&String> = registered
+        .iter()
+        .filter(|account| !isolated.contains(account) && !accounts::is_codex(paths, account))
+        .collect();
     let accounts = carriers.iter().any(|account| has_messages_server(&paths.account_dir(account).join(".claude.json")));
     let named_default = |accounts: &[String]| accounts.iter().any(|account| account == DEFAULT_ACCOUNT);
     Ok(MessagesCheck {
@@ -486,6 +490,11 @@ mod tests {
         fs::create_dir_all(&paths.shared_root).unwrap();
         fs::write(paths.registry_file(), "work\nperso\n").unwrap();
         assert_eq!(check_messages(&paths).unwrap(), messages(Some("work"), false, true, false));
+
+        // A Codex account carries no messages: the server is offered to the next account.
+        kindric_accounts::agent::write(&paths.account_dir("work"), kindric_accounts::agent::Agent::Codex).unwrap();
+        assert_eq!(check_messages(&paths).unwrap(), messages(Some("perso"), false, true, false), "codex");
+        fs::remove_file(kindric_accounts::agent::agent_file(&paths.account_dir("work"))).unwrap();
 
         fs::write(paths.account_dir("work").join(".claude.json"), WITH_SERVER).unwrap();
         fs::write(paths.isolated_file(), "work\n").unwrap();

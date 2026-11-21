@@ -4,6 +4,7 @@ use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
+use crate::codex;
 use crate::error::{Result, fail};
 use crate::injection;
 use crate::isolation::{self, IsolatedSettings};
@@ -211,6 +212,26 @@ pub fn prepare(
     Ok(Launch { command, warnings })
 }
 
+/// Prepares `codex` for the Codex account `name`: links what it shares with `~/.codex` again,
+/// removes the keys of the shell, sets `CODEX_HOME` to the account's directory. `user_args` go
+/// to `codex` as they are (`login`, `resume`…).
+pub fn prepare_codex(paths: &Paths, name: &str, user_args: &[OsString]) -> Result<Launch> {
+    let dir = require_account(paths, name)?;
+    let codex = codex::require_codex()?;
+    let warnings = match paths.codex_root() {
+        Some(codex_root) => shared::link_entries(&codex_root, &dir, &shared::CODEX_SHARED_ENTRIES)?,
+        None => Vec::new(),
+    };
+    let mut command = codex::command(&codex, &dir);
+    command.args(user_args);
+    Ok(Launch { command, warnings })
+}
+
+/// The name of the program `command` starts, for its error messages.
+fn program_name(command: &Command) -> String {
+    Path::new(command.get_program()).file_name().map_or_else(|| "the program".into(), |name| name.to_string_lossy().into_owned())
+}
+
 /// Ctrl+C reaches every process attached to the console. While waiting for Claude Code,
 /// kindric-accounts handles it by doing nothing, so only Claude Code reacts. A handler is
 /// used rather than ignoring the signal, because ignoring it would be inherited.
@@ -226,19 +247,20 @@ fn survive_ctrl_c() {
     }
 }
 
-/// Windows has no exec: starts Claude Code, waits, and returns its exit code.
+/// Windows has no exec: starts Claude Code or Codex, waits, and returns its exit code.
 #[cfg(windows)]
 pub fn run_and_wait(mut command: Command) -> Result<i32> {
     survive_ctrl_c();
-    let status = command.status().map_err(|error| crate::error::Error(format!("cannot start claude: {error}")))?;
+    let status = command.status().map_err(|error| crate::error::Error(format!("cannot start {}: {error}", program_name(&command))))?;
     Ok(status.code().unwrap_or(1))
 }
 
-/// Replaces this process with Claude Code; returns only if that failed.
+/// Replaces this process with Claude Code or Codex; returns only if that failed.
 #[cfg(unix)]
 pub fn exec(mut command: Command) -> crate::error::Error {
     use std::os::unix::process::CommandExt;
-    crate::error::Error(format!("cannot start claude: {}", command.exec()))
+    let error = command.exec();
+    crate::error::Error(format!("cannot start {}: {error}", program_name(&command)))
 }
 
 #[cfg(test)]

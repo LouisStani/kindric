@@ -10,6 +10,7 @@ use std::path::{Path, PathBuf};
 
 use serde_json::{Map, Value};
 
+use crate::agent::{self, Agent};
 use crate::error::{Result, fail};
 use crate::files;
 use crate::paths::{MEMORY_ROOT_VARIABLE, Paths};
@@ -43,11 +44,16 @@ impl IsolatedSettings {
 
 /// `default`, Claude Code's own configuration, can be isolated without being an account:
 /// kindric keeps it out of its messages.
+/// A Codex account shares no MCP servers yet: isolating it would change nothing.
 fn require_isolatable(paths: &Paths, name: &str) -> Result<()> {
     if name == registry::DEFAULT_ACCOUNT {
         return Ok(());
     }
-    registry::require_existing_account(paths, name)
+    registry::require_existing_account(paths, name)?;
+    if agent::read(&paths.account_dir(name))? == Agent::Codex {
+        return fail(format!("{name} is a Codex account: it shares no MCP servers with the other accounts yet, so there is nothing to isolate"));
+    }
+    Ok(())
 }
 
 /// Returns `false` when the account was already isolated.

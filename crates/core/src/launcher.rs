@@ -129,6 +129,14 @@ pub fn launch(request: &Request, theme: Option<&str>) -> Result<Launched, String
         return launch_default(&paths, request, theme);
     }
     launch::require_account(&paths, &request.account).map_err(library_error)?;
+    if accounts::is_codex(&paths, &request.account) {
+        return Err(format!(
+            "{} is a Codex account: kindric cannot start its sessions yet, run {} run {} in a terminal",
+            request.account,
+            accounts::LAUNCHER,
+            request.account
+        ));
+    }
     launch::require_claude().map_err(library_error)?;
     let shared = mcp::prepare(&paths, &request.account).map_err(library_error)?;
     let args = background_args(&request.name);

@@ -93,6 +93,11 @@ impl Paths {
         self.shared_root.parent()
     }
 
+    /// `~/.codex`, what every Codex account shares; Codex's own configuration, never written.
+    pub fn codex_root(&self) -> Option<PathBuf> {
+        self.home().map(|home| home.join(".codex"))
+    }
+
     /// `~/.kindric/memory`.
     pub fn default_memory_root(&self) -> Option<PathBuf> {
         self.home().map(|home| home.join(".kindric").join("memory"))

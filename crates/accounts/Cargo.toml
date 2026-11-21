@@ -1,8 +1,8 @@
 [package]
 name = "kindric-accounts"
-version = "2.2.0"
+version = "2.3.0"
 edition = "2024"
-description = "Several Claude Code accounts side by side, one shared setup"
+description = "Several Claude Code and Codex accounts side by side, one shared setup"
 license = "GPL-3.0-only"
 repository = "https://github.com/LouisStani/kindric"
 publish = false
@@ -21,6 +21,10 @@ dirs = "7"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 sysinfo = { version = "0.40", default-features = false, features = ["system"] }
+
+[target.'cfg(unix)'.dependencies]
+# The daemon of a Codex account answers only over a WebSocket.
+tungstenite = { version = "0.28", default-features = false, features = ["handshake"] }
 
 [target.'cfg(windows)'.dependencies]
 junction = "2"

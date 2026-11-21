@@ -2,6 +2,7 @@
 
 use std::io::{self, IsTerminal};
 
+use kindric_accounts::agent::Agent;
 use kindric_accounts::status::{AccountStatus, LoginState};
 use kindric_accounts::{Paths, Result, Error, registry, status};
 use dialoguer::console::{Term, style};
@@ -28,6 +29,7 @@ fn badge(status: &AccountStatus) -> String {
     let mut badge = match status.state {
         LoginState::LoggedIn if !plan.is_empty() => format!("logged in · {plan}"),
         LoginState::LoggedIn => "logged in".to_string(),
+        LoginState::LoggedOut if status.agent == Agent::Codex => format!("logged out · {plan}"),
         LoginState::LoggedOut if status.provider != status::CLAUDE_PROVIDER => format!("no key · {plan}"),
         LoginState::LoggedOut => "logged out".to_string(),
         LoginState::Unknown => "status unknown".to_string(),
@@ -122,7 +124,7 @@ pub fn run(paths: &Paths) -> Result<Exit> {
             items.push(REMOVE.to_string());
         }
         items.push(QUIT.to_string());
-        let prompt = "Choose an account to open Claude in this terminal";
+        let prompt = "Choose an account to open Claude or Codex in this terminal";
         let Some(index) = choose(&header(names.len()), &items, prompt)? else {
             return Ok(Exit::Success);
         };
@@ -148,7 +150,7 @@ mod tests {
     use std::path::PathBuf;
 
     fn status(state: LoginState, plan: Option<&str>, sessions: usize, isolated: bool) -> AccountStatus {
-        AccountStatus { name: "x".into(), state, sessions, plan: plan.map(Into::into), dir: PathBuf::new(), isolated, login_expires: None, provider: "claude".into(), model: None }
+        AccountStatus { name: "x".into(), state, sessions, plan: plan.map(Into::into), dir: PathBuf::new(), isolated, login_expires: None, provider: "claude".into(), model: None, agent: Agent::ClaudeCode }
     }
 
     #[test]
@@ -156,6 +158,16 @@ mod tests {
         assert_eq!(badge(&status(LoginState::LoggedIn, Some("pro"), 1, false)), "logged in · pro · 1 active");
         assert_eq!(badge(&status(LoginState::LoggedOut, None, 0, true)), "logged out · isolated");
         assert_eq!(badge(&status(LoginState::Unknown, None, 0, false)), "status unknown");
+    }
+
+    #[test]
+    fn a_codex_account_is_named_on_its_line() {
+        let mut codex = status(LoginState::LoggedOut, None, 0, false);
+        codex.agent = Agent::Codex;
+        assert_eq!(badge(&codex), "logged out · codex");
+        codex.state = LoginState::LoggedIn;
+        codex.sessions = 2;
+        assert_eq!(badge(&codex), "logged in · codex · 2 active");
     }
 
     #[test]

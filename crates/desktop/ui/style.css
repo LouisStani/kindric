@@ -1383,12 +1383,18 @@ input:focus, select:focus {
   position: relative;
 }
 
-.provider-kind select {
+.provider-kind select,
+.provider-model select {
   appearance: none;
   padding-right: 26px;
 }
 
-.provider-kind::after {
+.provider-model.choosing {
+  position: relative;
+}
+
+.provider-kind::after,
+.provider-model.choosing::after {
   position: absolute;
   right: 10px;
   bottom: 7px;

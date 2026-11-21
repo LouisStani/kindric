@@ -11,6 +11,10 @@ use std::path::Path;
 
 pub const SHARED_ENTRIES: [&str; 6] = ["CLAUDE.md", "skills", "agents", "commands", "plugins", "themes"];
 
+/// What a Codex account shares with `~/.codex`: its instructions, skills and prompts. Not
+/// `config.toml`, which Codex writes for each account (trusted folders, hooks).
+pub const CODEX_SHARED_ENTRIES: [&str; 3] = ["AGENTS.md", "skills", "prompts"];
+
 /// What is found at the destination of a shared entry.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Existing {
@@ -147,11 +151,16 @@ fn with_path(path: &Path) -> impl FnOnce(io::Error) -> io::Error + '_ {
     move |error| io::Error::new(error.kind(), format!("{}: {error}", path.display()))
 }
 
-/// Shares every entry of `shared_root` that exists, and returns warnings for entries
-/// left alone.
+/// Shares every entry of `shared_root` (`~/.claude`) that exists, and returns warnings for
+/// entries left alone.
 pub fn link_shared(shared_root: &Path, account_dir: &Path) -> io::Result<Vec<String>> {
+    link_entries(shared_root, account_dir, &SHARED_ENTRIES)
+}
+
+/// `link_shared` for the `entries` of any shared folder.
+pub fn link_entries(shared_root: &Path, account_dir: &Path, entries: &[&str]) -> io::Result<Vec<String>> {
     let mut warnings = Vec::new();
-    for entry in SHARED_ENTRIES {
+    for &entry in entries {
         let source = shared_root.join(entry);
         if fs::metadata(&source).is_err() {
             continue;

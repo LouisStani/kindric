@@ -5,6 +5,7 @@ use std::io::{self, BufRead, IsTerminal, Read, Write};
 use std::path::PathBuf;
 use std::process::ExitCode;
 
+use kindric_accounts::agent::{self, Agent};
 use kindric_accounts::provider::{self, Kind, Provider};
 use kindric_accounts::{Error, Paths, Result, account, injection, isolation, launch, mcp, registry, status, usage};
 
@@ -16,12 +17,14 @@ Usage:
   kindric-accounts add <name>        create the account and its directory (700)
   kindric-accounts add <name> --provider api|openrouter|ollama|gateway [--url <address>] [--model <name>]
                                      create an account whose model comes from an API key or a gateway
+  kindric-accounts add <name> --agent codex
+                                     create an account that runs Codex instead of Claude Code
   kindric-accounts token <name>      keep the key of a provider account (read from standard input)
   kindric-accounts list [--json]     list accounts
   kindric-accounts status [--json]   show login status, plan and active sessions of each account
   kindric-accounts remove <name> [--delete-dir|--keep-dir]
                                      remove the account (directory deleted only if confirmed)
-  kindric-accounts run <name> [...]  start claude with this account here (args passed to claude)
+  kindric-accounts run <name> [...]  start claude (or codex) with this account here (args passed to it)
   kindric-accounts isolate <name>    stop sharing MCP servers with and from this account
   kindric-accounts unisolate <name>  share MCP servers again
   kindric-accounts isolated [--json] list isolated accounts
@@ -107,8 +110,36 @@ fn provider_options(args: &[String]) -> Option<Result<Option<Provider>>> {
     Some(Provider::new(kind, url, model).map(Some))
 }
 
+/// `--agent <name>` taken out of `args`, the rest left as it is; `None` for `--agent` without a
+/// value or given twice.
+fn agent_option(args: &[String]) -> Option<(Option<&str>, Vec<String>)> {
+    let mut agent = None;
+    let mut rest = Vec::new();
+    let mut args = args.iter();
+    while let Some(arg) = args.next() {
+        if arg == "--agent" {
+            if agent.replace(args.next()?.as_str()).is_some() {
+                return None;
+            }
+        } else {
+            rest.push(arg.clone());
+        }
+    }
+    Some((agent, rest))
+}
+
 fn cmd_add(paths: &Paths, name: &str, args: &[String]) -> Result<Exit> {
-    let Some(provider) = provider_options(args) else {
+    let Some((agent, args)) = agent_option(args) else {
+        return Ok(Exit::Usage);
+    };
+    match agent.map(|agent| (agent, Agent::parse(agent))) {
+        Some((_, Some(Agent::Codex))) => return cmd_add_codex(paths, name, &args),
+        Some((_, Some(Agent::ClaudeCode))) | None => {},
+        Some((unknown, None)) => {
+            return Err(Error(format!("unknown agent {unknown:?}: use {}", Agent::NAMES.join(", "))));
+        },
+    }
+    let Some(provider) = provider_options(&args) else {
         return Ok(Exit::Usage);
     };
     let provider = provider?;
@@ -125,9 +156,23 @@ fn cmd_add(paths: &Paths, name: &str, args: &[String]) -> Result<Exit> {
     Ok(Exit::Success)
 }
 
+fn cmd_add_codex(paths: &Paths, name: &str, args: &[String]) -> Result<Exit> {
+    if !args.is_empty() {
+        return Err(Error("a Codex account takes no --provider, --url or --model: it signs in with its ChatGPT login or an OpenAI key".into()));
+    }
+    let created = account::add_codex(paths, name)?;
+    print_warnings(&created.warnings);
+    println!("Codex account \"{name}\" created: {}", created.dir.display());
+    println!("Sign in: kindric-accounts run {name} login");
+    Ok(Exit::Success)
+}
+
 /// The provider of `name`, which must be a provider account.
 fn require_provider(paths: &Paths, name: &str) -> Result<(PathBuf, Provider)> {
     let dir = launch::require_account(paths, name)?;
+    if agent::read(&dir)? == Agent::Codex {
+        return Err(Error(format!("{name} is a Codex account: Codex keeps its own key, give it with kindric-accounts run {name} login --with-api-key")));
+    }
     match provider::read(&dir)? {
         Some(provider) => Ok((dir, provider)),
         None => Err(Error(format!("{name} is a Claude account: sign in with kindric-accounts run {name}, then /login"))),
@@ -283,8 +328,20 @@ fn conversation_dir(claude_args: &[OsString]) -> Option<PathBuf> {
     }
 }
 
+/// Replaces this process with `prepared`, or waits for it where that cannot be done (Windows).
+fn start(prepared: launch::Launch) -> Result<Exit> {
+    print_warnings(&prepared.warnings);
+    #[cfg(unix)]
+    return Err(launch::exec(prepared.command));
+    #[cfg(windows)]
+    return launch::run_and_wait(prepared.command).map(Exit::Code);
+}
+
 fn cmd_run(paths: &Paths, name: &str, claude_args: &[OsString]) -> Result<Exit> {
     let dir = launch::require_account(paths, name)?;
+    if agent::read(&dir)? == Agent::Codex {
+        return start(launch::prepare_codex(paths, name, claude_args)?);
+    }
     launch::require_claude()?;
     if injection::opens_conversation(claude_args)
         && let Some(provider) = provider::read(&dir)?
@@ -296,11 +353,7 @@ fn cmd_run(paths: &Paths, name: &str, claude_args: &[OsString]) -> Result<Exit> 
     print_warnings(&shared_mcp.warnings);
     let conversation_dir = conversation_dir(claude_args);
     let prepared = launch::prepare(paths, name, shared_mcp.file.as_deref(), claude_args, conversation_dir.as_deref(), None)?;
-    print_warnings(&prepared.warnings);
-    #[cfg(unix)]
-    return Err(launch::exec(prepared.command));
-    #[cfg(windows)]
-    return launch::run_and_wait(prepared.command).map(Exit::Code);
+    start(prepared)
 }
 
 /// Run by Claude Code for the status line of a session kindric-accounts started: writes down how

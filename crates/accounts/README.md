@@ -18,7 +18,8 @@ kindric-accounts gives each account its own directory and links the shared parts
 - Share one `CLAUDE.md` and one set of skills, agents, commands, plugins and themes across all accounts, plus the MCP servers you add to any of them.
 - Create a shared directory later and existing accounts pick it up on their next launch.
 - An account can also take its model from an Anthropic API key, OpenRouter, a local Ollama or any gateway that speaks Anthropic's API. See [Accounts without a Claude login](#accounts-without-a-claude-login).
-- kindric-accounts never reads, copies or sends your Claude credentials. The key of an API or gateway account stays in that account's directory and only goes to Claude Code. It makes no network requests.
+- An account can run OpenAI's Codex instead of Claude Code. See [Codex accounts](#codex-accounts).
+- kindric-accounts never reads, copies or sends your Claude or Codex credentials. The key of an API or gateway account stays in that account's directory and only goes to Claude Code. It makes no network requests: it only talks to the local daemon of a Codex account.
 - One self-contained binary for Linux, macOS and Windows. Nothing else to install.
 
 ## Installation
@@ -106,11 +107,12 @@ Or just run `kindric-accounts` to open the menu. It shows whether each account i
 | `kindric-accounts` | Opens the menu and starts Claude in the current terminal. |
 | `kindric-accounts add <name>` | Creates an account and its private directory. |
 | `kindric-accounts add <name> --provider <provider> [--url <address>] [--model <name>]` | Creates an account whose model comes from an API key or a gateway. See [Accounts without a Claude login](#accounts-without-a-claude-login). |
+| `kindric-accounts add <name> --agent codex` | Creates an account that runs Codex instead of Claude Code. See [Codex accounts](#codex-accounts). |
 | `kindric-accounts token <name>` | Keeps the key of such an account, read from standard input (hidden on a terminal). |
 | `kindric-accounts list [--json]` | Prints account names, one per line. |
 | `kindric-accounts status [--json]` | Shows whether each account is logged in, its plan (`pro`, `max`…) and its active sessions. |
 | `kindric-accounts remove <name> [--delete-dir \| --keep-dir]` | Removes an account from the list. Its directory is deleted only after you confirm, or as the option says. |
-| `kindric-accounts run <name> [args]` | Starts Claude with this account. Extra arguments go to `claude`, for example `--resume`. |
+| `kindric-accounts run <name> [args]` | Starts Claude with this account, or Codex on a Codex account. Extra arguments go to `claude` (or `codex`), for example `--resume`. |
 | `kindric-accounts isolate <name>` | Stops sharing MCP servers with and from this account. See [Isolated accounts](#isolated-accounts). |
 | `kindric-accounts unisolate <name>` | Shares MCP servers again from the next launch. |
 | `kindric-accounts isolated [--json]` | Lists isolated accounts. |
@@ -141,24 +143,26 @@ Other programs can drive kindric-accounts through the commands below. Their outp
 | `run <name> [args]` | Replaces itself with `claude` running on this account. |
 | `isolated --json` | `["work"]`, or `[]` |
 | `token <name> --print` | The key of a provider account, for Claude Code's `apiKeyHelper`. `no-key` for Ollama without a key. Exit code 1 when a needed key is missing. |
-| `--version` | `kindric-accounts 2.2.0` |
+| `--version` | `kindric-accounts 2.3.0` |
 
 ```json
 [
-  {"name": "personal", "state": "logged-in", "sessions": 1, "plan": "pro", "dir": "/home/me/.local/share/kindric-accounts/personal", "isolated": false, "login_expires": "2026-11-13T15:45:31.701Z", "provider": "claude", "model": null},
-  {"name": "work", "state": "logged-out", "sessions": 0, "plan": null, "dir": "/home/me/.local/share/kindric-accounts/work", "isolated": true, "login_expires": null, "provider": "claude", "model": null},
-  {"name": "router", "state": "logged-in", "sessions": 0, "plan": null, "dir": "/home/me/.local/share/kindric-accounts/router", "isolated": false, "login_expires": null, "provider": "openrouter", "model": "qwen/qwen3-coder"}
+  {"name": "personal", "state": "logged-in", "sessions": 1, "plan": "pro", "dir": "/home/me/.local/share/kindric-accounts/personal", "isolated": false, "login_expires": "2026-11-13T15:45:31.701Z", "provider": "claude", "model": null, "agent": "claude-code"},
+  {"name": "work", "state": "logged-out", "sessions": 0, "plan": null, "dir": "/home/me/.local/share/kindric-accounts/work", "isolated": true, "login_expires": null, "provider": "claude", "model": null, "agent": "claude-code"},
+  {"name": "router", "state": "logged-in", "sessions": 0, "plan": null, "dir": "/home/me/.local/share/kindric-accounts/router", "isolated": false, "login_expires": null, "provider": "openrouter", "model": "qwen/qwen3-coder", "agent": "claude-code"},
+  {"name": "cx", "state": "logged-in", "sessions": 2, "plan": null, "dir": "/home/me/.local/share/kindric-accounts/cx", "isolated": false, "login_expires": null, "provider": "openai", "model": null, "agent": "codex"}
 ]
 ```
 
 - `state` is `logged-in`, `logged-out` or `unknown` (Claude Code did not answer).
-- `sessions` is the number of running Claude sessions on the account.
+- `sessions` is the number of running Claude sessions on the account; for a Codex account, the sessions loaded in its daemon (always `0` on Windows for now).
 - `plan` is the subscription type reported by Claude Code, or `null`.
-- `dir` is the account's `CLAUDE_CONFIG_DIR`.
+- `dir` is the account's `CLAUDE_CONFIG_DIR`, or the `CODEX_HOME` of a Codex account.
 - `isolated` is `true` for an isolated account (since 1.2.0).
 - `login_expires` is when the login must be renewed, in ISO UTC as Claude Code gives it, or `null` (since 2.1.0).
-- `provider` is where the model comes from: `claude` for a Claude login, else `api`, `openrouter`, `ollama` or `gateway` (since 2.2.0). For those, `state` is `logged-in` once the account has the key it needs.
+- `provider` is where the model comes from: `claude` for a Claude login, else `api`, `openrouter`, `ollama` or `gateway` (since 2.2.0), and `openai` for a Codex account (since 2.3.0). For `api`, `openrouter`, `ollama` and `gateway`, `state` is `logged-in` once the account has the key it needs.
 - `model` is the model of a provider account, as the provider names it, or `null` (since 2.2.0).
+- `agent` is the program the account runs: `claude-code` or `codex` (since 2.3.0).
 
 On error, the exit code is not 0 and stderr explains why: one line starting with `kindric-accounts:`, or the usage text for an unknown command or option. `jq` is not needed.
 
@@ -221,6 +225,29 @@ Limits:
 - Anthropic documents gateways for Claude Code, but Claude Code is built for Claude models: running it with other models is not supported by Anthropic ([claude-code#5577](https://github.com/anthropics/claude-code/issues/5577)). Tools, long contexts and some features may work less well.
 - Claude Code turns Remote Control off when `ANTHROPIC_BASE_URL` is not an Anthropic host. Background sessions, which kindric uses, keep working.
 - A local model gets Claude Code's whole system prompt, tens of thousands of tokens: give Ollama a model and a context large enough, and expect the first answer to take time.
+
+## Codex accounts
+
+An account can run [Codex](https://github.com/openai/codex), OpenAI's coding agent, instead of Claude Code. `codex` must be in your `PATH`.
+
+```sh
+kindric-accounts add cx --agent codex
+kindric-accounts run cx login          # sign in with ChatGPT, in the browser
+kindric-accounts run cx                # start Codex on this account
+```
+
+How it works:
+
+- The account's directory is its `CODEX_HOME`: Codex keeps its login, sessions and `config.toml` there. `kindric-agent.json` in it says the account runs Codex.
+- `AGENTS.md`, `skills/` and `prompts/` are linked to `~/.codex`, like the shared parts of a Claude account. `~/.codex` is never written, and it is not an account of its own.
+- `run` starts `codex` with `CODEX_HOME` set to the account's directory, without `OPENAI_API_KEY` and `CODEX_API_KEY`. To use an OpenAI key instead of ChatGPT: `printenv OPENAI_API_KEY | kindric-accounts run cx login --with-api-key`. Codex keeps that key itself.
+- `status` asks `codex login status` whether the account is signed in. Its sessions are those loaded in the account's Codex daemon, asked over its socket, `<CODEX_HOME>/app-server-control/app-server-control.sock`.
+
+Limits:
+
+- A Unix socket path cannot be longer than 103 bytes on every system, so `add` refuses a name that would make it longer. Take a shorter name.
+- On Windows, the sessions of a Codex account are not counted yet.
+- `--provider`, `token` and `isolate` do not apply to a Codex account yet: it shares no MCP servers with the other accounts.
 
 ## Shared MCP servers
 

@@ -13,18 +13,27 @@ import { purgeQuestion, purgeResult, refusalLine } from "./purge.js";
 const RENEW_DAYS = 7;
 
 // What the form asks for each provider an account's model can come from (kindric-accounts'
-// provider.rs): the address shown when none is typed, an example model, whether a key is needed.
-// `claude` is a Claude login: only the name.
+// provider.rs): the address shown when none is typed (null: no address field), an example model,
+// whether a key is needed, whether the model is picked among those installed. `claude` is a Claude
+// login: only the name. Ollama runs on this computer at its usual address: its model is picked
+// in its own list (decision 418).
 const PROVIDERS = {
   claude: null,
   api: { url: null, model: "optional, e.g. claude-sonnet-4-5", key: true },
   openrouter: { url: "https://openrouter.ai/api", model: "e.g. qwen/qwen3-coder", key: true },
-  ollama: { url: "http://localhost:11434", model: "e.g. qwen3.5:9b", key: false },
+  ollama: { url: null, model: "e.g. qwen3.5:9b", key: false, installed: true },
   gateway: { url: "http://host:port", model: "as the gateway names it", key: true },
 };
 
-// The provider and model of an account whose model is not a Claude login: "openrouter qwen3".
+// "qwen3.5:9b · 6.6 GB"
+function modelLabel(model) {
+  return `${model.name} · ${(model.size / 1e9).toFixed(1)} GB`;
+}
+
+// The provider and model of an account whose model is not a Claude login: "openrouter qwen3";
+// "codex" for an account that runs Codex.
 export function providerLabel(account) {
+  if (account.agent === "codex") return "codex";
   if (!account.provider || account.provider === "claude") return null;
   return account.model ? `${account.provider} ${account.model}` : account.provider;
 }
@@ -171,6 +180,8 @@ export class SettingsWindow {
     this.form = dialog.querySelector(".accounts-add");
     this.name = this.form.elements.name;
     this.form.elements.kind.addEventListener("change", () => this.showProviderFields());
+    // A newer reading of Ollama's models wins over one still on its way.
+    this.modelsRequest = 0;
     // Name of the account whose removal waits for a yes, or null.
     this.confirming = null;
     // Name of the provider account whose key is being typed in its row, or null.
@@ -338,7 +349,7 @@ export class SettingsWindow {
       actions.append(button("remove", () => this.forget(account.name), "danger"), button("cancel", () => this.confirm(null)));
     } else if (this.keying === account.name) {
       item.append(this.keyForm(account));
-    } else if (provider) {
+    } else if (provider && account.agent !== "codex") {
       if (PROVIDERS[account.provider]?.key) {
         actions.append(button(account.state === "logged-in" ? "change key" : "set key", () => this.askKey(account.name)));
       }
@@ -366,6 +377,40 @@ export class SettingsWindow {
     this.form.querySelector(".provider-key").hidden = !shape?.key;
     fields.url.placeholder = shape?.url ?? "";
     fields.model.placeholder = shape?.model ?? "";
+    this.showInstalled(null);
+    this.message.textContent = "";
+    // A reading still on its way no longer counts.
+    this.modelsRequest += 1;
+    if (shape?.installed) this.loadInstalled();
+  }
+
+  // The list of installed models in place of the model field, or the field back when `models` is
+  // null or empty.
+  showInstalled(models) {
+    const fields = this.form.elements;
+    const choosing = Array.isArray(models) && models.length > 0;
+    fields.installed.replaceChildren(...(choosing ? models : []).map((model) => {
+      const option = element("option", "", modelLabel(model));
+      option.value = model.name;
+      return option;
+    }));
+    fields.installed.hidden = !choosing;
+    fields.model.hidden = choosing;
+    this.form.querySelector(".provider-model").classList.toggle("choosing", choosing);
+  }
+
+  async loadInstalled() {
+    const request = ++this.modelsRequest;
+    let models;
+    try {
+      models = await invoke("ollama_models");
+    } catch (error) {
+      if (request === this.modelsRequest) this.message.textContent = `${error}`;
+      return;
+    }
+    if (request !== this.modelsRequest || this.form.elements.kind.value !== "ollama") return;
+    this.message.textContent = models.length === 0 ? "Ollama has no model yet: get one with `ollama pull <name>`, or type its name." : "";
+    this.showInstalled(models);
   }
 
   // A Claude account opens its login window; a provider account is ready once it has its key.
@@ -378,7 +423,9 @@ export class SettingsWindow {
     const shape = PROVIDERS[kind] ?? null;
     const request = { name };
     if (shape) {
-      request.provider = { kind, url: fields.url.value.trim() || null, model: fields.model.value.trim() || null };
+      const model = fields.installed.hidden ? fields.model.value.trim() : fields.installed.value;
+      const url = shape.url === null ? null : fields.url.value.trim() || null;
+      request.provider = { kind, url, model: model || null };
       request.key = shape.key ? fields.key.value : null;
     }
     let warnings;

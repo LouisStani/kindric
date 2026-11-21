@@ -331,6 +331,16 @@ fn add_account(name: String, provider: Option<accounts::NewProvider>, key: Optio
     .map_err(|error| error.to_string())
 }
 
+/// The models Ollama has on this computer, for the form that adds an Ollama account (418). Off
+/// the window's thread: Ollama may take up to two seconds to answer or not.
+#[tauri::command]
+async fn ollama_models() -> Result<Vec<kindric_core::ollama::Model>, String> {
+    tauri::async_runtime::spawn_blocking(kindric_core::ollama::models)
+        .await
+        .map_err(|error| error.to_string())?
+        .map_err(|error| error.to_string())
+}
+
 /// Keeps the key of a provider account. kindric does not keep it: kindric-accounts writes it in
 /// the account's folder, readable by the user only.
 #[tauri::command]
@@ -1529,7 +1539,8 @@ fn open_trust(
         .map_err(|error| format!("cannot start Claude Code in {}: {error}", directory.display()))
 }
 
-/// Starts the login of `account`, an account of kindric-accounts; Claude Code keeps the credentials.
+/// Starts the login of `account`, an account of kindric-accounts; Claude Code, or Codex on a Codex
+/// account, keeps the credentials.
 #[tauri::command]
 fn open_login(
     app: AppHandle,
@@ -1539,7 +1550,8 @@ fn open_login(
     rows: u16,
     output: Channel<InvokeResponseBody>,
 ) -> Result<u64, String> {
-    start_helper(&app, &shared, &login_command(&account), columns, rows, output)
+    let codex = accounts::is_codex(&accounts::paths().map_err(|error| error.to_string())?, &account);
+    start_helper(&app, &shared, &login_command(&account, codex), columns, rows, output)
         .map_err(|error| format!("cannot start the login of {account}: {error}"))
 }
 
@@ -1730,6 +1742,7 @@ fn main() -> ExitCode {
             remove_worktree,
             add_account,
             set_account_key,
+            ollama_models,
             forget_account,
             memory_warning,
             set_memory_warning,

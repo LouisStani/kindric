@@ -50,6 +50,20 @@ printf 'APIKEY=%s\n' "${ANTHROPIC_API_KEY:-unset}"
 printf 'ARGS=%s\n' "$*"
 EOF
 	chmod +x "$SANDBOX/bin/claude"
+	mkdir -p "$HOME/.codex/skills"
+	printf '# codex commun\n' >"$HOME/.codex/AGENTS.md"
+	cat >"$SANDBOX/bin/codex" <<'EOF'
+#!/usr/bin/env bash
+if [[ "${1:-} ${2:-}" == 'login status' ]]; then
+	[[ -f "$CODEX_HOME/.fake-login" ]] && { echo 'Logged in using ChatGPT'; exit 0; }
+	echo 'Not logged in'
+	exit 1
+fi
+printf 'CODEX_HOME=%s\n' "$CODEX_HOME"
+printf 'OPENAI=%s\n' "${OPENAI_API_KEY:-unset}"
+printf 'ARGS=%s\n' "$*"
+EOF
+	chmod +x "$SANDBOX/bin/codex"
 	BASE_PATH="/usr/bin:/bin"
 	export PATH="$SANDBOX/bin:$BASE_PATH"
 }
@@ -150,9 +164,9 @@ test_status() {
 		'! PATH=$1 "$0" status --json >/dev/null 2>&1' "$SCRIPT" "$SANDBOX/nobin:$BASE_PATH"
 	out=$(ca status --json)
 	check "status --json : compte connecté complet" jq -e --arg d "$(data_dir pro1)" \
-		'.[0] == {name: "pro1", state: "logged-in", sessions: 0, plan: "pro", dir: $d, isolated: false, login_expires: "2030-01-02T03:04:05.678Z", provider: "claude", model: null}' <<<"$out"
+		'.[0] == {name: "pro1", state: "logged-in", sessions: 0, plan: "pro", dir: $d, isolated: false, login_expires: "2030-01-02T03:04:05.678Z", provider: "claude", model: null, agent: "claude-code"}' <<<"$out"
 	check "status --json : compte déconnecté, offre null" jq -e --arg d "$(data_dir pro2)" \
-		'.[1] == {name: "pro2", state: "logged-out", sessions: 0, plan: null, dir: $d, isolated: false, login_expires: null, provider: "claude", model: null}' <<<"$out"
+		'.[1] == {name: "pro2", state: "logged-out", sessions: 0, plan: null, dir: $d, isolated: false, login_expires: null, provider: "claude", model: null, agent: "claude-code"}' <<<"$out"
 	check "status refuse une option inconnue" bash -c '! "$0" status --tsv 2>/dev/null' "$SCRIPT"
 }
 
@@ -440,6 +454,40 @@ test_providers() {
 	ca remove local --delete-dir >/dev/null
 }
 
+test_codex() {
+	local out dir long
+	dir=$(data_dir cx)
+	long=$(printf 'n%.0s' {1..32})
+	check "add --agent inconnu refusé" bash -c '"$0" add cx --agent vim 2>&1 | grep -q "unknown agent"' "$SCRIPT"
+	check "add --agent codex avec --model refusé, rien créé" bash -c '! "$0" add cx --agent codex --model m 2>/dev/null && [[ ! -d "$1" ]]' "$SCRIPT" "$dir"
+	check "nom trop long pour le socket refusé, rien créé" bash -c \
+		'"$0" add "$1" --agent codex 2>&1 | grep -q "shorter account name" && [[ ! -d "$2" ]]' "$SCRIPT" "$long" "$(data_dir "$long")"
+	out=$(ca add cx --agent codex)
+	check "add --agent codex dit comment se connecter" grep -qF "kindric-accounts run cx login" <<<"$out"
+	check "fichier de l'agent écrit" json_true '.agent == "codex"' "$dir/kindric-agent.json"
+	check "dossier Codex en 700" test "$(perm_of "$dir")" = 700
+	check "AGENTS.md lié à ~/.codex" test "$(readlink "$dir/AGENTS.md")" = "$HOME/.codex/AGENTS.md"
+	check "skills liés à ~/.codex" test "$(readlink "$dir/skills")" = "$HOME/.codex/skills"
+	check "CLAUDE.md non lié dans un compte Codex" test ! -e "$dir/CLAUDE.md"
+	out=$(ca status --json)
+	check "status --json : compte Codex déconnecté" jq -e --arg d "$dir" \
+		'.[] | select(.name == "cx") == {name: "cx", state: "logged-out", sessions: 0, plan: null, dir: $d, isolated: false, login_expires: null, provider: "openai", model: null, agent: "codex"}' <<<"$out"
+	touch "$dir/.fake-login"
+	check "status : compte Codex connecté" bash -c '"$0" status | grep -qE "^cx +logged in +codex$"' "$SCRIPT"
+	check "status sans codex : compte Codex inconnu" bash -c \
+		'PATH=$1 "$0" status --json | jq -e ".[] | select(.name == \"cx\") | .state == \"unknown\"" >/dev/null' "$SCRIPT" "$SANDBOX/claude-only:$BASE_PATH"
+	out=$(OPENAI_API_KEY=sk-shell ca run cx login)
+	check "run lance codex avec CODEX_HOME" grep -qxF "CODEX_HOME=$dir" <<<"$out"
+	check "run retire OPENAI_API_KEY" grep -qxF "OPENAI=unset" <<<"$out"
+	check "run passe les arguments à codex" grep -qxF "ARGS=login" <<<"$out"
+	check "run sans codex échoue et le dit" bash -c \
+		'PATH=$1 "$0" run cx 2>&1 | grep -q "codex not found"' "$SCRIPT" "$SANDBOX/claude-only:$BASE_PATH"
+	check "token sur un compte Codex refusé" bash -c '"$0" token cx 2>&1 | grep -q "Codex account"' "$SCRIPT"
+	check "isolate sur un compte Codex refusé" bash -c '! "$0" isolate cx 2>/dev/null && ! "$0" isolated | grep -qx cx' "$SCRIPT"
+	ca remove cx --delete-dir >/dev/null
+	check "compte Codex retiré" bash -c '! "$0" list | grep -qx cx && [[ ! -d "$1" ]]' "$SCRIPT" "$dir"
+}
+
 make_minimal_path() {
 	local tool
 	mkdir -p "$SANDBOX/claude-only" "$SANDBOX/sys"
@@ -457,6 +505,7 @@ test_run
 test_status
 test_status_json_escaping
 test_providers
+test_codex
 test_sessions
 test_shared_mcp
 test_isolation

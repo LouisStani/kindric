@@ -8,6 +8,8 @@ use std::thread;
 use serde::Serialize;
 use sysinfo::{Pid, ProcessesToUpdate, System};
 
+use crate::agent::{self, Agent};
+use crate::codex;
 use crate::error::Result;
 use crate::launch;
 use crate::paths::Paths;
@@ -48,10 +50,16 @@ pub struct AccountStatus {
     pub provider: String,
     /// The model of a provider account, as the provider names it; `null` for Claude (since 2.2.0).
     pub model: Option<String>,
+    /// The program the account runs: `claude-code` or `codex` (since 2.3.0).
+    pub agent: Agent,
 }
 
 /// The provider name of a Claude account in `status --json`.
 pub const CLAUDE_PROVIDER: &str = "claude";
+
+/// The provider name of a Codex account: its model comes from OpenAI, through the account's
+/// ChatGPT login or API key.
+pub const CODEX_PROVIDER: &str = "openai";
 
 /// `subscriptionType` of `claude auth status --json`, if it is a plain lowercase word.
 pub fn subscription_type(output: &str) -> Option<String> {
@@ -162,19 +170,42 @@ fn active_sessions(dir: &Path) -> usize {
     pids.iter().filter(|pid| is_claude(pid)).count()
 }
 
-/// Status of every account in `names`, queried in parallel, in the order given.
+/// What `codex login status` says of a Codex account; unknown without `codex`.
+fn codex_login(codex: Option<&Path>, dir: &Path) -> Login {
+    let state = match codex.and_then(|codex| codex::logged_in(codex, dir)) {
+        Some(true) => LoginState::LoggedIn,
+        Some(false) => LoginState::LoggedOut,
+        None => LoginState::Unknown,
+    };
+    Login { state, plan: None, expires: None, provider: CODEX_PROVIDER.into(), model: None }
+}
+
+/// Login and running sessions of one account, after the program it runs.
+fn account_status(agent: Result<Agent>, claude: Option<&Path>, codex: Option<&Path>, dir: &Path) -> (Login, usize, Agent) {
+    match (agent, claude) {
+        (Ok(Agent::Codex), _) => (codex_login(codex, dir), codex::running_sessions(dir), Agent::Codex),
+        (Ok(Agent::ClaudeCode), Some(claude)) => (account_login(claude, dir), active_sessions(dir), Agent::ClaudeCode),
+        (Ok(Agent::ClaudeCode), None) | (Err(_), _) => (Login::claude(LoginState::Unknown, None, None), 0, Agent::ClaudeCode),
+    }
+}
+
+/// Status of every account in `names`, queried in parallel, in the order given. `claude` is
+/// needed when one of them runs Claude Code; without `codex`, a Codex account's state is unknown.
 pub fn collect(paths: &Paths, names: &[String]) -> Result<Vec<AccountStatus>> {
-    let claude = launch::require_claude()?;
+    let agents: Vec<Result<Agent>> = names.iter().map(|name| agent::read(&paths.account_dir(name))).collect();
+    let claude = if agents.iter().any(|agent| matches!(agent, Ok(Agent::ClaudeCode))) { Some(launch::require_claude()?) } else { None };
+    let codex = if agents.iter().any(|agent| matches!(agent, Ok(Agent::Codex))) { codex::require_codex().ok() } else { None };
     let isolated = registry::list_isolated(paths)?;
     let statuses = thread::scope(|scope| {
         let handles: Vec<_> = names
             .iter()
-            .map(|name| {
+            .zip(agents)
+            .map(|(name, agent)| {
                 let dir = paths.account_dir(name);
-                let claude = &claude;
+                let (claude, codex) = (claude.as_deref(), codex.as_deref());
                 scope.spawn(move || {
-                    let login = account_login(claude, &dir);
-                    (login, active_sessions(&dir), dir)
+                    let (login, sessions, agent) = account_status(agent, claude, codex, &dir);
+                    (login, sessions, dir, agent)
                 })
             })
             .collect();
@@ -185,7 +216,7 @@ pub fn collect(paths: &Paths, names: &[String]) -> Result<Vec<AccountStatus>> {
         .zip(statuses)
         .map(|(name, result)| {
             let unknown = Login::claude(LoginState::Unknown, None, None);
-            let (login, sessions, dir) = result.unwrap_or((unknown, 0, paths.account_dir(name)));
+            let (login, sessions, dir, agent) = result.unwrap_or((unknown, 0, paths.account_dir(name), Agent::ClaudeCode));
             AccountStatus {
                 name: name.clone(),
                 state: login.state,
@@ -196,13 +227,18 @@ pub fn collect(paths: &Paths, names: &[String]) -> Result<Vec<AccountStatus>> {
                 login_expires: login.expires,
                 provider: login.provider,
                 model: login.model,
+                agent,
             }
         })
         .collect())
 }
 
-/// The plan of a Claude account; the provider and its model for the others.
+/// The plan of a Claude account, `codex` for a Codex account, the provider and its model for the
+/// others.
 pub fn plan_label(status: &AccountStatus) -> String {
+    if status.agent == Agent::Codex {
+        return Agent::Codex.name().into();
+    }
     if status.provider == CLAUDE_PROVIDER {
         return status.plan.clone().unwrap_or_default();
     }
@@ -250,6 +286,7 @@ mod tests {
             login_expires: None,
             provider: CLAUDE_PROVIDER.into(),
             model: None,
+            agent: Agent::ClaudeCode,
         }
     }
 
@@ -285,7 +322,7 @@ mod tests {
     #[test]
     fn json_keeps_the_1x_field_names_and_order() {
         let json = serde_json::to_string(&status("pro2", LoginState::LoggedOut, 0, None, false)).unwrap();
-        assert_eq!(json, r#"{"name":"pro2","state":"logged-out","sessions":0,"plan":null,"dir":"/d/pro2","isolated":false,"login_expires":null,"provider":"claude","model":null}"#);
+        assert_eq!(json, r#"{"name":"pro2","state":"logged-out","sessions":0,"plan":null,"dir":"/d/pro2","isolated":false,"login_expires":null,"provider":"claude","model":null,"agent":"claude-code"}"#);
     }
 
     #[test]
@@ -299,6 +336,26 @@ mod tests {
         assert_eq!(plan_label(&local), "api");
         assert_eq!(plan_label(&status("pro", LoginState::LoggedIn, 0, Some("max"), false)), "max");
         let json = serde_json::to_string(&router).unwrap();
-        assert!(json.ends_with(r#","provider":"openrouter","model":"qwen/qwen3-coder"}"#), "{json}");
+        assert!(json.ends_with(r#","provider":"openrouter","model":"qwen/qwen3-coder","agent":"claude-code"}"#), "{json}");
+    }
+
+    #[test]
+    fn a_codex_account_says_so_in_place_of_a_plan() {
+        let mut codex = status("cx", LoginState::LoggedOut, 0, None, false);
+        codex.provider = CODEX_PROVIDER.into();
+        codex.agent = Agent::Codex;
+        assert_eq!(plan_label(&codex), "codex");
+        assert_eq!(format_lines(&[codex.clone()]), ["cx  logged out  codex"]);
+        let json = serde_json::to_string(&codex).unwrap();
+        assert!(json.ends_with(r#","provider":"openai","model":null,"agent":"codex"}"#), "{json}");
+    }
+
+    #[test]
+    fn an_account_runs_what_its_file_says() {
+        let dir = Path::new("/nowhere");
+        let (login, sessions, agent) = account_status(Ok(Agent::Codex), None, None, dir);
+        assert_eq!((login.state, login.provider.as_str(), sessions, agent), (LoginState::Unknown, CODEX_PROVIDER, 0, Agent::Codex));
+        let (login, _, agent) = account_status(Err(crate::Error("broken".into())), None, None, dir);
+        assert_eq!((login.state, agent), (LoginState::Unknown, Agent::ClaudeCode));
     }
 }

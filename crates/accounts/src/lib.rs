@@ -1,9 +1,13 @@
-//! kindric-accounts: several Claude Code accounts, one shared configuration.
-//! Each account has its own `CLAUDE_CONFIG_DIR` (credentials, history, sessions);
+//! kindric-accounts: several Claude Code and Codex accounts, one shared configuration.
+//! Each Claude Code account has its own `CLAUDE_CONFIG_DIR` (credentials, history, sessions);
 //! `CLAUDE.md`, skills, agents, commands, plugins and themes are shared with `~/.claude`.
-//! The library never reads credentials and makes no network requests.
+//! A Codex account has its own `CODEX_HOME`, and shares `AGENTS.md`, skills and prompts with
+//! `~/.codex`. The library never reads credentials and makes no network requests: it only talks
+//! to the local daemon of a Codex account.
 
 pub mod account;
+pub mod agent;
+pub mod codex;
 pub mod error;
 pub mod files;
 pub mod generate;
