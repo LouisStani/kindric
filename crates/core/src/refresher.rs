@@ -383,6 +383,7 @@ mod tests {
             progress: None,
             tasks: None,
             waiting_for: None,
+            agent: Default::default(),
         }];
         assert!(reread_progress(&mut sessions, &dir, &BTreeSet::from(["abc".to_string()])));
         assert_eq!(sessions[0].progress.as_deref(), Some("reading progress.rs"));
@@ -421,6 +422,7 @@ mod tests {
             isolated: false,
             progress: None,
             tasks: None,
+            agent: Default::default(),
             waiting_for: None,
         }
     }

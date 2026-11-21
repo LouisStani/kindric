@@ -5,10 +5,14 @@
 //! protocol is the one `codex app-server generate-json-schema` describes (read on 0.171.0).
 
 use std::ffi::OsString;
+use std::io::{self, BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
+use std::process::{Child, ChildStdin, Command, Stdio};
+use std::sync::mpsc::{self, Receiver, RecvTimeoutError};
+use std::thread;
+use std::time::{Duration, Instant};
 
-use serde_json::Value;
+use serde_json::{Value, json};
 
 use crate::error::{Result, fail};
 use crate::launch;
@@ -83,9 +87,8 @@ pub fn logged_in(codex: &Path, dir: &Path) -> Option<bool> {
     }
 }
 
-/// What a message of the daemon is for the request `id`: its result, its error, or nothing (a
-/// notification, a request of the daemon, the answer to another request).
-#[cfg_attr(not(unix), allow(dead_code))]
+/// What a message of Codex is for the request `id`: its result, its error, or nothing (a
+/// notification, a request of Codex, the answer to another request).
 fn answer_to(id: u64, message: &Value) -> Option<std::result::Result<Value, String>> {
     if message.get("method").is_some() || message.get("id")?.as_u64()? != id {
         return None;
@@ -109,39 +112,150 @@ fn loaded_page(result: &Value) -> (Vec<String>, Option<String>) {
     (ids, next)
 }
 
-#[cfg(unix)]
-pub use client::Daemon;
+/// Where a session of Codex is, as `thread/read` and `thread/list` say it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ThreadStatus {
+    /// Not in the daemon: paused, its conversation on disk.
+    NotLoaded,
+    Idle,
+    SystemError,
+    /// A turn runs.
+    Working,
+    /// A command or a change waits for the user's approval.
+    WaitingOnApproval,
+    /// A question of the model waits for the user's answer.
+    WaitingOnUserInput,
+}
 
-#[cfg(unix)]
-mod client {
-    use std::io;
-    use std::os::unix::net::UnixStream;
-    use std::path::Path;
-    use std::time::{Duration, Instant};
+/// A session of a Codex account.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Thread {
+    pub id: String,
+    pub name: Option<String>,
+    pub cwd: String,
+    pub status: ThreadStatus,
+}
 
-    use serde_json::{Value, json};
-    use tungstenite::client::IntoClientRequest;
-    use tungstenite::{Message, WebSocket};
+/// `{"type": "active", "activeFlags": [...]}` and the like; an unknown status counts as idle.
+fn thread_status(status: Option<&Value>) -> ThreadStatus {
+    let kind = status.and_then(|status| status.get("type")).and_then(Value::as_str);
+    let has_flag = |flag: &str| {
+        status
+            .and_then(|status| status.get("activeFlags"))
+            .and_then(Value::as_array)
+            .is_some_and(|flags| flags.iter().any(|value| value.as_str() == Some(flag)))
+    };
+    match kind {
+        Some("notLoaded") => ThreadStatus::NotLoaded,
+        Some("systemError") => ThreadStatus::SystemError,
+        Some("active") if has_flag("waitingOnApproval") => ThreadStatus::WaitingOnApproval,
+        Some("active") if has_flag("waitingOnUserInput") => ThreadStatus::WaitingOnUserInput,
+        Some("active") => ThreadStatus::Working,
+        _ => ThreadStatus::Idle,
+    }
+}
 
-    use super::{answer_to, loaded_page, socket_path};
+/// A session as Codex describes it; `None` without an id, and for a sub-agent, which belongs to
+/// the session that started it.
+fn thread(value: &Value) -> Option<Thread> {
+    if value.get("parentThreadId").is_some_and(|parent| !parent.is_null()) {
+        return None;
+    }
+    let text = |field: &str| value.get(field).and_then(Value::as_str).map(String::from);
+    Some(Thread {
+        id: text("id")?,
+        name: text("name").filter(|name| !name.is_empty()),
+        cwd: text("cwd").unwrap_or_default(),
+        status: thread_status(value.get("status")),
+    })
+}
 
-    /// How long the daemon has to answer a request, notifications included.
-    const TIMEOUT: Duration = Duration::from_secs(3);
+/// The sessions of one page of `thread/list`.
+fn thread_page(result: &Value) -> Vec<Thread> {
+    result.get("data").and_then(Value::as_array).map(|threads| threads.iter().filter_map(thread).collect()).unwrap_or_default()
+}
 
-    /// More pages than this is a daemon that keeps giving the same cursor.
-    const MAX_PAGES: usize = 100;
+/// How many sessions at rest are listed: the most recent ones.
+pub const STOPPED_LISTED: usize = 50;
 
-    /// A connection to the daemon of one account.
-    pub struct Daemon {
-        socket: WebSocket<UnixStream>,
-        next_id: u64,
+/// The most ids `thread/list` takes in `excludedThreadIds`.
+const MAX_EXCLUDED: usize = 100;
+
+/// How long Codex has to answer a request, notifications included.
+const TIMEOUT: Duration = Duration::from_secs(3);
+
+/// How long a Codex app server started for one question has to come up.
+const START_TIMEOUT: Duration = Duration::from_secs(15);
+
+/// One line, one message: how the app server of Codex talks on its standard input and output.
+struct Piped {
+    child: Child,
+    input: ChildStdin,
+    lines: Receiver<io::Result<String>>,
+}
+
+impl Drop for Piped {
+    fn drop(&mut self) {
+        let _ = self.child.kill();
+        let _ = self.child.wait();
+    }
+}
+
+enum Transport {
+    /// The daemon of the account, over its socket.
+    #[cfg(unix)]
+    Socket(Box<tungstenite::WebSocket<std::os::unix::net::UnixStream>>),
+    /// A Codex app server started for the question, which ends with it.
+    Stdio(Piped),
+}
+
+impl Transport {
+    fn send(&mut self, text: &str) -> io::Result<()> {
+        match self {
+            #[cfg(unix)]
+            Self::Socket(socket) => socket.send(tungstenite::Message::text(text)).map_err(io::Error::other),
+            Self::Stdio(stdio) => {
+                stdio.input.write_all(text.as_bytes())?;
+                stdio.input.write_all(b"\n")?;
+                stdio.input.flush()
+            },
+        }
     }
 
-    impl Daemon {
-        /// `None` when the daemon does not run: no socket, or nobody listening on it.
-        pub fn connect(dir: &Path) -> io::Result<Option<Self>> {
+    /// The next message, or `None` for a frame that holds none (ping, binary).
+    fn receive(&mut self, timeout: Duration) -> io::Result<Option<String>> {
+        match self {
+            #[cfg(unix)]
+            Self::Socket(socket) => match socket.read().map_err(io::Error::other)? {
+                tungstenite::Message::Text(text) => Ok(Some(text.as_str().to_string())),
+                _ => Ok(None),
+            },
+            Self::Stdio(stdio) => match stdio.lines.recv_timeout(timeout) {
+                Ok(line) => line.map(Some),
+                Err(RecvTimeoutError::Timeout) => Err(io::Error::new(io::ErrorKind::TimedOut, "no answer in time")),
+                Err(RecvTimeoutError::Disconnected) => Err(io::Error::new(io::ErrorKind::UnexpectedEof, "codex app-server ended")),
+            },
+        }
+    }
+}
+
+/// A conversation with Codex's app server for one account: its daemon, or one started for it.
+pub struct AppServer {
+    transport: Transport,
+    next_id: u64,
+    /// What the messages say they come from, for errors.
+    what: &'static str,
+}
+
+impl AppServer {
+    /// The daemon of the account in `dir`; `None` when it does not run: no socket, or nobody
+    /// listening on it. Always `None` on Windows for now.
+    pub fn connect_daemon(dir: &Path) -> io::Result<Option<Self>> {
+        #[cfg(unix)]
+        {
+            use tungstenite::client::IntoClientRequest;
             let path = socket_path(dir);
-            let stream = match UnixStream::connect(&path) {
+            let stream = match std::os::unix::net::UnixStream::connect(&path) {
                 Ok(stream) => stream,
                 Err(error) if matches!(error.kind(), io::ErrorKind::NotFound | io::ErrorKind::ConnectionRefused) => {
                     return Ok(None);
@@ -153,73 +267,139 @@ mod client {
             let request = "ws://localhost/".into_client_request().map_err(io::Error::other)?;
             let (socket, _) = tungstenite::client(request, stream)
                 .map_err(|error| io::Error::other(format!("Codex daemon at {}: {error}", path.display())))?;
-            let mut daemon = Self { socket, next_id: 0 };
-            let client = json!({"clientInfo": {"name": "kindric-accounts", "version": env!("CARGO_PKG_VERSION")}});
-            daemon.request("initialize", client)?;
-            daemon.send(&json!({"jsonrpc": "2.0", "method": "initialized"}))?;
-            Ok(Some(daemon))
+            Self::initialized(Transport::Socket(Box::new(socket)), "Codex daemon", TIMEOUT).map(Some)
         }
-
-        fn send(&mut self, message: &Value) -> io::Result<()> {
-            self.socket.send(Message::text(message.to_string())).map_err(io::Error::other)
-        }
-
-        /// The result of `method`, skipping the notifications that come meanwhile.
-        pub fn request(&mut self, method: &str, params: Value) -> io::Result<Value> {
-            self.next_id += 1;
-            let id = self.next_id;
-            let failed = |error: &dyn std::fmt::Display| io::Error::other(format!("Codex daemon, {method}: {error}"));
-            self.send(&json!({"jsonrpc": "2.0", "id": id, "method": method, "params": params}))?;
-            let deadline = Instant::now() + TIMEOUT;
-            while Instant::now() < deadline {
-                let message = self.socket.read().map_err(|error| failed(&error))?;
-                let Message::Text(text) = message else {
-                    continue;
-                };
-                let Ok(value) = serde_json::from_str::<Value>(text.as_str()) else {
-                    continue;
-                };
-                if let Some(answer) = answer_to(id, &value) {
-                    return answer.map_err(|error| failed(&error));
-                }
-            }
-            Err(failed(&"no answer in time"))
-        }
-
-        /// The sessions loaded in the daemon: they run, at work or waiting.
-        pub fn loaded_threads(&mut self) -> io::Result<Vec<String>> {
-            let mut ids = Vec::new();
-            let mut cursor: Option<String> = None;
-            for _ in 0..MAX_PAGES {
-                let result = self.request("thread/loaded/list", json!({ "cursor": cursor }))?;
-                let (page, next) = loaded_page(&result);
-                ids.extend(page);
-                match next {
-                    Some(next) => cursor = Some(next),
-                    None => return Ok(ids),
-                }
-            }
-            Err(io::Error::other("Codex daemon, thread/loaded/list: the pages never end"))
+        #[cfg(not(unix))]
+        {
+            let _ = dir;
+            Ok(None)
         }
     }
+
+    /// A Codex app server of its own, `codex app-server` on standard input and output, for the
+    /// account in `dir`: it reads the sessions on disk, and ends when this value is dropped.
+    pub fn start(codex: &Path, dir: &Path) -> io::Result<Self> {
+        let mut child = command(codex, dir)
+            .args(["app-server", "--listen", "stdio://"])
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null())
+            .spawn()
+            .map_err(|error| io::Error::new(error.kind(), format!("cannot start codex app-server: {error}")))?;
+        let (Some(input), Some(output)) = (child.stdin.take(), child.stdout.take()) else {
+            let _ = child.kill();
+            return Err(io::Error::other("codex app-server: no standard input or output"));
+        };
+        let (sender, lines) = mpsc::channel();
+        thread::spawn(move || {
+            for line in BufReader::new(output).lines() {
+                if sender.send(line).is_err() {
+                    return;
+                }
+            }
+        });
+        Self::initialized(Transport::Stdio(Piped { child, input, lines }), "codex app-server", START_TIMEOUT)
+    }
+
+    fn initialized(transport: Transport, what: &'static str, timeout: Duration) -> io::Result<Self> {
+        let mut server = Self { transport, next_id: 0, what };
+        let client = json!({"clientInfo": {"name": "kindric-accounts", "version": env!("CARGO_PKG_VERSION")}});
+        server.request_within("initialize", client, timeout)?;
+        server.transport.send(&json!({"jsonrpc": "2.0", "method": "initialized"}).to_string())?;
+        Ok(server)
+    }
+
+    /// The result of `method`, skipping the notifications that come meanwhile.
+    pub fn request(&mut self, method: &str, params: Value) -> io::Result<Value> {
+        self.request_within(method, params, TIMEOUT)
+    }
+
+    fn request_within(&mut self, method: &str, params: Value, timeout: Duration) -> io::Result<Value> {
+        self.next_id += 1;
+        let id = self.next_id;
+        let what = self.what;
+        let failed = |error: &dyn std::fmt::Display| io::Error::other(format!("{what}, {method}: {error}"));
+        let message = json!({"jsonrpc": "2.0", "id": id, "method": method, "params": params});
+        self.transport.send(&message.to_string()).map_err(|error| failed(&error))?;
+        let deadline = Instant::now() + timeout;
+        while let Some(left) = deadline.checked_duration_since(Instant::now()) {
+            let Some(text) = self.transport.receive(left).map_err(|error| failed(&error))? else {
+                continue;
+            };
+            let Ok(value) = serde_json::from_str::<Value>(&text) else {
+                continue;
+            };
+            if let Some(answer) = answer_to(id, &value) {
+                return answer.map_err(|error| failed(&error));
+            }
+        }
+        Err(failed(&"no answer in time"))
+    }
+
+    /// The sessions loaded in the daemon: they run, at work or waiting.
+    pub fn loaded_threads(&mut self) -> io::Result<Vec<String>> {
+        let mut ids = Vec::new();
+        let mut cursor: Option<String> = None;
+        // More pages than ids is a daemon that keeps giving the same cursor.
+        for _ in 0..1000 {
+            let result = self.request("thread/loaded/list", json!({ "cursor": cursor }))?;
+            let (page, next) = loaded_page(&result);
+            ids.extend(page);
+            match next {
+                Some(next) => cursor = Some(next),
+                None => return Ok(ids),
+            }
+        }
+        Err(io::Error::other(format!("{}, thread/loaded/list: the pages never end", self.what)))
+    }
+
+    /// The session `id`, with its state; `None` for a sub-agent.
+    pub fn read_thread(&mut self, id: &str) -> io::Result<Option<Thread>> {
+        let result = self.request("thread/read", json!({ "threadId": id }))?;
+        Ok(result.get("thread").and_then(thread))
+    }
+
+    /// The `limit` sessions used last, archived ones left out, and `excluded` too.
+    pub fn recent_threads(&mut self, limit: usize, excluded: &[String]) -> io::Result<Vec<Thread>> {
+        let excluded: Vec<&String> = excluded.iter().take(MAX_EXCLUDED).collect();
+        let params = json!({"limit": limit, "sortKey": "updated_at", "archived": false, "excludedThreadIds": excluded});
+        Ok(thread_page(&self.request("thread/list", params)?))
+    }
+}
+
+/// The sessions of the Codex account in `dir`: those loaded in its daemon, then, with
+/// `include_stopped`, the most recent of the others. When the daemon does not run, none is
+/// loaded: those at rest are read by a Codex app server started for the question.
+pub fn sessions(dir: &Path, include_stopped: bool) -> io::Result<Vec<Thread>> {
+    let (mut server, loaded) = match AppServer::connect_daemon(dir)? {
+        Some(mut daemon) => {
+            let loaded = daemon.loaded_threads()?;
+            (daemon, loaded)
+        },
+        None if include_stopped => {
+            let codex = require_codex().map_err(|error| io::Error::new(io::ErrorKind::NotFound, error.0))?;
+            (AppServer::start(&codex, dir)?, Vec::new())
+        },
+        None => return Ok(Vec::new()),
+    };
+    let mut threads = Vec::new();
+    for id in &loaded {
+        threads.extend(server.read_thread(id)?);
+    }
+    if include_stopped {
+        threads.extend(server.recent_threads(STOPPED_LISTED, &loaded)?);
+    }
+    Ok(threads)
 }
 
 /// The sessions running on the account: those loaded in its daemon, 0 when it does not run or
 /// cannot be asked. Windows: not counted yet.
 pub fn running_sessions(dir: &Path) -> usize {
-    #[cfg(unix)]
-    {
-        Daemon::connect(dir)
-            .ok()
-            .flatten()
-            .and_then(|mut daemon| daemon.loaded_threads().ok())
-            .map_or(0, |ids| ids.len())
-    }
-    #[cfg(not(unix))]
-    {
-        let _ = dir;
-        0
-    }
+    AppServer::connect_daemon(dir)
+        .ok()
+        .flatten()
+        .and_then(|mut daemon| daemon.loaded_threads().ok())
+        .map_or(0, |ids| ids.len())
 }
 
 #[cfg(test)]
@@ -250,6 +430,40 @@ mod tests {
         assert_eq!(loaded_page(&json!({})), (Vec::new(), None));
     }
 
+    #[test]
+    fn each_status_of_codex_is_read() {
+        let status = |value: Value| thread_status(Some(&value));
+        assert_eq!(status(json!({"type": "notLoaded"})), ThreadStatus::NotLoaded);
+        assert_eq!(status(json!({"type": "idle"})), ThreadStatus::Idle);
+        assert_eq!(status(json!({"type": "systemError"})), ThreadStatus::SystemError);
+        assert_eq!(status(json!({"type": "active", "activeFlags": []})), ThreadStatus::Working);
+        assert_eq!(status(json!({"type": "active", "activeFlags": ["waitingOnApproval"]})), ThreadStatus::WaitingOnApproval);
+        assert_eq!(status(json!({"type": "active", "activeFlags": ["waitingOnUserInput"]})), ThreadStatus::WaitingOnUserInput);
+        assert_eq!(
+            status(json!({"type": "active", "activeFlags": ["waitingOnUserInput", "waitingOnApproval"]})),
+            ThreadStatus::WaitingOnApproval,
+            "a permission first, as for Claude Code"
+        );
+        assert_eq!(status(json!({"type": "somethingNew"})), ThreadStatus::Idle);
+        assert_eq!(thread_status(None), ThreadStatus::Idle);
+    }
+
+    #[test]
+    fn sessions_are_read_from_thread_list_without_sub_agents() {
+        // Fields as codex 0.171.0 gave them on the test bench, the rest left out.
+        let page = json!({"data": [
+            {"id": "01a155e3", "name": "Conseiller une stack", "cwd": "/home/u/Socials", "parentThreadId": null, "status": {"type": "notLoaded"}},
+            {"id": "01a1505a", "name": null, "cwd": "/home/u/Thr", "status": {"type": "idle"}},
+            {"id": "01a1ff2b", "name": "", "cwd": "/w", "parentThreadId": "01a1505a", "status": {"type": "idle"}},
+            {"name": "no id"}
+        ], "nextCursor": null});
+        let threads = thread_page(&page);
+        assert_eq!(threads, [
+            Thread { id: "01a155e3".into(), name: Some("Conseiller une stack".into()), cwd: "/home/u/Socials".into(), status: ThreadStatus::NotLoaded },
+            Thread { id: "01a1505a".into(), name: None, cwd: "/home/u/Thr".into(), status: ThreadStatus::Idle },
+        ]);
+    }
+
     #[cfg(unix)]
     #[test]
     fn a_socket_path_too_long_for_the_system_is_refused() {
@@ -264,7 +478,7 @@ mod tests {
     #[test]
     fn no_daemon_means_no_session() {
         let dir = crate::files::test_dir::fresh_short("nd");
-        assert!(Daemon::connect(&dir).unwrap().is_none());
+        assert!(AppServer::connect_daemon(&dir).unwrap().is_none());
         assert_eq!(running_sessions(&dir), 0);
         std::fs::remove_dir_all(dir).unwrap();
     }

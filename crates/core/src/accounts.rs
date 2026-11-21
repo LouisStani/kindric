@@ -9,7 +9,7 @@ pub use kindric_accounts::registry::DEFAULT_ACCOUNT;
 pub use kindric_accounts::status::AccountStatus;
 use kindric_accounts::agent::{self, Agent};
 use kindric_accounts::provider::{self, Kind, Provider};
-use kindric_accounts::{Paths, account, launch, memory, registry, status, usage};
+use kindric_accounts::{Paths, account, codex, launch, memory, registry, status, usage};
 use serde::{Deserialize, Serialize};
 
 use crate::progress;
@@ -56,6 +56,9 @@ pub struct SessionInfo {
     /// What the session waits for from the user, in Claude Code's words ("permission prompt",
     /// "input needed"), while a question of Claude Code is on its screen.
     pub waiting_for: Option<String>,
+    /// The program of its account: Claude Code, or Codex, whose sessions are attached and started
+    /// otherwise.
+    pub agent: Agent,
 }
 
 impl SessionInfo {
@@ -142,6 +145,7 @@ fn parse_agents_with(account: &str, json: &str, session_file: impl Fn(u32) -> Se
                 progress: None,
                 tasks: None,
                 waiting_for: file.waiting_for,
+                agent: Agent::ClaudeCode,
             }
         })
         .collect())
@@ -336,10 +340,8 @@ fn account_sessions(paths: &Paths, account: &str, implicit_default: bool, includ
     } else {
         launch::require_account(paths, account).map_err(library_error)?
     };
-    // The sessions of a Codex account live in its daemon, not in `claude agents`: listed from the
-    // next step of the Codex accounts.
     if !is_implicit_default(account, implicit_default) && is_codex(paths, account) {
-        return Ok(Vec::new());
+        return codex_sessions(account, &dir, include_stopped);
     }
     let claude = launch::require_claude().map_err(library_error)?;
     let mut command = claude_command(claude);
@@ -361,6 +363,45 @@ fn account_sessions(paths: &Paths, account: &str, implicit_default: bool, includ
         session.tasks = task_list::progress(&dir, &session.session_id);
     }
     Ok(sessions)
+}
+
+/// A session of Codex as kindric shows it. Its id serves both to attach (`codex resume`) and to
+/// address it. Waiting for a permission or an answer reads as Claude Code's words, so it asks the
+/// user the same way.
+fn codex_session(account: &str, thread: codex::Thread) -> SessionInfo {
+    let (state, waiting_for) = match thread.status {
+        codex::ThreadStatus::Working => (SessionState::Working, None),
+        codex::ThreadStatus::Idle | codex::ThreadStatus::SystemError => (SessionState::Waiting, None),
+        codex::ThreadStatus::WaitingOnApproval => (SessionState::Waiting, Some("permission prompt".to_string())),
+        codex::ThreadStatus::WaitingOnUserInput => (SessionState::Waiting, Some("input needed".to_string())),
+        codex::ThreadStatus::NotLoaded => (SessionState::Paused, None),
+    };
+    SessionInfo {
+        account: account.to_string(),
+        short_id: Some(thread.id.clone()),
+        session_id: thread.id,
+        name: thread.name.unwrap_or_default(),
+        cwd: thread.cwd,
+        state,
+        isolated: false,
+        progress: None,
+        tasks: None,
+        waiting_for,
+        agent: Agent::Codex,
+    }
+}
+
+/// The sessions of the Codex account in `dir`, read from its daemon (see `codex::sessions`).
+fn codex_sessions(account: &str, dir: &Path, include_stopped: bool) -> io::Result<Vec<SessionInfo>> {
+    let threads = codex::sessions(dir, include_stopped)?;
+    Ok(threads.into_iter().map(|thread| codex_session(account, thread)).collect())
+}
+
+/// The snapshot without the sessions of Codex accounts, for the terminal interface: frozen, it
+/// gets no new kind of session.
+pub fn without_codex(mut snapshot: Snapshot) -> Snapshot {
+    snapshot.sessions.retain(|session| session.agent != Agent::Codex);
+    snapshot
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -650,6 +691,27 @@ mod tests {
         let claude = set_account_key(&paths, "plain", "x").expect_err("a Claude account").to_string();
         assert!(claude.contains("log in"), "{claude}");
         let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn a_codex_session_reads_as_a_session_of_kindric() {
+        let thread = |status| codex::Thread { id: "01a1ff4a".into(), name: None, cwd: "/home/u/api".into(), status };
+        let session = codex_session("cx", thread(codex::ThreadStatus::Working));
+        assert_eq!((session.short_id.as_deref(), session.session_id.as_str()), (Some("01a1ff4a"), "01a1ff4a"));
+        assert_eq!((session.agent, session.title()), (Agent::Codex, "api".to_string()));
+        assert!(session.can_attach());
+        let state = |status| {
+            let session = codex_session("cx", thread(status));
+            (session.state, session.waiting_for)
+        };
+        assert_eq!(state(codex::ThreadStatus::Working), (SessionState::Working, None));
+        assert_eq!(state(codex::ThreadStatus::Idle), (SessionState::Waiting, None));
+        assert_eq!(state(codex::ThreadStatus::SystemError), (SessionState::Waiting, None));
+        assert_eq!(state(codex::ThreadStatus::WaitingOnApproval), (SessionState::Waiting, Some("permission prompt".into())));
+        assert_eq!(state(codex::ThreadStatus::WaitingOnUserInput), (SessionState::Waiting, Some("input needed".into())));
+        assert_eq!(state(codex::ThreadStatus::NotLoaded), (SessionState::Paused, None));
+        let named = codex_session("cx", codex::Thread { name: Some("review".into()), ..thread(codex::ThreadStatus::Idle) });
+        assert_eq!(named.title(), "review");
     }
 
     #[test]

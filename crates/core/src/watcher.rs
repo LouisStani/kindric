@@ -52,11 +52,22 @@ fn job_dirs(jobs: &Path) -> Vec<PathBuf> {
 /// The folders of an account directory that wake the list up when they appear.
 const ACCOUNT_FOLDERS: [&str; 3] = ["sessions", "daemon", "jobs"];
 
+/// The files right in the directory of a Codex account that Codex writes at each change of a
+/// session: start and end of a turn, a permission asked and answered (measured on codex 0.171.0:
+/// `state_5.sqlite-wal`, `thread_history_1.sqlite-wal`). Not a contract of Codex: if their names
+/// change, the full refresh every few minutes still catches up.
+const CODEX_STATE_FILES: [&str; 2] = ["state_", "thread_history_"];
+
 /// Whether a write at `path` may change the list: anything but a file or folder right in an
-/// account directory other than `ACCOUNT_FOLDERS`.
+/// account directory other than `ACCOUNT_FOLDERS` and the state files of Codex.
 fn counts(path: &Path, account_dirs: &[PathBuf]) -> bool {
     let in_account = path.parent().is_some_and(|parent| account_dirs.iter().any(|dir| dir == parent));
-    !in_account || path.file_name().is_some_and(|name| ACCOUNT_FOLDERS.iter().any(|folder| name == *folder))
+    let Some(name) = path.file_name().and_then(|name| name.to_str()) else {
+        return !in_account;
+    };
+    !in_account
+        || ACCOUNT_FOLDERS.contains(&name)
+        || CODEX_STATE_FILES.iter().any(|prefix| name.starts_with(prefix) && name.ends_with(".sqlite-wal"))
 }
 
 /// The paths of a report that count, or None if none does. A report without paths counts:
@@ -247,6 +258,19 @@ mod tests {
     }
 
     /// Claude Code rewrites `.claude.json` all the time, in the account directory now watched.
+    #[test]
+    fn the_state_files_of_codex_wake_the_list_up_and_its_logs_do_not() {
+        let account = PathBuf::from("/d/kindric-accounts/cx");
+        let dirs = [account.clone()];
+        assert!(counts(&account.join("state_5.sqlite-wal"), &dirs));
+        assert!(counts(&account.join("thread_history_1.sqlite-wal"), &dirs));
+        assert!(!counts(&account.join("logs_2.sqlite-wal"), &dirs), "Codex logs all the time");
+        assert!(!counts(&account.join("state_5.sqlite"), &dirs));
+        assert!(!counts(&account.join("history.jsonl"), &dirs));
+        assert!(counts(&account.join("sessions"), &dirs));
+        assert!(counts(&account.join("sessions").join("x.json"), &dirs), "inside a folder, as before");
+    }
+
     #[test]
     fn a_write_beside_the_account_folders_does_not_wake_the_list_up() {
         let made = std::env::temp_dir().join(format!("kindric-watch-beside-{}", std::process::id()));
