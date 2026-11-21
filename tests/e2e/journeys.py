@@ -2212,11 +2212,13 @@ class CodexSessionsInKindric(Journey):
     waiting is a question); one opens in a pane, Codex's TUI started in its folder; Ctrl+N on the
     Codex account starts a named session in the daemon; Ctrl+Shift+K stops the turn of a working
     one and hides it; a message typed in the control center goes to Codex for the session; the
-    purge archives the one idle for 10 days."""
+    command a session asks to run shows in the control center, and "a" allows it through the
+    daemon; the purge archives the one idle for 10 days."""
 
     THREADS = [
         {"id": "11111111-1111-4111-8111-111111111111", "name": "codex-idle", "status": "idle", "turns": [{"id": "a1", "status": "completed"}]},
-        {"id": "22222222-2222-4222-8222-222222222222", "name": "codex-asks", "status": "approval", "turns": [{"id": "b1", "status": "inProgress"}]},
+        {"id": "22222222-2222-4222-8222-222222222222", "name": "codex-asks", "status": "approval", "turns": [{"id": "b1", "status": "inProgress"}],
+         "approval": {"itemId": "b-item", "command": "rm -rf build", "reason": "clean the build"}},
         {"id": "33333333-3333-4333-8333-333333333333", "name": "codex-busy", "status": "working",
          "turns": [{"id": "c1", "status": "completed"}, {"id": "c2", "status": "inProgress"}]},
         {"id": "44444444-4444-4444-8444-444444444444", "name": "codex-old", "status": "notLoaded", "turns": []},
@@ -2300,6 +2302,16 @@ class CodexSessionsInKindric(Journey):
         field = wait_until("its field", lambda: driver.find(f"[data-key='prompt/{idle}']"))
         driver.type_into(field, "hello codex" + ENTER)
         wait_until("the message given to Codex for the session", lambda: (codex_thread("codex-idle") or {}).get("messages") == ["hello codex"] or None)
+
+        driver.press(ESCAPE)
+        asking = self.THREADS[1]["id"]
+        command = wait_until("the command codex-asks asks to run", lambda: driver.text(driver.find(f"[data-key='row/{asking}'] .request-command")))
+        self.assertEqual(command, "$ rm -rf build")
+        driver.press("n")
+        wait_until("codex-asks picked, the session that asks", lambda: driver.script(picked) == asking or None)
+        driver.press("a")
+        wait_until("the approval given to Codex", lambda: (codex_thread("codex-asks") or {}).get("decision") == "accept" or None)
+        wait_until("the question gone from the row of codex-asks", lambda: not driver.find_all(f"[data-key='row/{asking}'] .request-command") or None)
 
         driver.press(CONTROL, ",")
         wait_until("the settings", lambda: dialog_open(driver, "settings"))

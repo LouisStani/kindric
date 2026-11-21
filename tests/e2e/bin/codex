@@ -4,7 +4,11 @@ codex 0.171.0 gives, without any model. Its sessions live in $CODEX_HOME/fake-th
 a journey may write before the app starts:
 
     [{"id": UUID, "name": str, "cwd": str, "status": "idle" | "working" | "approval" | "notLoaded",
-      "archived": bool, "turns": [{"id": str, "status": "inProgress" | "completed" | ...}]}]
+      "archived": bool, "turns": [{"id": str, "status": "inProgress" | "completed" | ...}],
+      "approval": {"itemId": str, "command": str, "reason": str}}]
+
+A session in "approval" sends its approval to each client that joins it (thread/resume), as Codex
+does; the answer is noted in its "decision", and the session goes back to "idle".
 
     codex login status                    exit 0 once $CODEX_HOME/fake-logged-in exists, else 1
     codex login                           a new login: writes fake-logged-in, noted in fake-logins.log
@@ -132,7 +136,7 @@ def answer(method: str, params: dict) -> object:
     with Threads() as threads:
         if method == "thread/loaded/list":
             return {"data": [thread["id"] for thread in threads if loaded(thread)], "nextCursor": None}
-        if method == "thread/read":
+        if method in ("thread/read", "thread/resume"):
             return {"thread": shown(find(threads, params["threadId"]))}
         if method == "thread/list":
             excluded = set(params.get("excludedThreadIds") or [])
@@ -164,8 +168,41 @@ def answer(method: str, params: dict) -> object:
     raise KeyError(f"{method} is not in the fake")
 
 
+def approval_request(thread_id: str) -> dict | None:
+    """The request Codex sends a client that joins a session waiting for an approval."""
+    with Threads() as threads:
+        try:
+            thread = find(threads, thread_id)
+        except KeyError:
+            return None
+        asked = thread.get("approval")
+        if thread.get("status") != "approval" or not asked:
+            return None
+        command = asked.get("command", "")
+        return {"jsonrpc": "2.0", "id": f"approval:{thread_id}", "method": "item/commandExecution/requestApproval",
+                "params": {"threadId": thread_id, "itemId": asked.get("itemId", "item"), "command": f"/usr/bin/bash -lc '{command}'",
+                           "commandActions": [{"type": "unknown", "command": command}], "reason": asked.get("reason")}}
+
+
+def take_answer(message: dict) -> None:
+    """The client's answer to an approval request: noted, the session goes on."""
+    request = str(message.get("id", ""))
+    if not request.startswith("approval:"):
+        return
+    with Threads() as threads:
+        thread = find(threads, request.removeprefix("approval:"))
+        thread["decision"] = (message.get("result") or {}).get("decision")
+        thread["status"] = "idle"
+        for turn in thread.get("turns", []):
+            if turn["status"] == "inProgress":
+                turn["status"] = "completed"
+
+
 def reply(message: dict) -> dict | None:
     if "id" not in message:
+        return None
+    if "method" not in message:
+        take_answer(message)
         return None
     try:
         return {"jsonrpc": "2.0", "id": message["id"], "result": answer(message.get("method", ""), message.get("params") or {})}
@@ -236,9 +273,14 @@ def serve(connection: socket.socket) -> None:
                 continue
             if opcode != 1:
                 continue
-            answered = reply(json.loads(payload))
+            message = json.loads(payload)
+            answered = reply(message)
             if answered is not None:
                 send_frame(connection, 1, json.dumps(answered).encode())
+            if message.get("method") == "thread/resume":
+                asked = approval_request((message.get("params") or {}).get("threadId", ""))
+                if asked is not None:
+                    send_frame(connection, 1, json.dumps(asked).encode())
     except (ConnectionError, OSError, StopIteration, ValueError):
         return
     finally:

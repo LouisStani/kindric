@@ -7,6 +7,7 @@ pub mod away;
 pub mod changes;
 pub mod checks;
 pub mod claude_theme;
+pub mod codex_approval;
 mod git;
 pub mod images;
 pub mod launcher;

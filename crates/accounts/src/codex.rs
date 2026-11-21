@@ -174,6 +174,74 @@ fn thread(value: &Value) -> Option<Thread> {
     })
 }
 
+/// A message of Codex that asks this client something: it has both a method and an id.
+fn is_request_of_codex(message: &Value) -> bool {
+    message.get("method").is_some() && message.get("id").is_some()
+}
+
+/// How long Codex has to send an open question to a client that joined the session.
+const APPROVAL_WAIT: Duration = Duration::from_millis(1500);
+
+/// A question a Codex session waits for: may this command run, may these files change.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Approval {
+    pub thread: String,
+    /// The item the question is about; the answer names it.
+    pub item: String,
+    /// `false` for a command, `true` for a change of files.
+    pub file_change: bool,
+    /// The command, as the user would type it.
+    pub command: Option<String>,
+    /// Why the model asks.
+    pub reason: Option<String>,
+}
+
+/// The question in `request`, a request of Codex; `None` for anything else.
+fn approval(request: &Value) -> Option<Approval> {
+    let file_change = match request.get("method")?.as_str()? {
+        "item/commandExecution/requestApproval" => false,
+        "item/fileChange/requestApproval" => true,
+        _ => return None,
+    };
+    let params = request.get("params")?;
+    let text = |value: Option<&Value>| value.and_then(Value::as_str).map(String::from).filter(|text| !text.is_empty());
+    let typed = params.get("commandActions").and_then(Value::as_array).and_then(|actions| actions.first()).and_then(|action| action.get("command"));
+    Some(Approval {
+        thread: text(params.get("threadId"))?,
+        item: text(params.get("itemId"))?,
+        file_change,
+        command: text(typed).or_else(|| text(params.get("command"))),
+        reason: text(params.get("reason")),
+    })
+}
+
+/// The approval the session `thread` of the account in `dir` waits for, read from its daemon and
+/// left open; `None` when the daemon does not run or the session waits for none.
+pub fn pending_approval(dir: &Path, thread: &str) -> io::Result<Option<Approval>> {
+    let Some(mut daemon) = AppServer::connect_daemon(dir)? else {
+        return Ok(None);
+    };
+    Ok(daemon.join_for_approval(thread)?.map(|(_, approval)| approval))
+}
+
+/// Answers the approval about `item` that the session `thread` of the account in `dir` waits
+/// for: `accept`, or decline it. `false` when that question is no longer open (answered in the
+/// TUI meanwhile).
+pub fn answer_approval(dir: &Path, thread: &str, item: &str, accept: bool) -> io::Result<bool> {
+    let Some(mut daemon) = AppServer::connect_daemon(dir)? else {
+        return Ok(false);
+    };
+    let Some((id, approval)) = daemon.join_for_approval(thread)? else {
+        return Ok(false);
+    };
+    if approval.item != item {
+        return Ok(false);
+    }
+    let decision = if accept { "accept" } else { "decline" };
+    daemon.transport.send(&json!({"jsonrpc": "2.0", "id": id, "result": {"decision": decision}}).to_string())?;
+    Ok(true)
+}
+
 /// The sessions of one page of `thread/list`.
 fn thread_page(result: &Value) -> Vec<Thread> {
     result.get("data").and_then(Value::as_array).map(|threads| threads.iter().filter_map(thread).collect()).unwrap_or_default()
@@ -230,9 +298,16 @@ impl Transport {
     fn receive(&mut self, timeout: Duration) -> io::Result<Option<String>> {
         match self {
             #[cfg(unix)]
-            Self::Socket(socket) => match socket.read().map_err(io::Error::other)? {
-                tungstenite::Message::Text(text) => Ok(Some(text.as_str().to_string())),
-                _ => Ok(None),
+            Self::Socket(socket) => {
+                socket.get_mut().set_read_timeout(Some(timeout.max(Duration::from_millis(1))))?;
+                match socket.read() {
+                    Ok(tungstenite::Message::Text(text)) => Ok(Some(text.as_str().to_string())),
+                    Ok(_) => Ok(None),
+                    Err(tungstenite::Error::Io(error)) if matches!(error.kind(), io::ErrorKind::WouldBlock | io::ErrorKind::TimedOut) => {
+                        Err(io::Error::new(io::ErrorKind::TimedOut, "no answer in time"))
+                    },
+                    Err(error) => Err(io::Error::other(error)),
+                }
             },
             Self::Stdio(stdio) => match stdio.lines.recv_timeout(timeout) {
                 Ok(line) => line.map(Some),
@@ -249,6 +324,8 @@ pub struct AppServer {
     next_id: u64,
     /// What the messages say they come from, for errors.
     what: &'static str,
+    /// The requests of Codex that came while an answer was awaited, oldest first.
+    asked: Vec<Value>,
 }
 
 impl AppServer {
@@ -306,7 +383,7 @@ impl AppServer {
     }
 
     fn initialized(transport: Transport, what: &'static str, timeout: Duration) -> io::Result<Self> {
-        let mut server = Self { transport, next_id: 0, what };
+        let mut server = Self { transport, next_id: 0, what, asked: Vec::new() };
         let client = json!({"clientInfo": {"name": "kindric-accounts", "version": env!("CARGO_PKG_VERSION")}});
         server.request_within("initialize", client, timeout)?;
         server.transport.send(&json!({"jsonrpc": "2.0", "method": "initialized"}).to_string())?;
@@ -327,8 +404,11 @@ impl AppServer {
         self.transport.send(&message.to_string()).map_err(|error| failed(&error))?;
         let deadline = Instant::now() + timeout;
         while let Some(left) = deadline.checked_duration_since(Instant::now()) {
-            let Some(text) = self.transport.receive(left).map_err(|error| failed(&error))? else {
-                continue;
+            let text = match self.transport.receive(left) {
+                Ok(Some(text)) => text,
+                Ok(None) => continue,
+                Err(error) if error.kind() == io::ErrorKind::TimedOut => continue,
+                Err(error) => return Err(failed(&error)),
             };
             let Ok(value) = serde_json::from_str::<Value>(&text) else {
                 continue;
@@ -336,8 +416,46 @@ impl AppServer {
             if let Some(answer) = answer_to(id, &value) {
                 return answer.map_err(|error| failed(&error));
             }
+            if is_request_of_codex(&value) {
+                self.asked.push(value);
+            }
         }
         Err(failed(&"no answer in time"))
+    }
+
+    /// The next request Codex sends this client, waiting at most `timeout`; `None` if none came.
+    fn next_request(&mut self, timeout: Duration) -> io::Result<Option<Value>> {
+        if !self.asked.is_empty() {
+            return Ok(Some(self.asked.remove(0)));
+        }
+        let deadline = Instant::now() + timeout;
+        while let Some(left) = deadline.checked_duration_since(Instant::now()) {
+            let text = match self.transport.receive(left) {
+                Ok(Some(text)) => text,
+                Ok(None) => continue,
+                Err(error) if error.kind() == io::ErrorKind::TimedOut => return Ok(None),
+                Err(error) => return Err(error),
+            };
+            if let Ok(value) = serde_json::from_str::<Value>(&text)
+                && is_request_of_codex(&value)
+            {
+                return Ok(Some(value));
+            }
+        }
+        Ok(None)
+    }
+
+    /// The approval the session `thread` waits for, and the request that asks it, once this
+    /// client joined the session: Codex sends a question still open to each client that joins.
+    fn join_for_approval(&mut self, thread: &str) -> io::Result<Option<(Value, Approval)>> {
+        self.request("thread/resume", json!({ "threadId": thread }))?;
+        while let Some(request) = self.next_request(APPROVAL_WAIT)? {
+            if let Some(approval) = approval(&request).filter(|approval| approval.thread == thread) {
+                let id = request.get("id").cloned().unwrap_or(Value::Null);
+                return Ok(Some((id, approval)));
+            }
+        }
+        Ok(None)
     }
 
     /// The sessions loaded in the daemon: they run, at work or waiting.
@@ -684,6 +802,24 @@ mod tests {
             Thread { id: "01a155e3".into(), name: Some("Conseiller une stack".into()), cwd: "/home/u/Socials".into(), status: ThreadStatus::NotLoaded },
             Thread { id: "01a1505a".into(), name: None, cwd: "/home/u/Thr".into(), status: ThreadStatus::Idle },
         ]);
+    }
+
+    #[test]
+    fn an_approval_is_read_from_the_request_of_codex() {
+        // As the daemon of codex 0.171.0 sent it on the test bench, the rest left out.
+        let command = json!({"jsonrpc": "2.0", "id": 0, "method": "item/commandExecution/requestApproval", "params": {
+            "threadId": "01a1ff2c", "itemId": "c1", "reason": "test kindric",
+            "command": "/usr/bin/bash -lc 'touch /tmp/x'", "commandActions": [{"type": "unknown", "command": "touch /tmp/x"}]}});
+        assert_eq!(approval(&command), Some(Approval {
+            thread: "01a1ff2c".into(), item: "c1".into(), file_change: false,
+            command: Some("touch /tmp/x".into()), reason: Some("test kindric".into()),
+        }));
+        let files = json!({"id": 1, "method": "item/fileChange/requestApproval", "params": {"threadId": "t", "itemId": "f1"}});
+        assert_eq!(approval(&files).map(|approval| (approval.file_change, approval.command)), Some((true, None)));
+        assert_eq!(approval(&json!({"id": 2, "method": "item/tool/requestUserInput", "params": {"threadId": "t", "itemId": "q"}})), None);
+        assert!(is_request_of_codex(&command));
+        assert!(!is_request_of_codex(&json!({"method": "thread/started", "params": {}})));
+        assert!(!is_request_of_codex(&json!({"id": 3, "result": {}})));
     }
 
     #[test]

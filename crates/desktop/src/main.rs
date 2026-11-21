@@ -28,7 +28,7 @@ use kindric_core::launcher::{self, Request, resolve_directory};
 use kindric_core::mailbox::Mailbox;
 use kindric_core::accounts::SessionInfo;
 use kindric_core::artifacts::{self, Kind};
-use kindric_core::{accounts, activity, attach, atlas, away, changes, checks, claude_theme, images, mailbox, origins, overview, refresher, steps, worktrees};
+use kindric_core::{accounts, activity, attach, atlas, codex_approval, away, changes, checks, claude_theme, images, mailbox, origins, overview, refresher, steps, worktrees};
 use serde::Serialize;
 use serde::de::DeserializeOwned;
 use tauri::ipc::{Channel, InvokeResponseBody, Response};
@@ -81,6 +81,9 @@ struct Shared {
     claims_dir: Result<PathBuf, String>,
     /// What `claude --version` and `--help` said, kept while the same claude is found.
     claude_facts: Mutex<Option<checks::ClaudeFacts>>,
+    /// The approval each Codex session waiting for one asks, by session id, read once from its
+    /// daemon while it waits (decision 431); `None` when the daemon gave none.
+    codex_asked: Mutex<HashMap<String, Option<overview::Request>>>,
 }
 
 /// The Claude Code shown in a terminal over a dialog: asking whether a folder is trusted, or
@@ -1313,20 +1316,56 @@ fn overview_root() -> Result<PathBuf, String> {
     overview::default_root().map_err(|error| format!("cannot find kindric's data: {error}"))
 }
 
-/// What the sessions ask the user, oldest first.
+/// What the sessions ask the user, oldest first: what their hooks wrote, and the approvals Codex
+/// sessions wait for. The approval of a Codex session is read from its daemon once while the
+/// session waits: the page asks every second.
 #[tauri::command]
-fn overview_requests(shared: State<'_, Shared>) -> Result<Vec<overview::Request>, String> {
+async fn overview_requests(shared: State<'_, Shared>) -> Result<Vec<overview::Request>, String> {
     let _span = shared.trace.span("overview_requests");
-    Ok(overview::live_pending(&overview_root()?, std::time::SystemTime::now()))
+    let mut requests = overview::live_pending(&overview_root()?, std::time::SystemTime::now());
+    let waiting: Vec<SessionInfo> = {
+        let view = shared.view.lock().unwrap_or_else(PoisonError::into_inner);
+        view.sessions.iter().map(|row| row.info.clone()).filter(codex_approval::asks_approval).collect()
+    };
+    let unknown: Vec<SessionInfo> = {
+        let mut asked = shared.codex_asked.lock().unwrap_or_else(PoisonError::into_inner);
+        let still: HashSet<&str> = waiting.iter().map(|info| info.session_id.as_str()).collect();
+        asked.retain(|session, _| still.contains(session.as_str()));
+        waiting.into_iter().filter(|info| !asked.contains_key(&info.session_id)).collect()
+    };
+    if !unknown.is_empty() {
+        let now = unix_now()?;
+        let read = unknown.clone();
+        let found = tauri::async_runtime::spawn_blocking(move || codex_approval::requests(&read, now)).await.map_err(|error| error.to_string())?;
+        let mut asked = shared.codex_asked.lock().unwrap_or_else(PoisonError::into_inner);
+        for info in &unknown {
+            let request = found.iter().find(|request| request.session_id == info.session_id).cloned();
+            asked.insert(info.session_id.clone(), request);
+        }
+    }
+    let asked = shared.codex_asked.lock().unwrap_or_else(PoisonError::into_inner);
+    requests.extend(asked.values().flatten().cloned());
+    requests.sort_by_key(|request| request.asked_at);
+    Ok(requests)
 }
 
 /// The user answers a permission or a question of AskUserQuestion: the hook waiting in the
 /// session reads the answer and gives it to Claude Code.
 #[tauri::command]
-fn answer_request(shared: State<'_, Shared>, session_id: String, id: String, answer: overview::Answer) -> Result<(), String> {
+async fn answer_request(shared: State<'_, Shared>, session_id: String, id: String, answer: overview::Answer) -> Result<(), String> {
     let _span = shared.trace.span("answer_request");
     if matches!(answer, overview::Answer::Text { .. }) {
         return Err("the answer to kindric ask is typed into the session, not written for a hook".into());
+    }
+    if codex_approval::is_codex_request(&id) {
+        let allow = match answer {
+            overview::Answer::Allow => true,
+            overview::Answer::Deny => false,
+            _ => return Err("a Codex session asks to allow or deny".into()),
+        };
+        // Read again once answered: the session asks the next one, or none.
+        shared.codex_asked.lock().unwrap_or_else(PoisonError::into_inner).remove(&session_id);
+        return tauri::async_runtime::spawn_blocking(move || codex_approval::answer(&id, allow)).await.map_err(|error| error.to_string())?;
     }
     overview::answer(&overview_root()?, &session_id, &id, &answer).map_err(|error| error.to_string())
 }
@@ -1681,6 +1720,7 @@ fn main() -> ExitCode {
             .map(|directory| directory.join("attached"))
             .map_err(|error| format!("cannot tell whether another kindric window shows a session: {error}")),
         claude_facts: Mutex::new(None),
+        codex_asked: Mutex::new(HashMap::new()),
     };
     let built = tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())

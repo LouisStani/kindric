@@ -256,10 +256,10 @@ All in kindric's data folder, next to the mailbox: `~/.local/share/kindric/` on 
 
 A Codex account (added in the settings with **model from** set to codex, or with `kindric-accounts add <name> --agent codex` then `kindric-accounts run <name> login`) shows its sessions next to those of Claude Code:
 
-- In the bar, the control center and `Ctrl+P`, with their state. A session waiting for an approval carries the `?`; answer it in its pane.
+- In the bar, the control center and `Ctrl+P`, with their state. A session waiting for an approval carries the `?`: the control center shows the command or the change it asks for, with **Allow** and **Deny** (`a` and `d`); its pane asks too.
 - In a pane: the Codex TUI joins the session, in its folder. Closing the pane leaves the session, and a turn it runs, going.
 - `Ctrl+N` on a Codex account starts a Codex session in the folder.
 - A message typed in the control center reaches the session as yours: Codex starts a turn with it as soon as the session is free.
 - `Ctrl+Shift+K` stops the turn running and hides the session. The purge of the settings archives a Codex session: `codex unarchive <id>` brings it back.
 
-Not yet: answering a Codex session's questions in the control center, away mode, messages between sessions and kept files, its last steps, images, context and limits. How it works: [Codex accounts](how-it-works.md#codex-accounts).
+Not yet: answering a question of the model in the control center, away mode, messages between sessions and kept files, its last steps, images, context and limits. How it works: [Codex accounts](how-it-works.md#codex-accounts).
