@@ -392,6 +392,23 @@ pub fn sessions(dir: &Path, include_stopped: bool) -> io::Result<Vec<Thread>> {
     Ok(threads)
 }
 
+/// Starts a session of the account in `dir`, in the folder `cwd`, named `name` unless it is
+/// empty, in the daemon of the account, which must run (see `ensure_daemon`). The session waits
+/// for its first message; `codex resume` joins it. Returns its id.
+pub fn start_session(dir: &Path, cwd: &Path, name: &str) -> io::Result<String> {
+    let Some(mut daemon) = AppServer::connect_daemon(dir)? else {
+        return Err(io::Error::other("the Codex daemon of this account does not run"));
+    };
+    let started = daemon.request("thread/start", json!({ "cwd": cwd }))?;
+    let Some(id) = started.get("thread").and_then(|thread| thread.get("id")).and_then(Value::as_str) else {
+        return Err(io::Error::other("Codex daemon, thread/start: no session id in the answer"));
+    };
+    if !name.trim().is_empty() {
+        daemon.request("thread/name/set", json!({ "threadId": id, "name": name.trim() }))?;
+    }
+    Ok(id.to_string())
+}
+
 /// The folder the session `id` of the account in `dir` works in, read from its daemon; `None`
 /// when the daemon does not run or does not know the session.
 pub fn session_cwd(dir: &Path, id: &str) -> io::Result<Option<PathBuf>> {

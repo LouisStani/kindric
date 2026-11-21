@@ -8,7 +8,7 @@ use std::process::{Command, Stdio};
 use kindric_accounts::injection;
 use kindric_accounts::memory::Memory;
 use kindric_accounts::paths::expand_home;
-use kindric_accounts::{Paths, isolation, launch, mcp, registry};
+use kindric_accounts::{Paths, codex, isolation, launch, mcp, registry};
 
 use crate::accounts;
 
@@ -103,6 +103,21 @@ fn run_backgrounded(mut command: Command, directory: &Path) -> Result<String, St
     parse_backgrounded_id(&text).ok_or_else(|| format!("no session id in: {}", text.trim()))
 }
 
+/// A session of a Codex account: started in the daemon of the account, which starts first when
+/// it does not run. It waits for its first message; the pane joins it with `codex resume`.
+/// Windows: the daemon cannot be reached yet.
+fn launch_codex(paths: &Paths, request: &Request) -> Result<Launched, String> {
+    if !cfg!(unix) {
+        return Err(format!("{} is a Codex account: kindric starts Codex sessions on Linux and macOS only for now", request.account));
+    }
+    let dir = paths.account_dir(&request.account);
+    let codex = codex::require_codex().map_err(library_error)?;
+    let failed = |error: std::io::Error| format!("{}: {error}", request.account);
+    codex::ensure_daemon(&codex, &dir).map_err(failed)?;
+    let short_id = codex::start_session(&dir, &request.directory, &request.name).map_err(failed)?;
+    Ok(Launched { short_id, warnings: Vec::new() })
+}
+
 /// Whether `error`, from `launch`, is Claude Code refusing a folder the account has not trusted
 /// yet, which `attach::trust_command` lets it ask about. The home directory is refused too, but
 /// its trust is never saved: asking would not help, and Claude Code's text says so.
@@ -130,12 +145,7 @@ pub fn launch(request: &Request, theme: Option<&str>) -> Result<Launched, String
     }
     launch::require_account(&paths, &request.account).map_err(library_error)?;
     if accounts::is_codex(&paths, &request.account) {
-        return Err(format!(
-            "{} is a Codex account: kindric cannot start its sessions yet, run {} run {} in a terminal",
-            request.account,
-            accounts::LAUNCHER,
-            request.account
-        ));
+        return launch_codex(&paths, request);
     }
     launch::require_claude().map_err(library_error)?;
     let shared = mcp::prepare(&paths, &request.account).map_err(library_error)?;
