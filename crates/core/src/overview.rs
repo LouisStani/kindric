@@ -300,12 +300,20 @@ pub fn typed_answer(root: &Path, session: &str, id: &str, answer: &str) -> Resul
     }
 }
 
-/// `kindric ask <question> <context>` from the environment Claude Code gives a shell command.
+/// The session that runs `kindric ask`: Claude Code names it in `CLAUDE_CODE_SESSION_ID`, Codex in
+/// `CODEX_THREAD_ID` (a name read in the binary of codex 0.171.0, not yet seen in a session). An
+/// empty value names none.
+fn session_of_caller(claude: Option<String>, codex: Option<String>) -> Option<String> {
+    claude.filter(|id| !id.is_empty()).or_else(|| codex.filter(|id| !id.is_empty()))
+}
+
+/// `kindric ask <question> <context>` from the environment Claude Code or Codex gives a shell
+/// command.
 pub fn run_ask(question: &str, context: &str) -> Result<(), String> {
     let root = default_root().map_err(|error| format!("cannot find kindric's data: {error}"))?;
     let away_root = away::default_root().map_err(|error| format!("cannot find kindric's data: {error}"))?;
     let cwd = std::env::current_dir().map_err(|error| format!("cannot read the current folder: {error}"))?;
-    let session = std::env::var("CLAUDE_CODE_SESSION_ID").ok();
+    let session = session_of_caller(std::env::var("CLAUDE_CODE_SESSION_ID").ok(), std::env::var("CODEX_THREAD_ID").ok());
     let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default();
     ask_from_session(&root, &away_root, session.as_deref(), &cwd, question, context, now.as_millis())?;
     println!("{SENT}");
@@ -320,6 +328,16 @@ mod tests {
         let root = std::env::temp_dir().join(format!("kindric-overview-{label}-{}", std::process::id()));
         let _ = fs::remove_dir_all(&root);
         root
+    }
+
+    #[test]
+    fn ask_knows_a_session_of_claude_code_or_of_codex() {
+        let some = |id: &str| Some(id.to_string());
+        assert_eq!(session_of_caller(some("aaaa"), some("01a1")), some("aaaa"), "Claude Code first");
+        assert_eq!(session_of_caller(None, some("01a1")), some("01a1"));
+        assert_eq!(session_of_caller(some(""), some("01a1")), some("01a1"));
+        assert_eq!(session_of_caller(None, some("")), None);
+        assert_eq!(session_of_caller(None, None), None);
     }
 
     fn request(session: &str, id: &str, asked_at: i64, body: Body) -> Request {
