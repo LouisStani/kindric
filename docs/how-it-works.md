@@ -67,7 +67,7 @@ A Codex account (`kindric-accounts add <name> --agent codex`) has no `claude age
 | The purge | `thread/archive`: the session leaves kindric, `codex unarchive <id>` brings it back |
 | Last activity | When `<account>/sessions/<year>/<month>/<day>/rollout-<time>-<id>.jsonl` was last written |
 
-Not yet for Codex: answering its questions in the control center, away mode, messages between sessions and kept files (the MCP server and the hooks of kindric), its last steps and images, its context and limits, the task list. Its permissions are answered in its pane. On Windows, the daemon cannot be reached yet: every Codex session shows as paused, and none can be started from kindric.
+Not yet for Codex: answering its questions in the control center, away mode, messages between sessions and kept files (the MCP server of kindric), its last steps and images, its context and limits, the task list. kindric already writes its hooks for questions, absence and how to ask in the account's `hooks.json` (only when that file is kindric's own), and has Codex trust them, but this is not checked with a real Codex yet. Its permissions are answered in its pane. On Windows, the daemon cannot be reached yet: every Codex session shows as paused, and none can be started from kindric.
 
 ## Limits
 

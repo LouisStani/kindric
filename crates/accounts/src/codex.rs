@@ -488,10 +488,12 @@ pub fn running_sessions(dir: &Path) -> usize {
 }
 
 /// kindric's hooks a Codex session gets, among `all`: the questions put on kindric's page, the user
-/// away, how to ask the user, the unread messages. Not the wait for a message, which relies on a
-/// feature of Claude Code (`asyncRewake`), nor those that read Claude Code's transcript or tools.
+/// away, how to ask the user. Not the unread messages, whose notice sends the session to the
+/// `read_messages` tool of kindric's MCP server, which Codex sessions do not have yet; not the wait
+/// for a message, which relies on a feature of Claude Code (`asyncRewake`); not those that read
+/// Claude Code's transcript or tools.
 pub fn kindric_hooks(all: usage::KindricHooks) -> usage::KindricHooks {
-    usage::KindricHooks { unread: all.unread, away: all.away, permission: all.permission, start: all.start, ..usage::KindricHooks::default() }
+    usage::KindricHooks { away: all.away, permission: all.permission, start: all.start, ..usage::KindricHooks::default() }
 }
 
 /// Codex's hooks file of the account in `dir`, in Claude Code's form.
@@ -711,13 +713,12 @@ mod tests {
     fn a_codex_session_gets_the_hooks_that_work_in_codex() {
         let hooks = kindric_hooks(some_hooks());
         let expected = usage::KindricHooks {
-            unread: Some("k unread".into()),
             away: Some("k away-hook".into()),
             permission: Some("k permission-hook".into()),
             start: Some("k overview-start".into()),
             ..usage::KindricHooks::default()
         };
-        assert_eq!(hooks, expected, "no wait for messages, no check of Claude Code's transcript");
+        assert_eq!(hooks, expected, "no messages yet, no check of Claude Code's transcript");
     }
 
     #[test]

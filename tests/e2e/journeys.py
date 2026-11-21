@@ -2276,7 +2276,7 @@ class CodexSessionsInKindric(Journey):
         with open(os.path.join(CODEX_ACCOUNT_DIR, "hooks.json"), encoding="utf-8") as file:
             hooks = json.load(file)["hooks"]
         commands = sorted({hook["command"].split()[-1] for groups in hooks.values() for group in groups for hook in group["hooks"]})
-        self.assertEqual(commands, ["away-hook", "overview-start", "permission-hook", "unread"])
+        self.assertEqual(commands, ["away-hook", "overview-start", "permission-hook"])
         self.assertTrue(os.path.exists(os.path.join(CODEX_ACCOUNT_DIR, ".kindric-hooks-trusted")), "Codex was not asked to trust them")
 
         open_from_bar(driver, "codex-busy")
