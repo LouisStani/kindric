@@ -413,7 +413,8 @@ export class SettingsWindow {
     this.showInstalled(models);
   }
 
-  // A Claude account opens its login window; a provider account is ready once it has its key.
+  // A Claude or Codex account opens its login window; a provider account is ready once it has its
+  // key.
   async add() {
     const name = this.name.value.trim();
     if (name === "") return;
@@ -422,6 +423,8 @@ export class SettingsWindow {
     const kind = fields.kind.value;
     const shape = PROVIDERS[kind] ?? null;
     const request = { name };
+    // Codex is not a provider of Claude Code's model but another program: its own login only.
+    if (kind === "codex") request.agent = "codex";
     if (shape) {
       const model = fields.installed.hidden ? fields.model.value.trim() : fields.installed.value;
       const url = shape.url === null ? null : fields.url.value.trim() || null;

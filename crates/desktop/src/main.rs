@@ -322,11 +322,13 @@ async fn account_statuses(shared: State<'_, Shared>) -> Result<Vec<accounts::Acc
 /// Creates an account of kindric-accounts; returns its warnings, if any. With `provider`, its
 /// model comes from an API key or a gateway, and `key` is kept for it.
 #[tauri::command]
-fn add_account(name: String, provider: Option<accounts::NewProvider>, key: Option<String>) -> Result<Vec<String>, String> {
+fn add_account(name: String, provider: Option<accounts::NewProvider>, key: Option<String>, agent: Option<String>) -> Result<Vec<String>, String> {
     let paths = accounts::paths().map_err(|error| error.to_string())?;
-    match provider {
-        None => accounts::add_account(&paths, name.trim()),
-        Some(provider) => accounts::add_provider_account(&paths, name.trim(), &provider, key.as_deref()),
+    match (agent.as_deref(), provider) {
+        (Some("codex"), _) => accounts::add_codex_account(&paths, name.trim()),
+        (Some(other), _) => return Err(format!("unknown agent {other:?}")),
+        (None, None) => accounts::add_account(&paths, name.trim()),
+        (None, Some(provider)) => accounts::add_provider_account(&paths, name.trim(), &provider, key.as_deref()),
     }
     .map_err(|error| error.to_string())
 }

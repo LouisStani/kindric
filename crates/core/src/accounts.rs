@@ -515,6 +515,12 @@ pub fn set_account_key(paths: &Paths, name: &str, key: &str) -> io::Result<()> {
     provider::save_token(&dir, key).map_err(library_error)
 }
 
+/// Creates the Codex account `name`, as `kindric-accounts add <name> --agent codex` does; returns
+/// what it warned about while linking what it shares with `~/.codex`.
+pub fn add_codex_account(paths: &Paths, name: &str) -> io::Result<Vec<String>> {
+    account::add_codex(paths, name).map(|created| created.warnings).map_err(library_error)
+}
+
 /// Whether `name` is an account of kindric-accounts that runs Codex; an unreadable file counts as
 /// Claude Code, which every older account runs.
 pub fn is_codex(paths: &Paths, name: &str) -> bool {
@@ -721,7 +727,7 @@ mod tests {
     fn a_codex_account_gets_its_label_and_no_claude_query() {
         let base = if cfg!(unix) { PathBuf::from("/tmp") } else { std::env::temp_dir() };
         let (root, paths) = scratch_paths_in(&base, "cx");
-        account::add_codex(&paths, "cx").expect("add");
+        add_codex_account(&paths, "cx").expect("add");
         add_account(&paths, "plain").expect("add");
         assert!(is_codex(&paths, "cx"));
         assert!(!is_codex(&paths, "plain"));

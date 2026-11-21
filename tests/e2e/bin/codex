@@ -1,0 +1,77 @@
+#!/usr/bin/env python3
+"""A fake Codex for kindric's end-to-end tests: only what a Codex account needs from it before it
+has sessions, in the shapes codex 0.171.0 gives, without any model.
+
+    codex login status                    exit 0 once $CODEX_HOME/fake-logged-in exists, else 1
+    codex login                           a new login: writes fake-logged-in, noted in fake-logins.log
+    codex app-server --listen stdio://    JSON-RPC, one message a line: initialize, thread/list (no
+                                          session), hooks/list (no hook), config/batchWrite
+    anything else                         exit code 2
+"""
+
+import json
+import os
+import sys
+
+
+def home() -> str:
+    return os.environ.get("CODEX_HOME") or os.path.join(os.path.expanduser("~"), ".codex")
+
+
+def login() -> int:
+    os.makedirs(home(), exist_ok=True)
+    with open(os.path.join(home(), "fake-logged-in"), "w", encoding="utf-8") as file:
+        file.write("chatgpt\n")
+    with open(os.path.join(home(), "fake-logins.log"), "a", encoding="utf-8") as file:
+        file.write("login\n")
+    print("Successfully logged in")
+    return 0
+
+
+def login_status() -> int:
+    if os.path.exists(os.path.join(home(), "fake-logged-in")):
+        print("Logged in using ChatGPT")
+        return 0
+    print("Not logged in")
+    return 1
+
+
+ANSWERS = {
+    "initialize": {"userAgent": "fake-codex/0.171.0", "codexHome": None},
+    "thread/list": {"data": [], "nextCursor": None},
+    "thread/loaded/list": {"data": [], "nextCursor": None},
+    "hooks/list": {"data": []},
+    "config/batchWrite": {},
+}
+
+
+def app_server() -> int:
+    for line in sys.stdin:
+        try:
+            message = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if "id" not in message:
+            continue
+        method = message.get("method")
+        if method in ANSWERS:
+            reply = {"jsonrpc": "2.0", "id": message["id"], "result": ANSWERS[method]}
+        else:
+            reply = {"jsonrpc": "2.0", "id": message["id"], "error": {"code": -32601, "message": f"{method} is not in the fake"}}
+        print(json.dumps(reply), flush=True)
+    return 0
+
+
+def main(args: list[str]) -> int:
+    if args[:2] == ["login", "status"]:
+        return login_status()
+    if args == ["login"]:
+        return login()
+    if args[:1] == ["app-server"] and "daemon" not in args:
+        return app_server()
+    print(f"fake codex: {' '.join(args)} is not in the fake", file=sys.stderr)
+    return 2
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))

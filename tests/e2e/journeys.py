@@ -2149,6 +2149,38 @@ class AccountAddedThenRemoved(Journey):
         self.assertTrue(os.path.isdir(self.EXTRA_DIR), "the account's folder removed")
 
 
+class CodexAccountAddedFromSettings(Journey):
+    """The settings add a Codex account: no address, model or key field; kindric-accounts makes it
+    a Codex account, Codex's login runs in the helper window, and the row says "codex"."""
+
+    CODEX_DIR = os.path.join(HOME, ".local/share/kindric-accounts/cx")
+
+    def test_add_and_log_in(self) -> None:
+        driver = self.driver
+        driver.press(CONTROL, ",")
+        wait_until("the settings", lambda: dialog_open(driver, "settings"))
+        click_text(driver, "#settings .settings-categories li", "accounts")
+        wait_until("the account work", lambda: texts(driver, "#settings li.account .account-name") == ["work"] or None)
+        driver.script("""const kind = document.querySelector('#settings .accounts-add select[name=kind]');
+          kind.value = 'codex';
+          kind.dispatchEvent(new Event('change'));""")
+        hidden = driver.script("""return ['.provider-url', '.provider-model', '.provider-key']
+          .map((selector) => document.querySelector('#settings ' + selector).hidden);""")
+        self.assertEqual(hidden, [True, True, True], "a Codex account asks for its name only")
+        driver.type_into(driver.find("#settings .accounts-add input[name=name]"), "cx" + ENTER)
+
+        wait_until("Codex's login of cx", lambda: os.path.exists(os.path.join(self.CODEX_DIR, "fake-logins.log")))
+        with open(os.path.join(self.CODEX_DIR, "kindric-agent.json"), encoding="utf-8") as file:
+            self.assertEqual(json.load(file), {"agent": "codex"})
+        if dialog_open(driver, "helper"):
+            driver.click(driver.find("#helper-done"))
+        wait_until("the login window closed", lambda: not dialog_open(driver, "helper"))
+        row = wait_until("cx logged in", lambda: driver.script("""const row = [...document.querySelectorAll('#settings li.account')].find((item) => item.querySelector('.account-name').textContent === 'cx');
+          if (!row || !row.querySelector('.account-state').classList.contains('logged-in')) return null;
+          return [row.querySelector('.account-details').textContent, [...row.querySelectorAll('.account-actions button')].map((button) => button.textContent)];"""))
+        self.assertEqual(row, ["codex", ["remove"]])
+
+
 class ControlCenterKeysAndPromptAll(Journey):
     """In the control center: a paused session's "resume" opens it in a pane, started again;
     "prompt all" asks to confirm, then types the same message into each session of the project;
