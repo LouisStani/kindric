@@ -1,6 +1,6 @@
 # How it works
 
-kindric never reads credentials. All account handling goes through [kindric-accounts](../crates/accounts/README.md).
+kindric never reads the credentials of Claude Code or Codex: each keeps its own. All account handling goes through [kindric-accounts](../crates/accounts/README.md). The one exception is the key of an account whose model comes from an API key or a gateway: typed in the settings, kindric hands it to the kindric-accounts library, which keeps it in `kindric-token` in the account's directory (`600` on Linux and macOS). kindric itself keeps no copy.
 
 <img src="how-it-works.svg" alt="kindric-desktop starts and attaches sessions through kindric-accounts, which runs Claude Code on each account. The sessions call the kindric command, its MCP server and hooks, which write to kindric's data folder. kindric-desktop watches that folder." width="100%">
 
@@ -8,7 +8,7 @@ kindric never reads credentials. All account handling goes through [kindric-acco
 
 - Accounts, isolated accounts and their directories come from the kindric-accounts library.
 - Claude Code's own configuration, `~/.claude`, counts as an account named `default` when it is logged in. A plain Claude Code setup works without any kindric-accounts account.
-- The session list comes from `claude agents --json` on each account, started with the same rules as `kindric-accounts run`.
+- The session list comes from `claude agents --json` on each account, started with the same rules as `kindric-accounts run`. A Codex account is read from its daemon instead, see [Codex accounts](#codex-accounts).
 - `default` is checked with `claude auth status --json` at start and at each full refresh. Its sessions are listed, attached, started and stopped with `claude` alone, without `CLAUDE_CONFIG_DIR` and without the billing variables. Claude Code then reads its own settings and MCP servers; kindric-accounts shares none with it.
 
 ## Panes
@@ -50,6 +50,24 @@ The list refreshes when:
 A burst of writes counts once: the list waits until 0.3 s pass without one, but never more than 1 s. Each query runs `claude agents --json` once per account.
 
 Measured on Linux with two panes showing working sessions, the app's main process used about 5% of one CPU core, and its web view as much.
+
+## Codex accounts
+
+A Codex account (`kindric-accounts add <name> --agent codex`) has no `claude agents`, `attach` or `--bg`: Codex keeps its sessions in a daemon, one per account, which answers JSON-RPC over a WebSocket on `<account>/app-server-control/app-server-control.sock` (the protocol `codex app-server generate-json-schema` describes). The client is in kindric-accounts, `crates/accounts/src/codex.rs`.
+
+| kindric | Codex |
+| --- | --- |
+| The list | The sessions loaded in the daemon (`thread/loaded/list`, then `thread/read` for their state), and the 50 used last that are not archived (`thread/list`). When the daemon does not run, `codex app-server` is started on standard input and output for the question, then ends. |
+| States | `active` is working; `idle` is waiting; waiting for an approval or for an answer shows the `?` of a question; `notLoaded` is paused |
+| Refresh | Codex writes `state_*.sqlite-wal` and `thread_history_*.sqlite-wal`, right in the account's directory, at each start and end of a turn and each approval asked or answered. kindric watches them like `sessions/` for Claude Code. These names are not a contract of Codex: if they change, the full refresh every 5 minutes still catches up. |
+| A pane | `kindric-accounts run <account> resume <id> --remote unix://<socket>`, started in the session's folder (elsewhere, Codex first asks which folder to use). The daemon is started first when it does not run. Closing the pane ends the TUI, not the turn. |
+| `Ctrl+N` | `thread/start` in the daemon, named with `thread/name/set` |
+| A message from the control center | `kindric-accounts run <account> queue --thread <id> --message <text> --resume`: Codex starts a turn with it as soon as the session is free |
+| `Ctrl+Shift+K` | `turn/interrupt` of the turn running, if any, then the session is hidden |
+| The purge | `thread/archive`: the session leaves kindric, `codex unarchive <id>` brings it back |
+| Last activity | When `<account>/sessions/<year>/<month>/<day>/rollout-<time>-<id>.jsonl` was last written |
+
+Not yet for Codex: answering its questions in the control center, away mode, messages between sessions and kept files (the MCP server and the hooks of kindric), its last steps and images, its context and limits, the task list. Its permissions are answered in its pane. On Windows, the daemon cannot be reached yet: every Codex session shows as paused, and none can be started from kindric.
 
 ## Limits
 

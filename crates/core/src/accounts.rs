@@ -506,6 +506,9 @@ pub fn add_provider_account(paths: &Paths, name: &str, new: &NewProvider, key: O
 /// Keeps `key` for the provider account `name`, in place of the one it had.
 pub fn set_account_key(paths: &Paths, name: &str, key: &str) -> io::Result<()> {
     let dir = launch::require_account(paths, name).map_err(library_error)?;
+    if is_codex(paths, name) {
+        return Err(io::Error::other(format!("{name} is a Codex account: Codex keeps its own key, give it with log in")));
+    }
     if provider::read(&dir).map_err(library_error)?.is_none() {
         return Err(io::Error::other(format!("{name} is a Claude account: it signs in with log in, not with a key")));
     }

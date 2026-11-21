@@ -17,6 +17,7 @@
 - [Themes](#themes)
 - [Files kept by the app](#files-kept-by-the-app)
 - [Signal](#signal)
+- [Codex accounts](#codex-accounts)
 
 ## Setup checklist
 
@@ -46,7 +47,7 @@ Each tab is a project: a folder, and the sessions working in it, on any account.
 
 Tab **0**, `Ctrl+Shift+0`, is the page the app opens on. It shows every session without opening any of them.
 
-- On the left, **all**, then each project with a dot per session and the number that need you. Below, each account with its 5 h and 7 day limits and when the 5 h window starts again; a frame marks one past 80%.
+- On the left, **all**, then each project with a dot per session and the number that need you. Below, each account with where its model comes from (`claude`, `openrouter qwen/qwen3-coder`, `codex`…), its 5 h and 7 day limits and when the 5 h window starts again; a frame marks one past 80%. An account whose model does not come from a Claude subscription has no such limits.
 - **all** lists the sessions that need you first, whatever their project, then a group per project. A project's name opens it.
 - The dot left of a project's name, on the left, leaves it out of **all** or brings it back. Left out, its name is grey and **all** shows only its sessions that need you; the project's own page still shows them all. The choice is kept in `projects.json`. **other** always shows.
 - A project lists its sessions, the paused ones last with **resume**. Its head counts the files its sessions changed (each session since it started, so a file two sessions touched counts twice), its worktrees and its artifacts; a click opens the window of each. A row's **N files** opens the changes of its session.
@@ -199,7 +200,7 @@ Unlike the terminal interface, the number of a session changes with its state: `
 
 `Ctrl+,` opens the settings with the cursor in a search field: type to find a setting in every category, or pick a category on the left (Up and Down from the search). Escape empties the search, then closes.
 
-The accounts section lists the accounts of kindric-accounts: logged in or not, plan, running sessions, isolated. **add** creates an account and opens Claude Code's login in a window of the app. **log in** does the same for an account that is logged out. **remove** takes an account off the list after you confirm; its folder stays on disk.
+The accounts section lists the accounts of kindric-accounts: logged in or not, plan or where the model comes from, running sessions, isolated. **add** creates an account. Its **model from** says where: a Claude login (Claude Code's login then opens in a window of the app), an Anthropic API key, OpenRouter, Ollama on this computer (its model is picked among those installed) or another gateway (its address). Each asks for what it needs: a model, a key. **set key** and **change key** give such an account its key, which kindric-accounts keeps (see [How it works](how-it-works.md)). **log in** opens the login of a Claude account that is logged out, or of a Codex account. **remove** takes an account off the list after you confirm; its folder stays on disk. A Codex account is added with `kindric-accounts add <name> --agent codex` for now.
 
 The memory section sets the size above which a session is warned about the memory it opens at startup: 30 KB by default. It is a warning, nothing is cut. The value is kept in `~/.config/kindric-accounts/memory-warning`. **open the memory atlas** draws the memory of kindric (`~/.kindric/memory`) in 3D: each project is a system around its status, each file a planet. A pale sun is a status older than the project's last decision, a red planet a lesson given again, a grey rock a file its `INDEX.md` does not name. Drag to turn, pinch or use the wheel to go in and out, type to search. A click goes one level down, from the whole memory to a project, a system, then a planet to read; `Esc` comes back up.
 
@@ -250,3 +251,15 @@ All in kindric's data folder, next to the mailbox: `~/.local/share/kindric/` on 
 - The haze goes by itself 10 seconds after the last `on`, so a skill that fails cannot leave it up.
 - `off` with no haze shown does nothing. Both exit with 0; an error exits with 1.
 - It needs Wayland with the layer shell (Hyprland, Sway, KDE). Elsewhere, `on` says it is not available and exits with 1. Virtual screens (`HEADLESS-…`) stay bare.
+
+## Codex accounts
+
+A Codex account (`kindric-accounts add <name> --agent codex`, then `kindric-accounts run <name> login`) shows its sessions next to those of Claude Code:
+
+- In the bar, the control center and `Ctrl+P`, with their state. A session waiting for an approval carries the `?`; answer it in its pane.
+- In a pane: the Codex TUI joins the session, in its folder. Closing the pane leaves the session, and a turn it runs, going.
+- `Ctrl+N` on a Codex account starts a Codex session in the folder.
+- A message typed in the control center reaches the session as yours: Codex starts a turn with it as soon as the session is free.
+- `Ctrl+Shift+K` stops the turn running and hides the session. The purge of the settings archives a Codex session: `codex unarchive <id>` brings it back.
+
+Not yet: answering a Codex session's questions in the control center, away mode, messages between sessions and kept files, its last steps, images, context and limits. How it works: [Codex accounts](how-it-works.md#codex-accounts).
