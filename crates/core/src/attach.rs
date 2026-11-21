@@ -4,7 +4,9 @@
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-use crate::accounts::{LAUNCHER, default_removed_env};
+use kindric_accounts::{Paths, codex};
+
+use crate::accounts::{self, LAUNCHER, default_removed_env};
 
 pub struct AttachCommand {
     pub program: String,
@@ -41,6 +43,69 @@ pub fn attach_command(account: &str, short_id: &str, implicit_default: bool) -> 
         env_remove: Vec::new(),
         directory: None,
     }
+}
+
+/// `kindric-accounts run <account> resume <id> --remote unix://<socket>`: the Codex TUI joins the
+/// session in the daemon of the account in `dir`. Ending this process leaves the session, and a
+/// turn it runs, in the daemon. Windows has no socket: the TUI finds the daemon by itself.
+/// `cwd`, the folder of the session: started elsewhere, the TUI first asks which folder to use.
+pub fn codex_attach_command(account: &str, thread_id: &str, dir: &Path, cwd: Option<PathBuf>) -> AttachCommand {
+    let mut args: Vec<String> = ["run", account, "resume", thread_id].map(String::from).to_vec();
+    if cfg!(unix) {
+        args.extend(["--remote".to_string(), codex::remote_address(dir)]);
+    }
+    let directory = cwd.filter(|cwd| cwd.is_dir());
+    AttachCommand { program: LAUNCHER.into(), args, env: colours(), env_remove: Vec::new(), directory }
+}
+
+/// The command that shows the session `short_id` of `account` in a pane, whatever its account
+/// runs. For Codex, the daemon of the account is started first when it does not run: a session at
+/// rest lives on disk until a client joins it.
+pub fn session_attach_command(account: &str, short_id: &str, implicit_default: bool) -> Result<AttachCommand, String> {
+    let paths = Paths::from_env().map_err(|error| error.to_string())?;
+    if implicit_default || !accounts::is_codex(&paths, account) {
+        return Ok(attach_command(account, short_id, implicit_default));
+    }
+    let dir = paths.account_dir(account);
+    if cfg!(unix) {
+        let codex = codex::require_codex().map_err(|error| error.to_string())?;
+        codex::ensure_daemon(&codex, &dir).map_err(|error| format!("{account}: {error}"))?;
+    }
+    let cwd = codex::session_cwd(&dir, short_id).map_err(|error| format!("{account}: {error}"))?;
+    Ok(codex_attach_command(account, short_id, &dir, cwd))
+}
+
+/// Whether `account` is an account of kindric-accounts that runs Codex.
+pub fn is_codex_account(account: &str, implicit_default: bool) -> bool {
+    !implicit_default && Paths::from_env().is_ok_and(|paths| accounts::is_codex(&paths, account))
+}
+
+/// `kindric-accounts run <account> queue --thread <id> --message <text> --resume`: Codex keeps
+/// the message for the session and starts a turn with it as soon as it is free, waking it up when
+/// it was at rest. Typing into its screen, as for Claude Code, is not needed.
+pub fn codex_message_command(account: &str, thread_id: &str, text: &str, dir: &Path) -> Command {
+    let mut command = Command::new(LAUNCHER);
+    command.args(["run", account, "queue", "--thread", thread_id, "--message", text, "--resume"]);
+    if cfg!(unix) {
+        command.args(["--remote", &codex::remote_address(dir)]);
+    }
+    command
+}
+
+/// Sends `text` to the Codex session `thread_id` of `account` as the user's message.
+pub fn send_codex_message(account: &str, thread_id: &str, text: &str) -> Result<(), String> {
+    let paths = Paths::from_env().map_err(|error| error.to_string())?;
+    let dir = paths.account_dir(account);
+    if cfg!(unix) {
+        let codex = codex::require_codex().map_err(|error| error.to_string())?;
+        codex::ensure_daemon(&codex, &dir).map_err(|error| format!("{account}: {error}"))?;
+    }
+    let output = codex_message_command(account, thread_id, text, &dir).output().map_err(|error| format!("{LAUNCHER}: {error}"))?;
+    if output.status.success() {
+        return Ok(());
+    }
+    let said = String::from_utf8_lossy(&output.stderr);
+    Err(format!("cannot send the message to {thread_id}: {}", said.trim()))
 }
 
 /// Claude Code itself, not in the background, in `directory`: `claude --bg` refuses a folder the
@@ -131,6 +196,24 @@ mod tests {
         assert_eq!(command.directory, Some(PathBuf::from("/work/api")));
         assert!(command.env.contains(&("TERM".into(), "xterm-256color".into())));
         assert!(command.env_remove.is_empty());
+    }
+
+    #[test]
+    fn a_codex_session_is_joined_through_its_daemon() {
+        let dir = Path::new("/d/kindric-accounts/cx");
+        let command = codex_attach_command("cx", "01a1ff52", dir, Some(std::env::temp_dir()));
+        assert_eq!(command.directory, Some(std::env::temp_dir()), "the TUI starts in the folder of the session");
+        assert_eq!(codex_attach_command("cx", "01a1ff52", dir, Some(PathBuf::from("/gone/away"))).directory, None);
+        assert_eq!(command.program, "kindric-accounts");
+        if cfg!(unix) {
+            assert_eq!(command.args, ["run", "cx", "resume", "01a1ff52", "--remote", "unix:///d/kindric-accounts/cx/app-server-control/app-server-control.sock"]);
+        } else {
+            assert_eq!(command.args, ["run", "cx", "resume", "01a1ff52"]);
+        }
+        assert!(command.env.contains(&("TERM".into(), "xterm-256color".into())));
+        let message = codex_message_command("cx", "01a1ff52", "go on", dir);
+        let args: Vec<_> = message.get_args().map(|arg| arg.to_string_lossy().into_owned()).collect();
+        assert_eq!(&args[..8], ["run", "cx", "queue", "--thread", "01a1ff52", "--message", "go on", "--resume"]);
     }
 
     #[test]

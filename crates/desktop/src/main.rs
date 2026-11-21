@@ -28,7 +28,7 @@ use kindric_core::launcher::{self, Request, resolve_directory};
 use kindric_core::mailbox::Mailbox;
 use kindric_core::accounts::SessionInfo;
 use kindric_core::artifacts::{self, Kind};
-use kindric_core::{accounts, activity, atlas, away, changes, checks, claude_theme, images, mailbox, origins, overview, refresher, steps, worktrees};
+use kindric_core::{accounts, activity, attach, atlas, away, changes, checks, claude_theme, images, mailbox, origins, overview, refresher, steps, worktrees};
 use serde::Serialize;
 use serde::de::DeserializeOwned;
 use tauri::ipc::{Channel, InvokeResponseBody, Response};
@@ -797,6 +797,8 @@ fn open_session(
     let _span = shared.trace.span("open_session");
     shared.trace.record(&format!("attach {short_id} in pane {pane} at {columns}x{rows}"), Duration::ZERO);
     let implicit = implicit_default(&account)?;
+    // Before the lock: starting the daemon of a Codex account takes a moment.
+    let command = attach::session_attach_command(&account, &short_id, implicit)?;
     let mut workspace = shared.workspace();
     let key = SessionKey { account: account.clone(), short_id: short_id.clone() };
     let left = match workspace.tabs.show(pane, key.clone()) {
@@ -825,7 +827,7 @@ fn open_session(
     let traced = app.clone();
     let mut first_output = Some((Instant::now(), format!("attach {short_id} first output")));
     let opened = Pane::open(
-        &attach_command(&account, &short_id, implicit),
+        &command,
         columns,
         rows,
         move |bytes| {
@@ -1359,6 +1361,9 @@ async fn type_answer(
 /// Types `words` into a session no pane shows, then Enter, holding its claim meanwhile as a pane
 /// does. Blocks for a few seconds.
 fn type_as_user(claims: &Path, account: &str, short_id: &str, implicit: bool, words: &str) -> Result<(), String> {
+    if attach::is_codex_account(account, implicit) {
+        return attach::send_codex_message(account, short_id, words);
+    }
     let key = SessionKey { account: account.to_string(), short_id: short_id.to_string() };
     let _claim = claim::claim(claims, &key)?;
     typing::type_into(&attach_command(account, short_id, implicit), words, &typing::TIMINGS).map_err(|error| format!("cannot type into {short_id}: {error}"))

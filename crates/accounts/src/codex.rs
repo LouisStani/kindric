@@ -392,6 +392,36 @@ pub fn sessions(dir: &Path, include_stopped: bool) -> io::Result<Vec<Thread>> {
     Ok(threads)
 }
 
+/// The folder the session `id` of the account in `dir` works in, read from its daemon; `None`
+/// when the daemon does not run or does not know the session.
+pub fn session_cwd(dir: &Path, id: &str) -> io::Result<Option<PathBuf>> {
+    let Some(mut daemon) = AppServer::connect_daemon(dir)? else {
+        return Ok(None);
+    };
+    let thread = daemon.read_thread(id)?;
+    Ok(thread.map(|thread| PathBuf::from(thread.cwd)).filter(|cwd| !cwd.as_os_str().is_empty()))
+}
+
+/// Where `codex --remote` reaches the daemon of the account in `dir`.
+pub fn remote_address(dir: &Path) -> String {
+    format!("unix://{}", socket_path(dir).display())
+}
+
+/// Starts the daemon of the account in `dir` unless it runs: `codex app-server daemon start`
+/// returns once it listens. A session at rest is then loaded by the first client that joins it.
+pub fn ensure_daemon(codex: &Path, dir: &Path) -> io::Result<()> {
+    if AppServer::connect_daemon(dir)?.is_some() {
+        return Ok(());
+    }
+    let output = command(codex, dir).args(["app-server", "daemon", "start"]).stdin(Stdio::null()).output()?;
+    if output.status.success() {
+        return Ok(());
+    }
+    let said = String::from_utf8_lossy(&output.stderr);
+    let last = said.lines().rev().find(|line| !line.trim().is_empty()).unwrap_or("no message");
+    Err(io::Error::other(format!("codex app-server daemon start: {}", last.trim())))
+}
+
 /// The sessions running on the account: those loaded in its daemon, 0 when it does not run or
 /// cannot be asked. Windows: not counted yet.
 pub fn running_sessions(dir: &Path) -> usize {
