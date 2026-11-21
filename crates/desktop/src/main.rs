@@ -603,14 +603,20 @@ async fn hide_session(app: AppHandle, shared: State<'_, Shared>, account: String
     let session_id = session_id_of(&shared, &account, &short_id)?;
     let implicit = implicit_default(&account)?;
     let (stop_account, stop_id) = (account.clone(), short_id.clone());
-    let stopped =
-        tauri::async_runtime::spawn_blocking(move || stop_command(&stop_account, &stop_id, implicit).output())
+    if attach::is_codex_account(&account, implicit) {
+        tauri::async_runtime::spawn_blocking(move || attach::stop_codex_session(&stop_account, &stop_id))
             .await
-            .map_err(|error| error.to_string())?
-            .map_err(|error| format!("cannot stop {short_id}: {error}"))?;
-    if !stopped.status.success() {
-        let reason = String::from_utf8_lossy(&stopped.stderr).trim().to_string();
-        return Err(format!("cannot stop {short_id}: {reason}"));
+            .map_err(|error| error.to_string())??;
+    } else {
+        let stopped =
+            tauri::async_runtime::spawn_blocking(move || stop_command(&stop_account, &stop_id, implicit).output())
+                .await
+                .map_err(|error| error.to_string())?
+                .map_err(|error| format!("cannot stop {short_id}: {error}"))?;
+        if !stopped.status.success() {
+            let reason = String::from_utf8_lossy(&stopped.stderr).trim().to_string();
+            return Err(format!("cannot stop {short_id}: {reason}"));
+        }
     }
     update_prefs(&app, &shared, |prefs| prefs::set_hidden(prefs, &session_id, true))?;
     let mut workspace = shared.workspace();
@@ -653,6 +659,9 @@ async fn purge_sessions(app: AppHandle, shared: State<'_, Shared>, days: u32) ->
     let report = tauri::async_runtime::spawn_blocking(move || {
         purge::purge(targets, |target| {
             let implicit = implicit_default(&target.account)?;
+            if attach::is_codex_account(&target.account, implicit) {
+                return attach::archive_codex_session(&target.account, &target.short_id);
+            }
             let output = remove_command(&target.account, &target.short_id, implicit)
                 .output()
                 .map_err(|error| format!("cannot run claude rm: {error}"))?;

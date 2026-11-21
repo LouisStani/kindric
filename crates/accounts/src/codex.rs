@@ -409,6 +409,40 @@ pub fn start_session(dir: &Path, cwd: &Path, name: &str) -> io::Result<String> {
     Ok(id.to_string())
 }
 
+/// The turn of a session that is running, from one page of `thread/turns/list`.
+fn turn_in_progress(result: &Value) -> Option<String> {
+    let turns = result.get("data")?.as_array()?;
+    let running = turns.iter().find(|turn| turn.get("status").and_then(Value::as_str) == Some("inProgress"))?;
+    running.get("id").and_then(Value::as_str).map(String::from)
+}
+
+/// Stops the turn the session `id` runs, if any: Codex keeps the conversation and waits for the
+/// next message. Nothing to do when the daemon of the account in `dir` does not run.
+pub fn interrupt(dir: &Path, id: &str) -> io::Result<()> {
+    let Some(mut daemon) = AppServer::connect_daemon(dir)? else {
+        return Ok(());
+    };
+    let turns = daemon.request("thread/turns/list", json!({ "threadId": id, "limit": 5 }))?;
+    if let Some(turn) = turn_in_progress(&turns) {
+        daemon.request("turn/interrupt", json!({ "threadId": id, "turnId": turn }))?;
+    }
+    Ok(())
+}
+
+/// Archives the session `id` of the account in `dir`: it leaves the lists of Codex and of
+/// kindric, its conversation stays on disk, and `codex unarchive` brings it back. Through the
+/// daemon when it runs, else through a Codex app server started for it.
+pub fn archive(dir: &Path, id: &str) -> io::Result<()> {
+    let mut server = match AppServer::connect_daemon(dir)? {
+        Some(daemon) => daemon,
+        None => {
+            let codex = require_codex().map_err(|error| io::Error::new(io::ErrorKind::NotFound, error.0))?;
+            AppServer::start(&codex, dir)?
+        },
+    };
+    server.request("thread/archive", json!({ "threadId": id })).map(|_| ())
+}
+
 /// The folder the session `id` of the account in `dir` works in, read from its daemon; `None`
 /// when the daemon does not run or does not know the session.
 pub fn session_cwd(dir: &Path, id: &str) -> io::Result<Option<PathBuf>> {
@@ -509,6 +543,18 @@ mod tests {
             Thread { id: "01a155e3".into(), name: Some("Conseiller une stack".into()), cwd: "/home/u/Socials".into(), status: ThreadStatus::NotLoaded },
             Thread { id: "01a1505a".into(), name: None, cwd: "/home/u/Thr".into(), status: ThreadStatus::Idle },
         ]);
+    }
+
+    #[test]
+    fn only_a_turn_in_progress_is_interrupted() {
+        let page = json!({"data": [
+            {"id": "t2", "status": "inProgress"},
+            {"id": "t1", "status": "completed"}
+        ]});
+        assert_eq!(turn_in_progress(&page).as_deref(), Some("t2"));
+        let over = json!({"data": [{"id": "t1", "status": "completed"}, {"id": "t0", "status": "interrupted"}]});
+        assert_eq!(turn_in_progress(&over), None);
+        assert_eq!(turn_in_progress(&json!({})), None);
     }
 
     #[cfg(unix)]

@@ -108,6 +108,20 @@ pub fn send_codex_message(account: &str, thread_id: &str, text: &str) -> Result<
     Err(format!("cannot send the message to {thread_id}: {}", said.trim()))
 }
 
+/// Stops the turn the Codex session `thread_id` of `account` runs, if any: Codex has no session
+/// process to stop, its daemon keeps the session at rest.
+pub fn stop_codex_session(account: &str, thread_id: &str) -> Result<(), String> {
+    let paths = Paths::from_env().map_err(|error| error.to_string())?;
+    codex::interrupt(&paths.account_dir(account), thread_id).map_err(|error| format!("cannot stop {thread_id}: {error}"))
+}
+
+/// Archives the Codex session `thread_id` of `account`: gone from kindric, back with
+/// `codex unarchive`.
+pub fn archive_codex_session(account: &str, thread_id: &str) -> Result<(), String> {
+    let paths = Paths::from_env().map_err(|error| error.to_string())?;
+    codex::archive(&paths.account_dir(account), thread_id).map_err(|error| format!("cannot archive {thread_id}: {error}"))
+}
+
 /// Claude Code itself, not in the background, in `directory`: `claude --bg` refuses a folder the
 /// account has not trusted, and only this asks. Claude Code keeps the answer in its own files.
 /// `kindric-accounts run <account>`, or `claude` without `CLAUDE_CONFIG_DIR` on the implicit
