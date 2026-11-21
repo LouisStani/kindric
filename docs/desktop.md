@@ -200,7 +200,7 @@ Unlike the terminal interface, the number of a session changes with its state: `
 
 `Ctrl+,` opens the settings with the cursor in a search field: type to find a setting in every category, or pick a category on the left (Up and Down from the search). Escape empties the search, then closes.
 
-The accounts section lists the accounts of kindric-accounts: logged in or not, plan or where the model comes from, running sessions, isolated. **add** creates an account. Its **model from** says where: a Claude login (Claude Code's login then opens in a window of the app), an Anthropic API key, OpenRouter, Ollama on this computer (its model is picked among those installed) or another gateway (its address). Each asks for what it needs: a model, a key. **set key** and **change key** give such an account its key, which kindric-accounts keeps (see [How it works](how-it-works.md)). **log in** opens the login of a Claude account that is logged out, or of a Codex account. **remove** takes an account off the list after you confirm; its folder stays on disk. A Codex account is added with `kindric-accounts add <name> --agent codex` for now.
+The accounts section lists the accounts of kindric-accounts: logged in or not, plan or where the model comes from, running sessions, isolated. **add** creates an account. Its **model from** says where: a Claude login (Claude Code's login then opens in a window of the app), an Anthropic API key, OpenRouter, Ollama on this computer (its model is picked among those installed) or another gateway (its address), or **codex**: the account runs OpenAI's Codex instead of Claude Code, and Codex's login opens in a window of the app. Each asks for what it needs: a model, a key. **set key** and **change key** give such an account its key, which kindric-accounts keeps (see [How it works](how-it-works.md)). **log in** opens the login of a Claude account that is logged out, or of a Codex account. **remove** takes an account off the list after you confirm; its folder stays on disk.
 
 The memory section sets the size above which a session is warned about the memory it opens at startup: 30 KB by default. It is a warning, nothing is cut. The value is kept in `~/.config/kindric-accounts/memory-warning`. **open the memory atlas** draws the memory of kindric (`~/.kindric/memory`) in 3D: each project is a system around its status, each file a planet. A pale sun is a status older than the project's last decision, a red planet a lesson given again, a grey rock a file its `INDEX.md` does not name. Drag to turn, pinch or use the wheel to go in and out, type to search. A click goes one level down, from the whole memory to a project, a system, then a planet to read; `Esc` comes back up.
 
@@ -254,7 +254,7 @@ All in kindric's data folder, next to the mailbox: `~/.local/share/kindric/` on 
 
 ## Codex accounts
 
-A Codex account (`kindric-accounts add <name> --agent codex`, then `kindric-accounts run <name> login`) shows its sessions next to those of Claude Code:
+A Codex account (added in the settings with **model from** set to codex, or with `kindric-accounts add <name> --agent codex` then `kindric-accounts run <name> login`) shows its sessions next to those of Claude Code:
 
 - In the bar, the control center and `Ctrl+P`, with their state. A session waiting for an approval carries the `?`; answer it in its pane.
 - In a pane: the Codex TUI joins the session, in its folder. Closing the pane leaves the session, and a turn it runs, going.
