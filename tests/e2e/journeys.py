@@ -2272,6 +2272,12 @@ class CodexSessionsInKindric(Journey):
         self.assertEqual(started["cwd"], PROJECT)
         wait_until("the new session in the bar", lambda: chip_state(driver, "codex-new"))
         wait_until("the new session open in a pane", lambda: f"{started['id']} {PROJECT}" in codex_resumed() or None)
+        # Before starting it, kindric gave the account its hooks, the ones that work in Codex.
+        with open(os.path.join(CODEX_ACCOUNT_DIR, "hooks.json"), encoding="utf-8") as file:
+            hooks = json.load(file)["hooks"]
+        commands = sorted({hook["command"].split()[-1] for groups in hooks.values() for group in groups for hook in group["hooks"]})
+        self.assertEqual(commands, ["away-hook", "overview-start", "permission-hook", "unread"])
+        self.assertTrue(os.path.exists(os.path.join(CODEX_ACCOUNT_DIR, ".kindric-hooks-trusted")), "Codex was not asked to trust them")
 
         open_from_bar(driver, "codex-busy")
         driver.press(CONTROL, SHIFT, "k")
