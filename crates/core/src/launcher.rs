@@ -8,7 +8,7 @@ use std::process::{Command, Stdio};
 use kindric_accounts::injection;
 use kindric_accounts::memory::Memory;
 use kindric_accounts::paths::expand_home;
-use kindric_accounts::{Paths, codex, isolation, launch, mcp, registry};
+use kindric_accounts::{Paths, codex, isolation, launch, mcp, registry, usage};
 
 use crate::accounts;
 
@@ -113,9 +113,11 @@ fn launch_codex(paths: &Paths, request: &Request) -> Result<Launched, String> {
     let dir = paths.account_dir(&request.account);
     let codex = codex::require_codex().map_err(library_error)?;
     let failed = |error: std::io::Error| format!("{}: {error}", request.account);
+    // Before the daemon starts, so that it reads kindric's hooks.
+    let warnings = codex::prepare_hooks(&codex, &dir, &codex::kindric_hooks(usage::kindric_hooks()));
     codex::ensure_daemon(&codex, &dir).map_err(failed)?;
     let short_id = codex::start_session(&dir, &request.directory, &request.name).map_err(failed)?;
-    Ok(Launched { short_id, warnings: Vec::new() })
+    Ok(Launched { short_id, warnings })
 }
 
 /// Whether `error`, from `launch`, is Claude Code refusing a folder the account has not trusted

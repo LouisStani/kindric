@@ -213,15 +213,17 @@ pub fn prepare(
 }
 
 /// Prepares `codex` for the Codex account `name`: links what it shares with `~/.codex` again,
-/// removes the keys of the shell, sets `CODEX_HOME` to the account's directory. `user_args` go
+/// gives it kindric's hooks (see `codex::prepare_hooks`), removes the keys of the shell, sets
+/// `CODEX_HOME` to the account's directory. `user_args` go
 /// to `codex` as they are (`login`, `resume`…).
 pub fn prepare_codex(paths: &Paths, name: &str, user_args: &[OsString]) -> Result<Launch> {
     let dir = require_account(paths, name)?;
     let codex = codex::require_codex()?;
-    let warnings = match paths.codex_root() {
+    let mut warnings = match paths.codex_root() {
         Some(codex_root) => shared::link_entries(&codex_root, &dir, &shared::CODEX_SHARED_ENTRIES)?,
         None => Vec::new(),
     };
+    warnings.extend(codex::prepare_hooks(&codex, &dir, &codex::kindric_hooks(usage::kindric_hooks())));
     let mut command = codex::command(&codex, &dir);
     command.args(user_args);
     Ok(Launch { command, warnings })

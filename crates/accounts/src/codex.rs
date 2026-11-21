@@ -5,6 +5,7 @@
 //! protocol is the one `codex app-server generate-json-schema` describes (read on 0.171.0).
 
 use std::ffi::OsString;
+use std::fs;
 use std::io::{self, BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStdin, Command, Stdio};
@@ -15,7 +16,10 @@ use std::time::{Duration, Instant};
 use serde_json::{Value, json};
 
 use crate::error::{Result, fail};
+use crate::files;
 use crate::launch;
+use crate::shared;
+use crate::usage;
 
 /// Removed before starting Codex: a key exported in the shell must never override the login of
 /// the account the user picked, nor bill another one.
@@ -483,6 +487,139 @@ pub fn running_sessions(dir: &Path) -> usize {
         .map_or(0, |ids| ids.len())
 }
 
+/// kindric's hooks a Codex session gets, among `all`: the questions put on kindric's page, the user
+/// away, how to ask the user, the unread messages. Not the wait for a message, which relies on a
+/// feature of Claude Code (`asyncRewake`), nor those that read Claude Code's transcript or tools.
+pub fn kindric_hooks(all: usage::KindricHooks) -> usage::KindricHooks {
+    usage::KindricHooks { unread: all.unread, away: all.away, permission: all.permission, start: all.start, ..usage::KindricHooks::default() }
+}
+
+/// Codex's hooks file of the account in `dir`, in Claude Code's form.
+pub fn hooks_file(dir: &Path) -> PathBuf {
+    dir.join("hooks.json")
+}
+
+/// The fingerprint of the hooks file kindric-accounts wrote last, so that it never replaces one
+/// written by someone else.
+fn hooks_mark(dir: &Path) -> PathBuf {
+    dir.join(".kindric-hooks")
+}
+
+/// The fingerprint of the hooks file Codex was last asked to trust: trusting is asked again only
+/// when the file changed, or when it failed.
+fn trusted_mark(dir: &Path) -> PathBuf {
+    dir.join(".kindric-hooks-trusted")
+}
+
+/// Writes kindric's `hooks` in the hooks file of the Codex account in `dir`, unless the file is not
+/// the one kindric-accounts wrote. Returns a warning when it was left alone.
+pub fn write_hooks(dir: &Path, hooks: &usage::KindricHooks) -> io::Result<Option<String>> {
+    let file = hooks_file(dir);
+    let (text, _) = usage::with_additions(None, None, hooks);
+    let content = format!("{text}\n");
+    let existing = match fs::read_to_string(&file) {
+        Ok(existing) => Some(existing),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => None,
+        Err(error) => return Err(io::Error::new(error.kind(), format!("{}: {error}", file.display()))),
+    };
+    if let Some(existing) = &existing {
+        let mark = fs::read_to_string(hooks_mark(dir)).unwrap_or_default();
+        if mark.trim() != shared::fingerprint(existing.as_bytes()) {
+            return Ok(Some(format!("{} was not written by kindric-accounts: kindric's hooks are not added to it", file.display())));
+        }
+        if *existing == content {
+            return Ok(None);
+        }
+    }
+    files::write_atomic(&file, &content)?;
+    files::write_atomic(&hooks_mark(dir), &shared::fingerprint(content.as_bytes()))?;
+    Ok(None)
+}
+
+/// The hooks of `hooks_file` that Codex does not trust yet, as `hooks/list` lists them: the key
+/// of each and the hash Codex expects for it.
+fn untrusted_hooks(listed: &Value, hooks_file: &Path) -> Vec<(String, String)> {
+    // Codex names the file by its real path: compared as written, then resolved, never two files
+    // that cannot be resolved taken for the same one.
+    let resolved = fs::canonicalize(hooks_file).ok();
+    let same_file = |path: &str| {
+        Path::new(path) == hooks_file || resolved.as_ref().is_some_and(|resolved| fs::canonicalize(path).ok().as_ref() == Some(resolved))
+    };
+    listed
+        .get("data")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(|entry| entry.get("hooks")?.as_array())
+        .flatten()
+        .filter(|hook| hook.get("sourcePath").and_then(Value::as_str).is_some_and(same_file))
+        .filter(|hook| hook.get("trustStatus").and_then(Value::as_str) != Some("trusted"))
+        .filter_map(|hook| Some((hook.get("key")?.as_str()?.to_string(), hook.get("currentHash")?.as_str()?.to_string())))
+        .collect()
+}
+
+/// The edits of `config/batchWrite` that turn hooks on and trust `hooks`. The keys hold dots and
+/// colons: they go as keys of one object, merged into `hooks.state`, never inside a key path.
+fn trust_edits(hooks: &[(String, String)]) -> Value {
+    let state: serde_json::Map<String, Value> =
+        hooks.iter().map(|(key, hash)| (key.clone(), json!({ "trusted_hash": hash }))).collect();
+    json!([
+        { "keyPath": "features.hooks", "value": true, "mergeStrategy": "replace" },
+        { "keyPath": "hooks.state", "value": state, "mergeStrategy": "upsert" },
+    ])
+}
+
+/// Has Codex trust the hooks kindric wrote for the account in `dir`, and turn hooks on: Codex
+/// writes its own `config.toml`, kindric never does.
+pub fn trust_hooks(server: &mut AppServer, dir: &Path) -> io::Result<()> {
+    let listed = server.request("hooks/list", json!({ "cwds": [dir] }))?;
+    let untrusted = untrusted_hooks(&listed, &hooks_file(dir));
+    if untrusted.is_empty() {
+        return Ok(());
+    }
+    server.request("config/batchWrite", json!({ "edits": trust_edits(&untrusted), "reloadUserConfig": true })).map(|_| ())
+}
+
+/// Gives the Codex account in `dir` kindric's `hooks`, trusted: through its daemon when it runs,
+/// else through a Codex app server started for it. Returns what went wrong, as warnings: a session
+/// without kindric's hooks still works.
+pub fn prepare_hooks(codex: &Path, dir: &Path, hooks: &usage::KindricHooks) -> Vec<String> {
+    let mut warnings = Vec::new();
+    // No `kindric` in PATH: nothing to give, and a file written before stays as it was.
+    if hooks.is_empty() {
+        return warnings;
+    }
+    match write_hooks(dir, hooks) {
+        Ok(Some(warning)) => {
+            warnings.push(warning);
+            return warnings;
+        },
+        Ok(None) => {},
+        Err(error) => {
+            warnings.push(format!("kindric's hooks not written: {error}"));
+            return warnings;
+        },
+    }
+    let written = fs::read_to_string(hooks_mark(dir)).unwrap_or_default();
+    if fs::read_to_string(trusted_mark(dir)).is_ok_and(|trusted| trusted == written) {
+        return warnings;
+    }
+    let server = match AppServer::connect_daemon(dir) {
+        Ok(Some(daemon)) => Ok(daemon),
+        Ok(None) => AppServer::start(codex, dir),
+        Err(error) => Err(error),
+    };
+    match server.and_then(|mut server| trust_hooks(&mut server, dir)) {
+        Ok(()) => {
+            if let Err(error) = files::write_atomic(&trusted_mark(dir), &written) {
+                warnings.push(format!("{}: {error}", trusted_mark(dir).display()));
+            }
+        },
+        Err(error) => warnings.push(format!("kindric's hooks not trusted by Codex: {error}")),
+    }
+    warnings
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -555,6 +692,71 @@ mod tests {
         let over = json!({"data": [{"id": "t1", "status": "completed"}, {"id": "t0", "status": "interrupted"}]});
         assert_eq!(turn_in_progress(&over), None);
         assert_eq!(turn_in_progress(&json!({})), None);
+    }
+
+    fn some_hooks() -> usage::KindricHooks {
+        usage::KindricHooks {
+            unread: Some("k unread".into()),
+            away: Some("k away-hook".into()),
+            wake: Some("k wait-message".into()),
+            permission: Some("k permission-hook".into()),
+            start: Some("k overview-start".into()),
+            artifacts: Some("k artifact-check".into()),
+            tasks: Some("k task-check".into()),
+            question: Some("k question-check".into()),
+        }
+    }
+
+    #[test]
+    fn a_codex_session_gets_the_hooks_that_work_in_codex() {
+        let hooks = kindric_hooks(some_hooks());
+        let expected = usage::KindricHooks {
+            unread: Some("k unread".into()),
+            away: Some("k away-hook".into()),
+            permission: Some("k permission-hook".into()),
+            start: Some("k overview-start".into()),
+            ..usage::KindricHooks::default()
+        };
+        assert_eq!(hooks, expected, "no wait for messages, no check of Claude Code's transcript");
+    }
+
+    #[test]
+    fn the_hooks_file_is_written_only_when_it_is_kindrics() {
+        let dir = crate::files::test_dir::fresh("codex-hooks");
+        let hooks = kindric_hooks(some_hooks());
+        assert_eq!(write_hooks(&dir, &hooks).unwrap(), None);
+        let written: Value = serde_json::from_str(&fs::read_to_string(hooks_file(&dir)).unwrap()).unwrap();
+        assert_eq!(written["hooks"]["SessionStart"][0]["hooks"][0]["command"], "k overview-start");
+        assert_eq!(written["hooks"]["PreToolUse"][0]["matcher"], "Bash");
+        assert_eq!(written["hooks"]["Stop"].as_array().map(Vec::len), Some(1), "only the away hook on Stop");
+        // Written again by kindric: replaced.
+        let fewer = usage::KindricHooks { start: None, ..hooks.clone() };
+        assert_eq!(write_hooks(&dir, &fewer).unwrap(), None);
+        assert!(!fs::read_to_string(hooks_file(&dir)).unwrap().contains("overview-start"));
+        // Changed by someone else: left alone, with a warning.
+        fs::write(hooks_file(&dir), r#"{"hooks": {}}"#).unwrap();
+        let warning = write_hooks(&dir, &hooks).unwrap().unwrap();
+        assert!(warning.contains("not written by kindric-accounts"), "{warning}");
+        assert_eq!(fs::read_to_string(hooks_file(&dir)).unwrap(), r#"{"hooks": {}}"#);
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn only_kindrics_untrusted_hooks_are_trusted_through_one_merge() {
+        let file = Path::new("/d/cx/hooks.json");
+        // As hooks/list answered on the test bench (codex 0.171.0), the rest left out.
+        let listed = json!({"data": [{"cwd": "/d/cx", "hooks": [
+            {"key": "/d/cx/hooks.json:stop:0:0", "sourcePath": "/d/cx/hooks.json", "trustStatus": "untrusted", "currentHash": "sha256:aa"},
+            {"key": "/d/cx/hooks.json:session_start:0:0", "sourcePath": "/d/cx/hooks.json", "trustStatus": "trusted", "currentHash": "sha256:bb"},
+            {"key": "postman@postman:hooks/codex-hooks.json:session_start:0:0", "sourcePath": "/p/codex-hooks.json", "trustStatus": "untrusted", "currentHash": "sha256:cc"}
+        ]}]});
+        let untrusted = untrusted_hooks(&listed, file);
+        assert_eq!(untrusted, [("/d/cx/hooks.json:stop:0:0".to_string(), "sha256:aa".to_string())]);
+        let edits = trust_edits(&untrusted);
+        assert_eq!(edits[0], json!({"keyPath": "features.hooks", "value": true, "mergeStrategy": "replace"}));
+        assert_eq!(edits[1]["keyPath"], "hooks.state");
+        assert_eq!(edits[1]["mergeStrategy"], "upsert");
+        assert_eq!(edits[1]["value"]["/d/cx/hooks.json:stop:0:0"]["trusted_hash"], "sha256:aa");
     }
 
     #[cfg(unix)]
