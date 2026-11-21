@@ -487,13 +487,15 @@ pub fn running_sessions(dir: &Path) -> usize {
         .map_or(0, |ids| ids.len())
 }
 
-/// kindric's hooks a Codex session gets, among `all`: the questions put on kindric's page, the user
-/// away, how to ask the user. Not the unread messages, whose notice sends the session to the
-/// `read_messages` tool of kindric's MCP server, which Codex sessions do not have yet; not the wait
-/// for a message, which relies on a feature of Claude Code (`asyncRewake`); not those that read
-/// Claude Code's transcript or tools.
+/// kindric's hooks a Codex session gets, among `all`: the user away, how to ask the user. Not:
+/// - the questions put on kindric's page: Codex waits for this hook before it shows the question
+///   in its TUI, which would stay blank until the page answers;
+/// - the unread messages, whose notice sends the session to the `read_messages` tool of kindric's
+///   MCP server, which Codex sessions do not have yet;
+/// - the wait for a message, which relies on a feature of Claude Code (`asyncRewake`);
+/// - those that read Claude Code's transcript or tools.
 pub fn kindric_hooks(all: usage::KindricHooks) -> usage::KindricHooks {
-    usage::KindricHooks { away: all.away, permission: all.permission, start: all.start, ..usage::KindricHooks::default() }
+    usage::KindricHooks { away: all.away, start: all.start, ..usage::KindricHooks::default() }
 }
 
 /// Codex's hooks file of the account in `dir`, in Claude Code's form.
@@ -714,11 +716,10 @@ mod tests {
         let hooks = kindric_hooks(some_hooks());
         let expected = usage::KindricHooks {
             away: Some("k away-hook".into()),
-            permission: Some("k permission-hook".into()),
             start: Some("k overview-start".into()),
             ..usage::KindricHooks::default()
         };
-        assert_eq!(hooks, expected, "no messages yet, no check of Claude Code's transcript");
+        assert_eq!(hooks, expected, "no page question, no messages yet, no check of Claude Code's transcript");
     }
 
     #[test]
