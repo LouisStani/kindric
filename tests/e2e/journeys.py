@@ -2181,6 +2181,118 @@ class CodexAccountAddedFromSettings(Journey):
         self.assertEqual(row, ["codex", ["remove"]])
 
 
+CODEX_ACCOUNT_DIR = os.path.join(HOME, ".local/share/kindric-accounts/cx")
+
+
+def codex_threads() -> list[dict[str, Any]]:
+    """What the fake codex knows of the sessions of the Codex account cx (tests/e2e/bin/codex)."""
+    try:
+        with open(os.path.join(CODEX_ACCOUNT_DIR, "fake-threads.json"), encoding="utf-8") as source:
+            threads: list[dict[str, Any]] = json.load(source)
+            return threads
+    except (OSError, ValueError):
+        return []
+
+
+def codex_thread(name: str) -> dict[str, Any] | None:
+    return next((thread for thread in codex_threads() if thread.get("name") == name), None)
+
+
+def codex_resumed() -> list[str]:
+    """The lines "<id> <folder>" of each `codex resume` the fake ran."""
+    try:
+        with open(os.path.join(CODEX_ACCOUNT_DIR, "fake-resumed.log"), encoding="utf-8") as log:
+            return log.read().splitlines()
+    except OSError:
+        return []
+
+
+class CodexSessionsInKindric(Journey):
+    """A Codex account's sessions, read from its daemon: in the bar with their states (a permission
+    waiting is a question); one opens in a pane, Codex's TUI started in its folder; Ctrl+N on the
+    Codex account starts a named session in the daemon; Ctrl+Shift+K stops the turn of a working
+    one and hides it; the purge archives the one idle for 10 days."""
+
+    THREADS = [
+        {"id": "11111111-1111-4111-8111-111111111111", "name": "codex-idle", "status": "idle", "turns": [{"id": "a1", "status": "completed"}]},
+        {"id": "22222222-2222-4222-8222-222222222222", "name": "codex-asks", "status": "approval", "turns": [{"id": "b1", "status": "inProgress"}]},
+        {"id": "33333333-3333-4333-8333-333333333333", "name": "codex-busy", "status": "working",
+         "turns": [{"id": "c1", "status": "completed"}, {"id": "c2", "status": "inProgress"}]},
+        {"id": "44444444-4444-4444-8444-444444444444", "name": "codex-old", "status": "notLoaded", "turns": []},
+    ]
+
+    @classmethod
+    def prepare(cls) -> None:
+        accounts("add", "cx", "--agent", "codex")
+        with open(os.path.join(CODEX_ACCOUNT_DIR, "fake-logged-in"), "w", encoding="utf-8") as file:
+            file.write("chatgpt\n")
+        threads = [dict(thread, cwd=PROJECT, archived=False) for thread in cls.THREADS]
+        with open(os.path.join(CODEX_ACCOUNT_DIR, "fake-threads.json"), "w", encoding="utf-8") as file:
+            json.dump(threads, file)
+        # The old one was last active 10 days ago: its rollout says so.
+        day = os.path.join(CODEX_ACCOUNT_DIR, "sessions/2026/11/01")
+        os.makedirs(day, exist_ok=True)
+        old = os.path.join(day, f"rollout-2026-11-01T10-00-00-{cls.THREADS[3]['id']}.jsonl")
+        with open(old, "w", encoding="utf-8") as file:
+            file.write("{}\n")
+        then = time.time() - 10 * 86400
+        os.utime(old, (then, then))
+        accounts("run", "cx", "app-server", "daemon", "start")
+
+    @classmethod
+    def tearDownClass(cls) -> None:
+        try:
+            super().tearDownClass()
+        finally:
+            subprocess.run(["kindric-accounts", "run", "cx", "app-server", "daemon", "stop"], cwd=PROJECT, capture_output=True, timeout=30)
+
+    def test_list_open_start_hide_purge(self) -> None:
+        driver = self.driver
+        wait_until("the Codex sessions in the bar", lambda: chip_state(driver, "codex-idle") and chip_state(driver, "codex-asks"))
+        self.assertEqual(chip_state(driver, "codex-asks"), "asking")
+        self.assertEqual(chip_state(driver, "codex-idle"), "waiting")
+        self.assertEqual(chip_state(driver, "codex-busy"), "working")
+
+        open_from_bar(driver, "codex-idle")
+        wait_until("Codex's TUI started in the session's folder",
+                   lambda: f"{self.THREADS[0]['id']} {PROJECT}" in codex_resumed() or None)
+
+        driver.press(CONTROL, "n")
+        wait_until("the new session form", lambda: dialog_open(driver, "new-session"))
+        found = driver.script("""return [...document.querySelectorAll('#new-account .launch-list li')].find(
+          (item) => item.textContent.trim().startsWith('cx'));""")
+        self.assertTrue(isinstance(found, dict) and ELEMENT_KEY in found, "no cx in the new session form")
+        driver.click(str(found[ELEMENT_KEY]))
+        directory = driver.find("#new-form input[name=directory]")
+        driver.clear(directory)
+        driver.type_into(directory, PROJECT)
+        driver.type_into(driver.find("#new-form input[name=name]"), "codex-new" + ENTER)
+        started = wait_until("the session started in the daemon", lambda: codex_thread("codex-new"))
+        self.assertEqual(started["cwd"], PROJECT)
+        wait_until("the new session in the bar", lambda: chip_state(driver, "codex-new"))
+        wait_until("the new session open in a pane", lambda: f"{started['id']} {PROJECT}" in codex_resumed() or None)
+
+        open_from_bar(driver, "codex-busy")
+        driver.press(CONTROL, SHIFT, "k")
+        wait_until("the question before hiding", lambda: dialog_open(driver, "confirm-hide"))
+        driver.click(driver.find("#hide-form button[type=submit]"))
+        wait_until("the working session hidden", lambda: chip_state(driver, "codex-busy") is None)
+        busy = codex_thread("codex-busy") or {}
+        self.assertEqual([turn["status"] for turn in busy.get("turns", [])], ["completed", "interrupted"])
+
+        driver.press(CONTROL, ",")
+        wait_until("the settings", lambda: dialog_open(driver, "settings"))
+        click_text(driver, "#settings .settings-categories li", "sessions")
+        driver.click(driver.find("#settings .purge button[data-days='7']"))
+        question = wait_until("the question", lambda: driver.text(driver.find("#settings .purge .purge-question")))
+        self.assertTrue(question.startswith("1 session of cx, idle for more than 7 days"), question)
+        driver.click(driver.find("#settings .purge .purge-go"))
+        result = wait_until("the result", lambda: (text := driver.text(driver.find("#settings .purge .purge-message"))) != "purging…" and text)
+        self.assertEqual(result, "1 session removed.")
+        self.assertTrue((codex_thread("codex-old") or {}).get("archived"), "the old session not archived")
+        self.assertFalse((codex_thread("codex-idle") or {}).get("archived"), "a session without a known age archived")
+
+
 class ControlCenterKeysAndPromptAll(Journey):
     """In the control center: a paused session's "resume" opens it in a pane, started again;
     "prompt all" asks to confirm, then types the same message into each session of the project;
