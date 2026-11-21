@@ -2211,7 +2211,8 @@ class CodexSessionsInKindric(Journey):
     """A Codex account's sessions, read from its daemon: in the bar with their states (a permission
     waiting is a question); one opens in a pane, Codex's TUI started in its folder; Ctrl+N on the
     Codex account starts a named session in the daemon; Ctrl+Shift+K stops the turn of a working
-    one and hides it; the purge archives the one idle for 10 days."""
+    one and hides it; a message typed in the control center goes to Codex for the session; the
+    purge archives the one idle for 10 days."""
 
     THREADS = [
         {"id": "11111111-1111-4111-8111-111111111111", "name": "codex-idle", "status": "idle", "turns": [{"id": "a1", "status": "completed"}]},
@@ -2279,6 +2280,20 @@ class CodexSessionsInKindric(Journey):
         wait_until("the working session hidden", lambda: chip_state(driver, "codex-busy") is None)
         busy = codex_thread("codex-busy") or {}
         self.assertEqual([turn["status"] for turn in busy.get("turns", [])], ["completed", "interrupted"])
+
+        driver.press(CONTROL, SHIFT, "0")
+        idle = self.THREADS[0]["id"]
+        wait_until("codex-idle in the control center", lambda: driver.find(f"[data-key='row/{idle}']"))
+        picked = "return document.querySelector('.control-row.selected')?.dataset.session ?? null"
+        for _ in range(8):
+            if driver.script(picked) == idle:
+                break
+            driver.press(ARROW_DOWN)
+        self.assertEqual(driver.script(picked), idle, "codex-idle never picked with the arrow keys")
+        driver.press(ENTER)
+        field = wait_until("its field", lambda: driver.find(f"[data-key='prompt/{idle}']"))
+        driver.type_into(field, "hello codex" + ENTER)
+        wait_until("the message given to Codex for the session", lambda: (codex_thread("codex-idle") or {}).get("messages") == ["hello codex"] or None)
 
         driver.press(CONTROL, ",")
         wait_until("the settings", lambda: dialog_open(driver, "settings"))
