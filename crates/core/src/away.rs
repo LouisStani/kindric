@@ -1,7 +1,11 @@
 //! The user is away: a session keeps working until a time instead of stopping to wait for an
 //! approval. `away/<session id>` in kindric's data holds that time (Unix seconds); the Stop hook
 //! `kindric away-hook` refuses the end of a turn before it. The session says it is done with
-//! `kindric away done <session id>`.
+//! `kindric away done <session id>`, or that nothing is left without the user with
+//! `kindric away blocked <session id> <what it needs>`: its need goes to the overview and
+//! `away/<session id>.waiting` names that request; until it is answered, the session may stop.
+//! A session relaunched by the hook that then runs no tool may stop too, its last words going to
+//! the overview the same way: a session left idle must not be relaunched in a loop.
 
 use std::fs;
 use std::io;
@@ -9,8 +13,28 @@ use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use kindric_accounts::files::{create_private_dir, write_atomic};
+use serde_json::Value;
 
+use crate::images::{last_turn_text, tail};
 use crate::mailbox::{data_dir, is_valid_session_id};
+use crate::overview::{self, Body, Request};
+use crate::turn_question::context_of;
+
+/// The extension of the file that names the request a session waits on.
+const WAITING: &str = "waiting";
+
+/// How the Stop hook's refusal starts: it marks the hook's relaunch in a transcript.
+const RELAUNCH: &str = "The user is away for ";
+
+/// The context of the request `kindric away blocked` puts in the overview.
+const BLOCKED_CONTEXT: &str = "It stopped while you were away: nothing is left that it can do without you.";
+
+/// The question put in the overview for a session relaunched by the hook that then did nothing.
+const IDLE_QUESTION: &str = "Stopped while you were away: it ran nothing after being told to keep working. What should it do?";
+
+/// What `kindric away blocked` tells the session.
+const BLOCKED_SENT: &str = "What you need is in kindric's overview for the user. You may end your turn now: \
+the hook no longer refuses it. Their answer will come as a message from them.";
 
 /// `away` in the data directory.
 pub fn default_root() -> io::Result<PathBuf> {
@@ -35,12 +59,161 @@ pub fn set(root: &Path, session: &str, until: i64) -> io::Result<()> {
     write_atomic(&file, &until.to_string())
 }
 
-/// The user is back, or the session is done: it may stop again. Nothing to clear is no error.
-pub fn clear(root: &Path, session: &str) -> io::Result<()> {
-    match fs::remove_file(file(root, session)?) {
+fn waiting_file(root: &Path, session: &str) -> io::Result<PathBuf> {
+    Ok(file(root, session)?.with_extension(WAITING))
+}
+
+fn remove(path: &Path) -> io::Result<()> {
+    match fs::remove_file(path) {
         Err(error) if error.kind() != io::ErrorKind::NotFound => Err(error),
         _ => Ok(()),
     }
+}
+
+/// The user is back, or the session is done: it may stop again. Nothing to clear is no error.
+pub fn clear(root: &Path, session: &str) -> io::Result<()> {
+    remove(&file(root, session)?)?;
+    remove(&waiting_file(root, session)?)
+}
+
+fn is_away(root: &Path, session: &str, now: i64) -> bool {
+    until(root, session).is_some_and(|until| until > now)
+}
+
+/// Puts `request` in the overview and marks its session as waiting on it.
+fn wait_on(root: &Path, overview_root: &Path, request: &Request) -> io::Result<()> {
+    overview::ask(overview_root, request)?;
+    create_private_dir(root)?;
+    write_atomic(&waiting_file(root, &request.session_id)?, &request.id)
+}
+
+/// Whether `session` waits on a request of the overview that is not answered yet. Once it is, the
+/// mark goes: the session works again on the answer and is kept working.
+fn waits_on_the_user(root: &Path, overview_root: &Path, session: &str) -> bool {
+    let Ok(path) = waiting_file(root, session) else {
+        return false;
+    };
+    let Ok(id) = fs::read_to_string(&path) else {
+        return false;
+    };
+    let id = id.trim();
+    if overview::pending(overview_root).iter().any(|request| request.session_id == session && request.id == id) {
+        return true;
+    }
+    let _ = remove(&path);
+    false
+}
+
+fn ask_request(session: &str, cwd: &str, now_millis: u128, question: &str, context: &str) -> Request {
+    Request {
+        id: overview::new_id(now_millis, std::process::id()),
+        session_id: session.to_string(),
+        cwd: cwd.to_string(),
+        asked_at: i64::try_from(now_millis / 1000).unwrap_or(i64::MAX),
+        body: Body::Ask { question: question.to_string(), context: context.to_string(), from_reply: false },
+    }
+}
+
+/// `kindric away blocked`, run by `session` once nothing is left that it can do without the user:
+/// `need` goes to the overview and the session may stop until it is answered. Refused while the
+/// user is not away: `kindric ask` is for that.
+pub fn block(root: &Path, overview_root: &Path, session: &str, cwd: &Path, need: &str, now_millis: u128) -> Result<Request, String> {
+    if !is_valid_session_id(session) {
+        return Err(format!("invalid session id: {session:?}"));
+    }
+    let need = need.trim();
+    if need.is_empty() {
+        return Err("usage: kindric away blocked <session id> \"<what you need from the user>\"".to_string());
+    }
+    let now = i64::try_from(now_millis / 1000).unwrap_or(i64::MAX);
+    if !is_away(root, session, now) {
+        return Err("the user is not away from this session: ask them with `kindric ask \"<question>\" \"<context>\"`".to_string());
+    }
+    let request = ask_request(session, &cwd.display().to_string(), now_millis, need, BLOCKED_CONTEXT);
+    wait_on(root, overview_root, &request).map_err(|error| format!("cannot put it in the overview ({}): {error}", overview_root.display()))?;
+    Ok(request)
+}
+
+/// `kindric away blocked <session id> <need>`, from the folder the session runs in.
+pub fn run_blocked(session: &str, need: &str) -> Result<(), String> {
+    let root = default_root().map_err(|error| format!("cannot find kindric's data: {error}"))?;
+    let overview_root = overview::default_root().map_err(|error| format!("cannot find kindric's data: {error}"))?;
+    let cwd = std::env::current_dir().map_err(|error| format!("cannot read the current folder: {error}"))?;
+    let now = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default();
+    block(&root, &overview_root, session, &cwd, need, now.as_millis())?;
+    println!("{BLOCKED_SENT}");
+    Ok(())
+}
+
+/// The text of a message, whether its content is a string or a list of blocks with text.
+fn text_of(content: Option<&Value>) -> String {
+    match content {
+        Some(Value::String(text)) => text.clone(),
+        Some(Value::Array(blocks)) => blocks.iter().filter_map(|block| block.get("text").and_then(Value::as_str)).collect::<Vec<_>>().join("\n"),
+        _ => String::new(),
+    }
+}
+
+/// Whether a transcript entry is the hook's relaunch: in Claude Code's transcript, the hook's
+/// feedback as a user message Claude Code wrote itself (`isMeta`); in Codex's rollout, a user message holding a `<hook_prompt>`.
+fn is_relaunch(entry: &Value) -> bool {
+    let (text, mark) = if entry.get("type").and_then(Value::as_str) == Some("response_item") {
+        let payload = entry.get("payload");
+        let user = payload.and_then(|payload| payload.get("role")).and_then(Value::as_str) == Some("user");
+        (if user { text_of(payload.and_then(|payload| payload.get("content"))) } else { String::new() }, "<hook_prompt")
+    } else if entry.get("type").and_then(Value::as_str) == Some("user") && entry.get("isMeta").and_then(Value::as_bool) == Some(true) {
+        (text_of(entry.pointer("/message/content")), "Stop hook feedback:")
+    } else {
+        return false;
+    };
+    text.contains(mark) && text.contains(RELAUNCH)
+}
+
+/// Whether a transcript entry runs a tool: a `tool_use` block of Claude Code, a `…_call` item of
+/// Codex (`function_call`, `local_shell_call`…).
+fn runs_a_tool(entry: &Value) -> bool {
+    match entry.get("type").and_then(Value::as_str) {
+        Some("assistant") => matches!(entry.pointer("/message/content"), Some(Value::Array(blocks))
+            if blocks.iter().any(|block| block.get("type").and_then(Value::as_str).is_some_and(|kind| kind.ends_with("tool_use")))),
+        Some("response_item") => entry.pointer("/payload/type").and_then(Value::as_str).is_some_and(|kind| kind.ends_with("_call")),
+        _ => false,
+    }
+}
+
+/// Whether, in a transcript's end, the session ran no tool since the hook last relaunched it.
+/// False when no relaunch is in it: then nothing says the session is idle.
+fn idle_since_relaunch(transcript_tail: &str) -> bool {
+    let mut idle = false;
+    for entry in transcript_tail.lines().filter_map(|line| serde_json::from_str::<Value>(line).ok()) {
+        if is_relaunch(&entry) {
+            idle = true;
+        } else if runs_a_tool(&entry) {
+            idle = false;
+        }
+    }
+    idle
+}
+
+/// The request for the overview when `input`, a Stop relaunched by a hook, ends a turn in which
+/// the session ran no tool since this hook relaunched it; its last words are the context.
+fn idle_request(input: &Value, session: &str, now: i64) -> Option<Request> {
+    if input.get("stop_hook_active").and_then(Value::as_bool) != Some(true) {
+        return None;
+    }
+    let transcript = tail(Path::new(input.get("transcript_path")?.as_str()?))?;
+    if !idle_since_relaunch(&transcript) {
+        return None;
+    }
+    let said = input
+        .get("last_assistant_message")
+        .and_then(Value::as_str)
+        .filter(|text| !text.trim().is_empty())
+        .map_or_else(|| last_turn_text(&transcript), str::to_string);
+    let context = context_of(&said, "");
+    let context = if context.is_empty() { "It wrote nothing.".to_string() } else { context };
+    let cwd = input.get("cwd").and_then(Value::as_str).unwrap_or_default();
+    let now_millis = u128::try_from(now).unwrap_or_default() * 1000;
+    Some(ask_request(session, cwd, now_millis, IDLE_QUESTION, &context))
 }
 
 /// Until when `session` keeps working, if the user said they are away.
@@ -55,7 +228,10 @@ fn instruction(session: &str, minutes: i64) -> String {
          Continue the task: when a choice is needed, make it, write it down where the project keeps its decisions, and go on. \
          Allowed alone: edit, test, commit in your own worktree, write notes in memory. \
          Never while they are away: push, merge, delete what you did not create, install, use another account. \
-         When the whole task is done and verified, run `kindric away done {session}`, then stop.",
+         When the whole task is done and verified, run `kindric away done {session}`, then stop. \
+         If what is left needs the user, first have a critical agent review your code and your choices: \
+         it lists only what you can do without the user and what changes the result. Do that. \
+         Once nothing is left without the user, run `kindric away blocked {session} \"<what you need from them>\"`, then stop.",
         s = if minutes == 1 { "" } else { "s" },
     )
 }
@@ -70,7 +246,10 @@ pub fn user_words(session: &str, minutes: Option<u32>) -> String {
              when a choice is needed, make it, write it down where the project keeps its decisions, and go on. \
              Allowed: edit, test, commit in your own worktree, write notes in memory. \
              Never: push, merge, delete what you did not create, install, use another account. \
-             When the whole task is done and verified, run `kindric away done {session}`, then stop.",
+             When the whole task is done and verified, run `kindric away done {session}`, then stop. \
+             If what is left needs me, first have a critical agent review your code and your choices: \
+             it lists only what you can do without me and what changes the result. Do that. \
+             Once nothing is left without me, run `kindric away blocked {session} \"<what you need from me>\"`, then stop.",
             s = if minutes == 1 { "" } else { "s" },
         ),
         None => "I am back: the usual rules apply again, ask before acting.".to_owned(),
@@ -311,18 +490,30 @@ fn away_session<'a>(root: &Path, input: &'a serde_json::Value, now: i64) -> Opti
     Some((session, until))
 }
 
-/// What `kindric away-hook` prints for `input`, the JSON Claude Code gives a hook, while the user
-/// is away from its session; nothing otherwise, so that Claude Code goes on as usual.
-/// - Stop: a refusal to end the turn, with what to do instead.
+/// What `kindric away-hook` prints for `input`, the JSON Claude Code (or Codex) gives a hook,
+/// while the user is away from its session; nothing otherwise, so that the session goes on as
+/// usual. `overview_root` holds the requests for the user.
+/// - Stop: a refusal to end the turn, with what to do instead. Not while the session waits on a
+///   request of `kindric away blocked`, nor when it ran no tool since the last refusal: that turn
+///   goes to the overview and the session stops.
 /// - PreToolUse (shell commands, in every permission mode): a refusal of what waits for the user.
 /// - PermissionRequest (a question Claude Code would ask): yes, unless it waits for the user.
-pub fn hook_answer(root: &Path, input: &str, now: i64) -> Option<String> {
+pub fn hook_answer(root: &Path, overview_root: &Path, input: &str, now: i64) -> Option<String> {
     let input: serde_json::Value = serde_json::from_str(input).ok()?;
     let event = input.get("hook_event_name")?.as_str()?;
     let (session, until) = away_session(root, &input, now)?;
     let command = || input.get("tool_input")?.get("command")?.as_str();
     let answer = match event {
         "Stop" => {
+            if waits_on_the_user(root, overview_root, session) {
+                return None;
+            }
+            if let Some(request) = idle_request(&input, session, now) {
+                match wait_on(root, overview_root, &request) {
+                    Ok(()) => return None,
+                    Err(error) => eprintln!("kindric away-hook: the idle turn was not put in the overview ({}): {error}", overview_root.display()),
+                }
+            }
             // Rounded up: with 30 seconds left the session is told 1 minute, not 0.
             let minutes = (until - now + 59) / 60;
             serde_json::json!({ "decision": "block", "reason": instruction(session, minutes) })
@@ -351,10 +542,10 @@ pub fn run_away_hook() {
     if io::Read::read_to_string(&mut io::stdin(), &mut input).is_err() {
         return;
     }
-    let Ok(root) = default_root() else {
+    let (Ok(root), Ok(overview_root)) = (default_root(), overview::default_root()) else {
         return;
     };
-    if let Some(answer) = hook_answer(&root, &input, now()) {
+    if let Some(answer) = hook_answer(&root, &overview_root, &input, now()) {
         println!("{answer}");
     }
 }
@@ -377,7 +568,7 @@ mod tests {
     fn stopping_is_refused_until_the_time() {
         let root = temp_root("refused");
         set(&root, "aaaa-1111", 1_000 + 42 * 60 - 30).unwrap();
-        let answer = hook_answer(&root, &stop("aaaa-1111"), 1_000).unwrap();
+        let answer = hook_answer(&root, &root.join("overview"), &stop("aaaa-1111"), 1_000).unwrap();
         let value: serde_json::Value = serde_json::from_str(&answer).unwrap();
         assert_eq!(value["decision"], "block");
         let reason = value["reason"].as_str().unwrap();
@@ -392,7 +583,7 @@ mod tests {
     fn after_the_time_the_session_stops_and_the_file_goes() {
         let root = temp_root("over");
         set(&root, "aaaa-1111", 1_000).unwrap();
-        assert_eq!(hook_answer(&root, &stop("aaaa-1111"), 1_000), None);
+        assert_eq!(hook_answer(&root, &root.join("overview"), &stop("aaaa-1111"), 1_000), None);
         assert_eq!(until(&root, "aaaa-1111"), None);
         fs::remove_dir_all(root).unwrap();
     }
@@ -401,11 +592,11 @@ mod tests {
     fn other_sessions_and_events_are_left_alone() {
         let root = temp_root("others");
         set(&root, "aaaa-1111", 9_999).unwrap();
-        assert_eq!(hook_answer(&root, &stop("bbbb-2222"), 1_000), None);
+        assert_eq!(hook_answer(&root, &root.join("overview"), &stop("bbbb-2222"), 1_000), None);
         let other_event = r#"{"session_id":"aaaa-1111","hook_event_name":"SubagentStop"}"#;
-        assert_eq!(hook_answer(&root, other_event, 1_000), None);
-        assert_eq!(hook_answer(&root, "not json", 1_000), None);
-        assert_eq!(hook_answer(&root, &stop("../aaaa-1111"), 1_000), None);
+        assert_eq!(hook_answer(&root, &root.join("overview"), other_event, 1_000), None);
+        assert_eq!(hook_answer(&root, &root.join("overview"), "not json", 1_000), None);
+        assert_eq!(hook_answer(&root, &root.join("overview"), &stop("../aaaa-1111"), 1_000), None);
         fs::remove_dir_all(root).unwrap();
     }
 
@@ -414,7 +605,7 @@ mod tests {
         let root = temp_root("done");
         set(&root, "aaaa-1111", 9_999).unwrap();
         clear(&root, "aaaa-1111").unwrap();
-        assert_eq!(hook_answer(&root, &stop("aaaa-1111"), 1_000), None);
+        assert_eq!(hook_answer(&root, &root.join("overview"), &stop("aaaa-1111"), 1_000), None);
         clear(&root, "aaaa-1111").unwrap();
         fs::remove_dir_all(root).unwrap();
     }
@@ -457,7 +648,7 @@ mod tests {
     }
 
     fn answer_of(root: &Path, input: &str) -> Option<serde_json::Value> {
-        hook_answer(root, input, 1_000).map(|text| serde_json::from_str(&text).unwrap())
+        hook_answer(root, &root.join("overview"), input, 1_000).map(|text| serde_json::from_str(&text).unwrap())
     }
 
     #[test]
@@ -602,10 +793,145 @@ mod tests {
         let root = temp_root("present");
         set(&root, "aaaa-1111", 9_999).unwrap();
         for event in ["PreToolUse", "PermissionRequest"] {
-            assert_eq!(hook_answer(&root, &tool_event(event, "bbbb-2222", "Bash", "git push"), 1_000), None, "{event}, another session");
-            assert_eq!(hook_answer(&root, &tool_event(event, "aaaa-1111", "Bash", "git push"), 10_000), None, "{event}, time over");
+            assert_eq!(hook_answer(&root, &root.join("overview"), &tool_event(event, "bbbb-2222", "Bash", "git push"), 1_000), None, "{event}, another session");
+            assert_eq!(hook_answer(&root, &root.join("overview"), &tool_event(event, "aaaa-1111", "Bash", "git push"), 10_000), None, "{event}, time over");
         }
         assert_eq!(until(&root, "aaaa-1111"), None, "the time over, the file went");
         fs::remove_dir_all(root).unwrap();
+    }
+
+    // Entries shaped as in real files: Claude Code's transcript of session f78a25d0 and the
+    // rollout of codex 0.171.0 on the bench (2026-11-21).
+    const CLAUDE_RELAUNCH: &str = r#"{"type":"user","isMeta":true,"message":{"role":"user","content":"Stop hook feedback:\nThe user is away for 12 more minutes and asked you to keep working."}}"#;
+    const CLAUDE_TEXT: &str = r#"{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"Nothing new: I still need the user."}]}}"#;
+    const CLAUDE_TOOL: &str = r#"{"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","id":"t1","name":"Bash","input":{"command":"cargo test"}}]}}"#;
+    const CODEX_RELAUNCH: &str = r#"{"type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"<hook_prompt hook_run_id=\"stop:5:/x/hooks.json\">The user is away for 12 more minutes and asked you to keep working.</hook_prompt>"}]}}"#;
+    const CODEX_CALL: &str = r#"{"type":"response_item","payload":{"type":"function_call","name":"exec_command","arguments":"{}","call_id":"c1"}}"#;
+    const CODEX_TEXT: &str = r#"{"type":"response_item","payload":{"type":"message","role":"assistant","content":[{"type":"output_text","text":"ok"}]}}"#;
+
+    /// A Stop relaunched by a hook, for a transcript of `lines` written in `root`; `extra` adds
+    /// or replaces fields.
+    fn relaunched_stop(root: &Path, session: &str, lines: &[&str], extra: serde_json::Value) -> String {
+        create_private_dir(root).unwrap();
+        let transcript = root.join(format!("{session}.jsonl"));
+        fs::write(&transcript, lines.join("\n") + "\n").unwrap();
+        let mut input = serde_json::json!({ "session_id": session, "hook_event_name": "Stop", "stop_hook_active": true,
+            "transcript_path": transcript, "cwd": "/work" });
+        if let (Some(input), serde_json::Value::Object(extra)) = (input.as_object_mut(), extra) {
+            input.extend(extra);
+        }
+        input.to_string()
+    }
+
+    fn blocks(root: &Path, input: &str) -> bool {
+        answer_of(root, input).is_some_and(|value| value["decision"] == "block")
+    }
+
+    #[test]
+    fn a_relaunched_session_that_runs_no_tool_stops_and_its_last_words_go_to_the_overview() {
+        let root = temp_root("idle");
+        let overview_root = root.join("overview");
+        set(&root, "aaaa-1111", 9_999).unwrap();
+        let input = relaunched_stop(&root, "aaaa-1111", &[CLAUDE_TOOL, CLAUDE_RELAUNCH, CLAUDE_TEXT], serde_json::json!({}));
+        assert_eq!(hook_answer(&root, &overview_root, &input, 1_000), None, "it may stop");
+        let pending = overview::pending(&overview_root);
+        assert_eq!(pending.len(), 1, "{pending:?}");
+        assert_eq!(pending[0].session_id, "aaaa-1111");
+        assert_eq!(pending[0].cwd, "/work");
+        let context = "Nothing new: I still need the user.".to_string();
+        assert_eq!(pending[0].body, Body::Ask { question: IDLE_QUESTION.into(), context, from_reply: false });
+        assert_eq!(hook_answer(&root, &overview_root, &input, 1_001), None, "still waiting on it");
+        assert_eq!(overview::pending(&overview_root).len(), 1, "asked once");
+        assert_eq!(until(&root, "aaaa-1111"), Some(9_999), "still away: its commands are still checked");
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn a_relaunched_session_that_ran_a_tool_is_kept_working() {
+        let root = temp_root("busy");
+        set(&root, "aaaa-1111", 9_999).unwrap();
+        assert!(blocks(&root, &relaunched_stop(&root, "aaaa-1111", &[CLAUDE_RELAUNCH, CLAUDE_TOOL, CLAUDE_TEXT], serde_json::json!({}))));
+        assert!(blocks(&root, &relaunched_stop(&root, "aaaa-1111", &[CODEX_RELAUNCH, CODEX_CALL, CODEX_TEXT], serde_json::json!({}))));
+        assert!(overview::pending(&root.join("overview")).is_empty());
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn without_a_relaunch_to_see_the_session_is_kept_working() {
+        let root = temp_root("unseen");
+        set(&root, "aaaa-1111", 9_999).unwrap();
+        let first = relaunched_stop(&root, "aaaa-1111", &[CLAUDE_RELAUNCH, CLAUDE_TEXT], serde_json::json!({ "stop_hook_active": false }));
+        assert!(blocks(&root, &first), "the first stop of a turn");
+        assert!(blocks(&root, &relaunched_stop(&root, "aaaa-1111", &[CLAUDE_TEXT], serde_json::json!({}))), "no relaunch in it");
+        let gone = relaunched_stop(&root, "aaaa-1111", &[], serde_json::json!({ "transcript_path": root.join("none.jsonl") }));
+        assert!(blocks(&root, &gone), "no transcript");
+        assert!(blocks(&root, &relaunched_stop(&root, "aaaa-1111", &[], serde_json::json!({ "transcript_path": null }))));
+        // A message of the user that quotes the hook is not its relaunch.
+        let quoted = r#"{"type":"user","message":{"role":"user","content":"Stop hook feedback:\nThe user is away for 3 more minutes"}}"#;
+        assert!(blocks(&root, &relaunched_stop(&root, "aaaa-1111", &[quoted, CLAUDE_TEXT], serde_json::json!({}))));
+        assert!(overview::pending(&root.join("overview")).is_empty());
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn an_idle_codex_session_stops_with_the_last_message_codex_gives() {
+        let root = temp_root("idle-codex");
+        set(&root, "01a1ff2b-df33", 9_999).unwrap();
+        let said = serde_json::json!({ "last_assistant_message": "I need the token." });
+        let input = relaunched_stop(&root, "01a1ff2b-df33", &[CODEX_CALL, CODEX_RELAUNCH, CODEX_TEXT], said);
+        assert_eq!(hook_answer(&root, &root.join("overview"), &input, 1_000), None);
+        let pending = overview::pending(&root.join("overview"));
+        assert!(matches!(&pending[0].body, Body::Ask { context, .. } if context == "I need the token."), "{pending:?}");
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn blocked_lets_the_session_stop_until_the_user_answers() {
+        let root = temp_root("blocked");
+        let overview_root = root.join("overview");
+        set(&root, "aaaa-1111", 9_999).unwrap();
+        let request = block(&root, &overview_root, "aaaa-1111", Path::new("/work"), " the API key of the bench ", 1_000_000).unwrap();
+        let body = Body::Ask { question: "the API key of the bench".into(), context: BLOCKED_CONTEXT.into(), from_reply: false };
+        assert_eq!(request.body, body);
+        assert_eq!(overview::pending(&overview_root), vec![request.clone()]);
+        assert_eq!(hook_answer(&root, &overview_root, &stop("aaaa-1111"), 1_000), None, "it may stop");
+        assert!(answer_of(&root, &tool_event("PreToolUse", "aaaa-1111", "Bash", "git push")).is_some(), "still away");
+        overview::settle(&overview_root, "aaaa-1111", &request.id).unwrap();
+        assert!(blocks(&root, &stop("aaaa-1111")), "answered: it works on the answer");
+        assert!(!waiting_file(&root, "aaaa-1111").unwrap().exists(), "the mark went");
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn blocked_is_refused_without_absence_or_need() {
+        let root = temp_root("blocked-refused");
+        let overview_root = root.join("overview");
+        let present = block(&root, &overview_root, "aaaa-1111", Path::new("/w"), "a key", 1_000_000).unwrap_err();
+        assert!(present.contains("kindric ask"), "{present}");
+        set(&root, "aaaa-1111", 9_999).unwrap();
+        assert!(block(&root, &overview_root, "aaaa-1111", Path::new("/w"), "  ", 1_000_000).unwrap_err().starts_with("usage:"));
+        assert!(block(&root, &overview_root, "a/b", Path::new("/w"), "a key", 1_000_000).is_err());
+        assert!(overview::pending(&overview_root).is_empty());
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn coming_back_clears_the_mark_of_a_blocked_session() {
+        let root = temp_root("blocked-back");
+        set(&root, "aaaa-1111", 9_999).unwrap();
+        block(&root, &root.join("overview"), "aaaa-1111", Path::new("/w"), "a key", 1_000_000).unwrap();
+        clear(&root, "aaaa-1111").unwrap();
+        assert!(!waiting_file(&root, "aaaa-1111").unwrap().exists());
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn both_texts_say_how_to_stop_when_only_the_user_can_unblock() {
+        for text in [instruction("aaaa-1111", 5), user_words("aaaa-1111", Some(5))] {
+            assert!(text.contains("critical agent review your code and your choices"), "{text}");
+            assert!(text.contains(r#"`kindric away blocked aaaa-1111 "<what you need from"#), "{text}");
+            assert!(!text.contains('\n'), "one line");
+        }
+        assert!(instruction("aaaa-1111", 5).starts_with(RELAUNCH), "the hook finds its relaunch by it");
     }
 }

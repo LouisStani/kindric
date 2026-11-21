@@ -854,9 +854,10 @@ def hook_commands(settings: dict[str, Any]) -> dict[str, list[str]]:
             for event, matchers in settings.get("hooks", {}).items()}
 
 
-def away_hook(event: str, session_id: str, command: str | None = None) -> str:
-    """What `kindric away-hook` answers Claude Code for this event of the session."""
-    asked: dict[str, Any] = {"hook_event_name": event, "session_id": session_id}
+def away_hook(event: str, session_id: str, command: str | None = None, **fields: Any) -> str:
+    """What `kindric away-hook` answers Claude Code for this event of the session; `fields` are
+    added to what Claude Code gives the hook."""
+    asked: dict[str, Any] = {"hook_event_name": event, "session_id": session_id, **fields}
     if command is not None:
         asked.update(tool_name="Bash", tool_input={"command": command})
     done = subprocess.run(["kindric", "away-hook"], input=json.dumps(asked), capture_output=True, text=True, timeout=30)
@@ -904,6 +905,36 @@ class AwayOnAnIsolatedAccount(Journey):
         self.assertIn('"decision":"block"', away_hook("Stop", session_id))
         self.assertIn('"permissionDecision":"deny"', away_hook("PreToolUse", session_id, "git push"))
         self.assertEqual(away_hook("PreToolUse", session_id, "cargo test"), "")
+
+        # Nothing left without the user: what it needs goes to the overview, and the session may
+        # stop until that is answered; its commands are still checked (433).
+        blocked = subprocess.run(["kindric", "away", "blocked", session_id, "the key of the bench"],
+                                 cwd=PROJECT, capture_output=True, text=True, timeout=10)
+        self.assertEqual(blocked.returncode, 0, blocked.stderr)
+        self.assertIn("You may end your turn now", blocked.stdout)
+        wait_until("the need in the bar", lambda: dot_sign(driver, "alone") == "?", timeout=10)
+        self.assertEqual(away_hook("Stop", session_id), "")
+        self.assertIn('"permissionDecision":"deny"', away_hook("PreToolUse", session_id, "git push"))
+        requests = [os.path.join(folder, name) for folder, _, files in os.walk(OVERVIEW) for name in files if name.endswith(".json")]
+        self.assertEqual(len(requests), 1, requests)
+        with open(requests[0]) as request:
+            self.assertEqual(json.load(request)["question"], "the key of the bench")
+        # Answered, the request goes as the page settles it: the session works on the answer.
+        os.remove(requests[0])
+        self.assertIn('"decision":"block"', away_hook("Stop", session_id))
+
+        # Relaunched by the hook, the session ran no tool: it may stop, its last words in the
+        # overview, instead of being relaunched in a loop (435).
+        transcript = os.path.join(OUT, "away-idle.jsonl")
+        with open(transcript, "w") as lines:
+            lines.write(json.dumps({"type": "user", "isMeta": True, "message": {"role": "user",
+                        "content": "Stop hook feedback:\nThe user is away for 50 more minutes and asked you to keep working."}}) + "\n")
+            lines.write(json.dumps({"type": "assistant", "message": {"role": "assistant",
+                        "content": [{"type": "text", "text": "Still waiting on the key."}]}}) + "\n")
+        self.assertEqual(away_hook("Stop", session_id, stop_hook_active=True, transcript_path=transcript, cwd=PROJECT), "")
+        wait_until("the idle turn in the overview", lambda: len(overview_requests()) == 1, timeout=10)
+        self.assertEqual(away_hook("Stop", session_id, stop_hook_active=True, transcript_path=transcript, cwd=PROJECT), "", "still waiting")
+        self.assertEqual(len(overview_requests()), 1, "asked once")
 
     @classmethod
     def tearDownClass(cls) -> None:

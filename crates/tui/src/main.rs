@@ -25,7 +25,7 @@ use ratatui::layout::Rect;
 use crate::app::{App, Flow};
 use crate::pane::PaneKey;
 
-const USAGE: &str = "usage: kindric [mcp | unread | wait-message | away-hook | permission-hook | artifact-check | question-check | task-check | overview-start | ask <question> <context> | away done <session id> | --version]";
+const USAGE: &str = "usage: kindric [mcp | unread | wait-message | away-hook | permission-hook | artifact-check | question-check | task-check | overview-start | ask <question> <context> | away done <session id> | away blocked <session id> <what you need> | --version]";
 
 pub enum AppEvent {
     Input(Event),
@@ -93,6 +93,9 @@ fn main() -> ExitCode {
         ["ask", question, context] => kindric_core::overview::run_ask(question, context).map_err(io::Error::other),
         // Run by a session told the user is away, once its task is done: it may stop again.
         ["away", "done", session] => kindric_core::away::default_root().and_then(|root| kindric_core::away::clear(&root, session)),
+        // Run by a session told the user is away, once nothing is left that it can do without them:
+        // what it needs goes to the overview, and it may stop until that is answered.
+        ["away", "blocked", session, need] => kindric_core::away::run_blocked(session, need).map_err(io::Error::other),
         ["--version" | "-V"] => {
             println!("kindric {}", env!("CARGO_PKG_VERSION"));
             Ok(())

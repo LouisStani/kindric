@@ -32,7 +32,7 @@ The sessions kindric-accounts starts get hooks that run the `kindric` command, w
 | --- | --- | --- |
 | `kindric unread` | before each prompt, after each tool | tells the session a message is waiting |
 | `kindric wait-message` | Stop, SessionStart, in the background | wakes the session when a message asks it to act now |
-| `kindric away-hook` | Stop, PreToolUse, PermissionRequest | keeps the session working while you are away |
+| `kindric away-hook` | Stop, PreToolUse, PermissionRequest | keeps the session working while you are away; lets it stop once it waits on you (`kindric away blocked`) or ran nothing after a relaunch |
 | `kindric permission-hook` | PermissionRequest | puts the question in the control center and gives back your answer |
 | `kindric overview-start` | SessionStart | tells the session to ask you with `kindric ask` |
 | `kindric artifact-check` | Stop | asks once to keep the files made for you |

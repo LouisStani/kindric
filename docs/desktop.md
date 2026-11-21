@@ -117,6 +117,8 @@ Clicking a chip opens the session in the active pane of its project's tab, movin
 - The pane head shows "away until 14:30".
 - `0` means you are back: the session may stop again.
 - A session that has finished its task says so with `kindric away done <session id>` and stops.
+- A session that cannot go on without you first has an agent review its work. Then it runs `kindric away blocked <session id> "<what it needs>"`, which puts what it needs in the control center, and stops. Once you answer, it works again, and it is kept working until you are back.
+- A session told to keep working that then runs nothing stops too, its last words in the control center. It is relaunched once at most for nothing.
 - Only sessions started after kindric was installed have the hook.
 
 ## Changed files

@@ -50,7 +50,7 @@ fn last_line(text: &str) -> String {
 
 /// The end of `text` without the question it ends with, on one line, at most `CONTEXT`
 /// characters, cut at a word.
-fn context_of(text: &str, question: &str) -> String {
+pub(crate) fn context_of(text: &str, question: &str) -> String {
     let text = text.trim();
     let before = text.strip_suffix(question.trim()).unwrap_or(text);
     let flat = before.split_whitespace().collect::<Vec<_>>().join(" ");
