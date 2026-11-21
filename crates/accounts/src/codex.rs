@@ -263,7 +263,7 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn no_daemon_means_no_session() {
-        let dir = crate::files::test_dir::fresh("codex-no-daemon");
+        let dir = crate::files::test_dir::fresh_short("nd");
         assert!(Daemon::connect(&dir).unwrap().is_none());
         assert_eq!(running_sessions(&dir), 0);
         std::fs::remove_dir_all(dir).unwrap();

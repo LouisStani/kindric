@@ -580,7 +580,13 @@ mod tests {
 
     /// Accounts under a fresh folder, nothing read from the environment.
     fn scratch_paths(label: &str) -> (PathBuf, Paths) {
-        let root = std::env::temp_dir().join(format!("kindric-accounts-{label}-{}", std::process::id()));
+        scratch_paths_in(&std::env::temp_dir(), label)
+    }
+
+    /// The account directories under `base`. A Codex account needs a short path: the socket of its
+    /// daemon must fit in 103 bytes, which the temporary folder of macOS leaves no room for.
+    fn scratch_paths_in(base: &Path, label: &str) -> (PathBuf, Paths) {
+        let root = base.join(format!("kindric-accounts-{label}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&root);
         let home = root.join("home");
         std::fs::create_dir_all(&home).expect("home");
@@ -648,7 +654,8 @@ mod tests {
 
     #[test]
     fn a_codex_account_gets_its_label_and_no_claude_query() {
-        let (root, paths) = scratch_paths("cx");
+        let base = if cfg!(unix) { PathBuf::from("/tmp") } else { std::env::temp_dir() };
+        let (root, paths) = scratch_paths_in(&base, "cx");
         account::add_codex(&paths, "cx").expect("add");
         add_account(&paths, "plain").expect("add");
         assert!(is_codex(&paths, "cx"));
