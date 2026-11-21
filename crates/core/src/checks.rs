@@ -70,7 +70,16 @@ pub struct Found {
     pub registry: bool,
     /// The accounts the app lists: `default` when logged in, and those of kindric-accounts.
     pub accounts: Vec<String>,
+    /// Those of `accounts` that run Codex: they need no Claude Code and carry no messages yet.
+    pub codex: Vec<String>,
     pub sessions: usize,
+}
+
+impl Found {
+    /// Every account listed runs Codex. With none listed, the first one will run Claude Code.
+    fn codex_only(&self) -> bool {
+        !self.accounts.is_empty() && self.accounts.iter().all(|account| self.codex.contains(account))
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
@@ -297,9 +306,14 @@ pub fn check_messages(paths: &Paths) -> Result<MessagesCheck, String> {
     })
 }
 
-fn claude_line(claude: &ClaudeCheck) -> Line {
+/// `needed`: an account listed runs Claude Code, or none is listed yet.
+fn claude_line(claude: &ClaudeCheck, needed: bool) -> Line {
     let Some(version) = &claude.version else {
         let error = claude.error.as_deref().unwrap_or("not found");
+        if !needed {
+            let text = format!("Claude Code: {error} · only needed for Claude Code accounts");
+            return Line::new(State::Optional, text, vec![INSTALL_CLAUDE.into()]);
+        }
         return Line::new(State::ToDo, format!("Claude Code: {error}"), vec![INSTALL_CLAUDE.into()]);
     };
     let shown = parse_claude_version(version)
@@ -351,10 +365,12 @@ pub fn missing_sides(messages: &MessagesCheck, accounts: &[String]) -> Vec<Side>
 }
 
 /// One command per side that lacks the server, and the offer to run them.
-fn messages_line(messages: &MessagesCheck, accounts: &[String]) -> Line {
+fn messages_line(messages: &MessagesCheck, accounts: &[String], codex_only: bool) -> Line {
     if messages.account.is_none() && !default_side(messages, accounts) {
         return if accounts.is_empty() {
             Line::new(State::ToDo, "messages between sessions: an account first", Vec::new())
+        } else if codex_only {
+            Line::new(State::Optional, "messages between sessions: not for Codex accounts yet", Vec::new())
         } else {
             Line::new(State::Optional, "messages between sessions: every account is isolated", Vec::new())
         };
@@ -391,12 +407,12 @@ fn session_line(sessions: usize) -> Line {
 
 /// The list, in the order things get set up.
 pub fn lines(found: &Found) -> Vec<Line> {
-    let mut lines = vec![claude_line(&found.claude)];
+    let mut lines = vec![claude_line(&found.claude, !found.codex_only())];
     lines.extend(subcommands_line(&found.subcommands, &found.claude));
     lines.extend([
         account_line(&found.accounts),
         launcher_line(&found.launcher, found.registry),
-        messages_line(&found.messages, &found.accounts),
+        messages_line(&found.messages, &found.accounts, found.codex_only()),
         session_line(found.sessions),
     ]);
     lines
@@ -407,6 +423,7 @@ pub fn lines(found: &Found) -> Vec<Line> {
 pub fn run(accounts: Vec<String>, sessions: usize, claude: &ClaudeFacts) -> Result<Vec<Line>, String> {
     let paths = accounts::paths().map_err(|error| error.to_string())?;
     let registry = !registry::list_accounts(&paths).map_err(|error| error.to_string())?.is_empty();
+    let codex = accounts.iter().filter(|account| accounts::is_codex(&paths, account)).cloned().collect();
     let found = Found {
         claude: claude.claude.clone(),
         subcommands: claude.subcommands.clone(),
@@ -414,6 +431,7 @@ pub fn run(accounts: Vec<String>, sessions: usize, claude: &ClaudeFacts) -> Resu
         messages: check_messages(&paths)?,
         registry,
         accounts,
+        codex,
         sessions,
     };
     Ok(lines(&found))
@@ -522,8 +540,30 @@ mod tests {
             messages: messages(Some("louis"), true, true, true),
             registry: true,
             accounts: vec!["default".into(), "louis".into()],
+            codex: Vec::new(),
             sessions: 2,
         }
+    }
+
+    #[test]
+    fn codex_accounts_alone_need_no_claude_code_and_carry_no_messages() {
+        let missing = ClaudeCheck { version: None, tested: false, error: Some("claude not found in PATH".into()) };
+        let codex = Found {
+            claude: missing.clone(),
+            subcommands: Err("claude not found in PATH".into()),
+            messages: messages(None, false, false, false),
+            accounts: vec!["cx".into()],
+            codex: vec!["cx".into()],
+            ..found()
+        };
+        let lines = lines(&codex);
+        assert_eq!(lines[0].state, State::Optional, "{lines:?}");
+        assert_eq!(lines[0].text, "Claude Code: claude not found in PATH · only needed for Claude Code accounts");
+        let messages_line = lines.iter().find(|line| line.text.starts_with("messages")).unwrap();
+        assert_eq!((messages_line.state, messages_line.text.as_str()), (State::Optional, "messages between sessions: not for Codex accounts yet"));
+        // With a Claude account too, Claude Code is needed again.
+        let both = Found { claude: missing, accounts: vec!["cx".into(), "louis".into()], ..codex };
+        assert_eq!(super::lines(&both)[0].state, State::ToDo);
     }
 
     fn states(found: &Found) -> Vec<State> {
@@ -549,6 +589,7 @@ mod tests {
             messages: messages(None, false, true, false),
             registry: false,
             accounts: Vec::new(),
+            codex: Vec::new(),
             sessions: 0,
         };
         let lines = lines(&found);
