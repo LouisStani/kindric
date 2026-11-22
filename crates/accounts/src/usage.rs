@@ -61,6 +61,75 @@ pub fn read(paths: &Paths, name: &str) -> Option<Usage> {
     serde_json::from_str(&std::fs::read_to_string(usage_file(paths, name)).ok()?).ok()
 }
 
+/// Figures that did not change are noted again after this long, in seconds.
+const HISTORY_EVERY_SECONDS: i64 = 10 * 60;
+/// Figures older than this leave the history, in seconds.
+const HISTORY_KEPT_SECONDS: i64 = 60 * 24 * 3600;
+/// The history is cut once its oldest figures are this much older than the limit: about once a day.
+const HISTORY_SLACK_SECONDS: i64 = 24 * 3600;
+/// Enough to hold the last line of the history.
+const HISTORY_TAIL_BYTES: u64 = 4096;
+
+/// One line per note, the same fields as `usage_file`.
+pub fn history_file(paths: &Paths, name: &str) -> PathBuf {
+    paths.data_root.join(".usage").join("history").join(format!("{name}.jsonl"))
+}
+
+/// The figures noted for `name`, oldest first; lines that cannot be read are skipped.
+pub fn read_history(paths: &Paths, name: &str) -> Vec<Usage> {
+    let Ok(text) = std::fs::read_to_string(history_file(paths, name)) else {
+        return Vec::new();
+    };
+    text.lines().filter_map(|line| serde_json::from_str(line).ok()).collect()
+}
+
+fn last_noted(file: &Path) -> Option<Usage> {
+    use std::io::{Read, Seek, SeekFrom};
+    let mut history = std::fs::File::open(file).ok()?;
+    let length = history.metadata().ok()?.len();
+    history.seek(SeekFrom::Start(length.saturating_sub(HISTORY_TAIL_BYTES))).ok()?;
+    let mut tail = String::new();
+    history.read_to_string(&mut tail).ok()?;
+    serde_json::from_str(tail.lines().last()?).ok()
+}
+
+fn first_noted(file: &Path) -> io::Result<Option<Usage>> {
+    use std::io::BufRead;
+    let mut line = String::new();
+    io::BufReader::new(std::fs::File::open(file)?).read_line(&mut line)?;
+    Ok(serde_json::from_str(&line).ok())
+}
+
+/// Whether `usage` says something the last note did not, or the last note is old.
+fn worth_noting(last: Option<&Usage>, usage: &Usage) -> bool {
+    last.is_none_or(|last| {
+        last.five_hour != usage.five_hour || last.seven_day != usage.seven_day || usage.updated_at - last.updated_at >= HISTORY_EVERY_SECONDS
+    })
+}
+
+/// Notes `usage` at the end of the history, then drops what is older than `HISTORY_KEPT_SECONDS`
+/// once there is a day of it. Two status lines cutting and noting at the same moment can lose
+/// one note.
+fn note_history(file: &Path, usage: &Usage) -> io::Result<()> {
+    if !worth_noting(last_noted(file).as_ref(), usage) {
+        return Ok(());
+    }
+    if let Some(dir) = file.parent() {
+        files::create_private_dir(dir)?;
+    }
+    files::append_line(file, &serde_json::to_string(usage).map_err(io::Error::other)?)?;
+    let oldest_kept = usage.updated_at - HISTORY_KEPT_SECONDS;
+    if first_noted(file)?.is_some_and(|first| first.updated_at < oldest_kept - HISTORY_SLACK_SECONDS) {
+        let kept: String = std::fs::read_to_string(file)?
+            .lines()
+            .filter(|line| serde_json::from_str::<Usage>(line).is_ok_and(|noted| noted.updated_at >= oldest_kept))
+            .map(|line| format!("{line}\n"))
+            .collect();
+        files::write_atomic(file, &kept)?;
+    }
+    Ok(())
+}
+
 /// How full the context window of one session was when its status line last ran.
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Context {
@@ -180,8 +249,12 @@ pub fn record(paths: &Paths, config_dir: Option<&OsStr>, input: &[u8], now: i64)
     let Some(name) = account_of(paths, config_dir) else {
         return Ok(());
     };
+    // A history that cannot be written leaves the context to note all the same.
+    let mut history = Ok(());
     if let Some(usage) = usage_of(input, now) {
         write_json(&usage_file(paths, &name), &usage)?;
+        history = note_history(&history_file(paths, &name), &usage)
+            .map_err(|error| io::Error::new(error.kind(), format!("history of {name}: {error}")));
     }
     if let Some((session, context)) = context_of(input, now)
         && let Some(file) = context_file(paths, &name, &session)
@@ -192,7 +265,7 @@ pub fn record(paths: &Paths, config_dir: Option<&OsStr>, input: &[u8], now: i64)
             forget_old_contexts(&context_dir(paths, &name), now);
         }
     }
-    Ok(())
+    history
 }
 
 /// The command of the user's status line, in `~/.claude/settings.json`.
@@ -808,6 +881,63 @@ mod tests {
         fs::create_dir_all(&paths.shared_root).unwrap();
         fs::write(paths.shared_root.join("settings.json"), r#"{"statusLine":{"type":"command","command":"cat; printf ' seen'"}}"#).unwrap();
         assert_eq!(run_user_statusline(&paths, b"line").unwrap(), Some((b"line seen".to_vec(), 0)));
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    fn limits(five_hour: u32, week: u32) -> String {
+        format!(r#"{{"session_id":"s1","context_window":{{"used_percentage":5}},"rate_limits":{{"five_hour":{{"used_percentage":{five_hour},"resets_at":1794409800}},"seven_day":{{"used_percentage":{week},"resets_at":1794800000}}}}}}"#)
+    }
+
+    fn noted_at(paths: &Paths, name: &str) -> Vec<i64> {
+        read_history(paths, name).iter().map(|usage| usage.updated_at).collect()
+    }
+
+    #[test]
+    fn the_history_notes_a_change_at_once_and_the_same_figures_every_ten_minutes() {
+        let (root, paths) = setup("history", &["work"]);
+        let work = paths.account_dir("work").into_os_string();
+        let start = 1_794_400_000;
+        for (at, five_hour) in [(0, 10), (60, 10), (120, 11), (120 + HISTORY_EVERY_SECONDS - 1, 11), (120 + HISTORY_EVERY_SECONDS, 11)] {
+            record(&paths, Some(&work), limits(five_hour, 3).as_bytes(), start + at).unwrap();
+        }
+        assert_eq!(noted_at(&paths, "work"), vec![start, start + 120, start + 120 + HISTORY_EVERY_SECONDS]);
+        assert_eq!(read_history(&paths, "work")[1].five_hour.map(|window| window.used_percentage), Some(11.0));
+        assert_eq!(read(&paths, "work").map(|usage| usage.updated_at), Some(start + 120 + HISTORY_EVERY_SECONDS), "the last figures are still written each time");
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn the_history_drops_what_is_older_than_sixty_days_once_a_day_of_it_piles_up() {
+        let (root, paths) = setup("history-cut", &["work"]);
+        let work = paths.account_dir("work").into_os_string();
+        let now = 1_794_400_000;
+        let file = history_file(&paths, "work");
+        files::create_private_dir(file.parent().unwrap()).unwrap();
+        let line = |at: i64| format!(r#"{{"five_hour":null,"seven_day":null,"updated_at":{at}}}"#);
+        let just_too_old = now - HISTORY_KEPT_SECONDS - 1;
+        fs::write(&file, format!("{}\n{}\nbroken\n", line(just_too_old), line(now - 100))).unwrap();
+        record(&paths, Some(&work), limits(1, 1).as_bytes(), now).unwrap();
+        assert_eq!(noted_at(&paths, "work"), vec![just_too_old, now - 100, now], "less than a day too old: not cut yet");
+
+        let older = now - HISTORY_KEPT_SECONDS - HISTORY_SLACK_SECONDS - 1;
+        fs::write(&file, format!("{}\n{}\n{}\n", line(older), line(just_too_old), line(now - 100))).unwrap();
+        record(&paths, Some(&work), limits(2, 1).as_bytes(), now).unwrap();
+        assert_eq!(noted_at(&paths, "work"), vec![now - 100, now]);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn a_history_that_cannot_be_written_leaves_the_rest_written() {
+        let (root, paths) = setup("history-blocked", &["work"]);
+        let work = paths.account_dir("work").into_os_string();
+        let dir = history_file(&paths, "work").parent().unwrap().to_path_buf();
+        files::create_private_dir(dir.parent().unwrap()).unwrap();
+        fs::write(&dir, "a file where the directory goes").unwrap();
+        let error = record(&paths, Some(&work), limits(7, 1).as_bytes(), 50).unwrap_err();
+        assert!(error.to_string().contains("history of work"), "{error}");
+        assert_eq!(read(&paths, "work").and_then(|usage| usage.five_hour).map(|window| window.used_percentage), Some(7.0));
+        assert_eq!(read_context(&paths, "work", "s1").map(|context| context.used_percentage), Some(5.0));
+        assert!(read_history(&paths, "work").is_empty());
         fs::remove_dir_all(root).unwrap();
     }
 }

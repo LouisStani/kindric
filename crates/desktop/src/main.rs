@@ -11,6 +11,7 @@ mod projects;
 mod purge;
 mod settings;
 mod signal;
+mod statistics;
 mod store;
 mod tabs;
 mod trace;
@@ -87,6 +88,9 @@ struct Shared {
     /// When the page first saw each request of an OpenCode session, by request id (decision 441):
     /// those requests are read again from the service at each reading, and keep their time.
     opencode_seen: Mutex<HashMap<String, i64>>,
+    /// Held while the statistics are read: two calls wait for each other instead of reading the
+    /// same transcripts and writing the same cache at once.
+    stats_reading: Mutex<()>,
 }
 
 /// The Claude Code shown in a terminal over a dialog: asking whether a folder is trusted, or
@@ -959,6 +963,51 @@ fn set_key(shared: State<'_, Shared>, id: String, keys: Option<String>) -> Resul
     Ok(())
 }
 
+/// Whether an isolated account counts in the statistics, saved before it counts. Only a
+/// registered isolated account can be ticked: the others always count. Unticking is always
+/// taken, so that an account no longer isolated does not stay in the list.
+#[tauri::command]
+fn set_stats_isolated(shared: State<'_, Shared>, account: String, shown: bool) -> Result<(), String> {
+    let paths = accounts::paths().map_err(|error| error.to_string())?;
+    let (_, isolated) = accounts::registered(&paths).map_err(|error| error.to_string())?;
+    if shown && !isolated.contains(&account) {
+        let known = if isolated.is_empty() { "none".to_string() } else { isolated.join(", ") };
+        return Err(format!("{account:?} is not an isolated account (isolated accounts: {known})"));
+    }
+    let path = shared.settings_file.as_ref()?;
+    let mut saved = shared.settings.lock().unwrap_or_else(PoisonError::into_inner);
+    let next = saved.with_stats_isolated(&account, shown);
+    store::save(path, &next).map_err(|error| format!("cannot save {}: {error}", path.display()))?;
+    *saved = next;
+    Ok(())
+}
+
+/// What the statistics page shows: figures from the transcripts and the usage noted over time of
+/// the accounts that count (see `statistics::sources`). Runs off the window's thread: the first
+/// read of the transcripts takes seconds.
+#[tauri::command(async)]
+fn stats(shared: State<'_, Shared>) -> Result<serde_json::Value, String> {
+    let _span = shared.trace.span("stats");
+    let _reading = shared.stats_reading.lock().unwrap_or_else(PoisonError::into_inner);
+    let shown_isolated = shared.settings.lock().unwrap_or_else(PoisonError::into_inner).stats_isolated.clone();
+    let paths = accounts::paths().map_err(|error| format!("statistics unavailable: {error}"))?;
+    let (registry, isolated) = accounts::registered(&paths).map_err(|error| format!("statistics unavailable: {error}"))?;
+    let (names, implicit) = accounts::with_default(registry, accounts::default_logged_in());
+    let sources = statistics::sources(&names, &isolated, &shown_isolated, |account| accounts::dir_of(&paths, account, implicit));
+    let cache_path = kindric_core::stats::cache_file(&paths).map_err(|error| format!("statistics unavailable: {error}"))?;
+    let mut cache = kindric_core::stats::Cache::load(&cache_path);
+    let mut problems = cache.refresh(&sources);
+    if let Err(error) = cache.save(&cache_path) {
+        problems.push(format!("the statistics cache was not saved, the next read will be slower: {error}"));
+    }
+    let counted: Vec<String> = sources.into_iter().map(|source| source.account).collect();
+    Ok(serde_json::json!({
+        "summary": cache.summary(),
+        "history": accounts::histories(&paths, &counted),
+        "problems": problems,
+    }))
+}
+
 /// The colors of `theme.json`, read again each time it is chosen; None without the file.
 #[tauri::command(async)]
 fn custom_theme() -> Result<Option<std::collections::BTreeMap<String, String>>, String> {
@@ -1761,6 +1810,7 @@ fn main() -> ExitCode {
         claude_facts: Mutex::new(None),
         codex_asked: Mutex::new(HashMap::new()),
         opencode_seen: Mutex::new(HashMap::new()),
+        stats_reading: Mutex::new(()),
     };
     let built = tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
@@ -1843,6 +1893,8 @@ fn main() -> ExitCode {
             memory_warning,
             set_memory_warning,
             set_key,
+            set_stats_isolated,
+            stats,
             helper_input,
             helper_resize,
             close_helper

@@ -36,6 +36,24 @@ pub struct Settings {
     /// Shortcut id → its keys, for the shortcuts changed only.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub keys: BTreeMap<String, String>,
+    /// The isolated accounts the user accepts to see in the statistics (they stay out otherwise).
+    /// Sorted, without duplicates.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub stats_isolated: Vec<String>,
+}
+
+impl Settings {
+    /// `stats_isolated` once `account` is shown or not: kept sorted, never twice.
+    pub fn with_stats_isolated(&self, account: &str, shown: bool) -> Settings {
+        let mut next = self.clone();
+        next.stats_isolated.retain(|name| name != account);
+        if shown {
+            next.stats_isolated.push(account.to_string());
+        }
+        next.stats_isolated.sort();
+        next.stats_isolated.dedup();
+        next
+    }
 }
 
 const MODIFIERS: [&str; 3] = ["ctrl", "shift", "alt"];
@@ -137,6 +155,18 @@ mod tests {
         let json = serde_json::to_string(&changed).unwrap();
         assert_eq!(json, r#"{"theme":"paper","keys":{"split":"ctrl+alt+d"}}"#);
         assert_eq!(serde_json::from_str::<Settings>(&json).unwrap(), changed);
+    }
+
+    #[test]
+    fn shown_isolated_accounts_stay_sorted_and_single_and_can_be_removed() {
+        let none = Settings::default();
+        let some = none.with_stats_isolated("pro", true).with_stats_isolated("joe", true).with_stats_isolated("pro", true);
+        assert_eq!(some.stats_isolated, ["joe", "pro"]);
+        let less = some.with_stats_isolated("joe", false).with_stats_isolated("absent", false);
+        assert_eq!(less.stats_isolated, ["pro"]);
+        assert_eq!(less.with_stats_isolated("pro", false), none);
+        assert_eq!(serde_json::to_string(&some).unwrap(), r#"{"stats_isolated":["joe","pro"]}"#);
+        assert!(serde_json::from_str::<Settings>("{}").unwrap().stats_isolated.is_empty());
     }
 
     #[test]

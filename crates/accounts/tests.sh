@@ -355,6 +355,8 @@ test_statusline() {
 	out=$(printf '%s' "$input" | CLAUDE_CONFIG_DIR="$(data_dir pro1)" ca statusline)
 	check "statusline affiche la ligne d'état de l'utilisateur" test "$out" = mine
 	check "statusline note l'usage du compte" json_true '.five_hour.used_percentage == 34 and .seven_day.used_percentage == 16' "$usage_file"
+	printf '%s' "$input" | CLAUDE_CONFIG_DIR="$(data_dir pro1)" ca statusline >/dev/null
+	check "statusline garde l'historique, sans doublon des mêmes chiffres" test "$(wc -l <"$HOME/.local/share/kindric-accounts/.usage/history/pro1.jsonl")" -eq 1
 	out=$(printf '%s' "$input" | CLAUDE_CONFIG_DIR="$SANDBOX/ailleurs/pro2" ca statusline)
 	check "statusline : dossier hors comptes, rien noté" test ! -e "$HOME/.local/share/kindric-accounts/.usage/pro2.json"
 	printf '{}\n' >"$HOME/.claude/settings.json"

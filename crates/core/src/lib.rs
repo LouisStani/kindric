@@ -22,6 +22,7 @@ pub mod permission;
 pub mod progress;
 pub mod refresher;
 pub mod search;
+pub mod stats;
 pub mod steps;
 pub mod task_list;
 pub mod turn_files;

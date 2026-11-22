@@ -1,6 +1,6 @@
 // The settings window (Ctrl+,). The accounts of kindric-accounts: their state, adding one,
-// logging one in, taking one off the list. The memory: the size above which a session is warned
-// about what it opens at startup. The sessions: purging those idle for more than 31 or 7 days.
+// logging one in, taking one off the list, and whether an isolated one shows in the statistics
+// (stats.js). The memory: the size above which a session is warned about what it opens at startup. The sessions: purging those idle for more than 31 or 7 days.
 // The shortcuts: a new key for one, or its own back.
 // One category shows at a time; typing in the search shows what matches in all of them. Rust does each change and reads
 // the accounts back (accounts.rs); the session list sees the change by itself (refresher.rs).
@@ -8,6 +8,7 @@
 import { expiresWithin, inHowLong, timeLeft } from "./expiry.js";
 import { logIn } from "./helper.js";
 import { purgeQuestion, purgeResult, refusalLine } from "./purge.js";
+import { statsBox } from "./stats.js";
 
 // A login that expires within this many days can be renewed from its row.
 const RENEW_DAYS = 7;
@@ -187,6 +188,8 @@ export class SettingsWindow {
     // Name of the provider account whose key is being typed in its row, or null.
     this.keying = null;
     this.accounts = [];
+    // The accounts whose isolated sessions show in the statistics (`stats_isolated` of the settings).
+    this.statsIsolated = [];
     // A newer reading wins over one still on its way.
     this.request = 0;
     this.form.addEventListener("submit", (event) => {
@@ -249,9 +252,10 @@ export class SettingsWindow {
     const request = ++this.request;
     if (this.accounts.length === 0) this.list.replaceChildren(element("li", "muted", "reading the accounts…"));
     try {
-      const accounts = await invoke("account_statuses");
+      const [accounts, settings] = await Promise.all([invoke("account_statuses"), invoke("settings")]);
       if (request !== this.request) return;
       this.accounts = accounts;
+      this.statsIsolated = settings.stats_isolated ?? [];
       this.onAccounts?.(accounts);
     } catch (error) {
       if (request !== this.request) return;
@@ -331,7 +335,8 @@ export class SettingsWindow {
     const state = account.state.replace("-", " ");
     // Its login runs out soon: kindric renews it with the same window as "log in".
     const expiring = expiresWithin(account, RENEW_DAYS);
-    const searched = `${account.name} ${state} ${account.plan ?? ""} ${account.provider ?? ""} ${account.model ?? ""} account${expiring ? " login expires renew" : ""}`;
+    const box = statsBox(account, this.statsIsolated);
+    const searched = `${account.name} ${state} ${account.plan ?? ""} ${account.provider ?? ""} ${account.model ?? ""} account${expiring ? " login expires renew" : ""}${box ? " show in stats" : ""}`;
     item.dataset.search = searched.toLowerCase();
     item.append(element("span", "account-name", account.name), element("span", `account-state ${account.state}`, state));
     const provider = providerLabel(account);
@@ -343,6 +348,7 @@ export class SettingsWindow {
     }
     item.append(detailsNode);
     const actions = element("span", "account-actions");
+    if (box) actions.append(this.statsCheckbox(account.name, box.shown));
     if (this.confirming === account.name) {
       const running = account.sessions > 0 ? ` ${plural(account.sessions, "session")} keep running, hidden from kindric.` : "";
       item.append(element("span", "account-confirm", `take ${account.name} off the list? its folder stays: ${account.dir}.${running}`));
@@ -361,6 +367,30 @@ export class SettingsWindow {
     }
     item.append(actions);
     return item;
+  }
+
+  statsCheckbox(name, shown) {
+    const label = element("label", "account-stats", "show in stats");
+    const input = document.createElement("input");
+    input.type = "checkbox";
+    input.checked = shown;
+    input.addEventListener("change", () => this.setStats(name, input));
+    label.prepend(input);
+    return label;
+  }
+
+  // The box goes back as it was when Rust refuses the change, with the reason next to the accounts.
+  async setStats(name, input) {
+    const shown = input.checked;
+    this.message.textContent = "";
+    try {
+      await invoke("set_stats_isolated", { account: name, shown });
+      const rest = this.statsIsolated.filter((other) => other !== name);
+      this.statsIsolated = shown ? [...rest, name] : rest;
+    } catch (error) {
+      input.checked = !shown;
+      this.message.textContent = `${error}`;
+    }
   }
 
   confirm(name) {
