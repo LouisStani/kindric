@@ -83,12 +83,14 @@ OpenCode keeps all the sessions of an account in its background service, which a
 | Refresh | The service writes `<account>/data/opencode/opencode.db-wal` at each change of a session, and nothing there at rest. kindric watches that file. Not a contract of OpenCode: the full refresh every 5 minutes still catches up. |
 | A pane | `kindric-accounts run <account> -s <id>`, started in the session's folder. The service is started first when it does not run. Closing the pane ends the TUI, not the turn. |
 | `Ctrl+N` | `POST /api/session` with the folder and the name |
+| A permission in the control center | Read from the service at each reading of the page (`GET /api/session/<id>/permission`): a command shows as Bash, a change of files as Edit, any other action under its own name. **Allow** sends `{"decision": "once"}`, **Deny** `"reject"`, to `…/permission/<request>/reply`. Answered in the TUI, it is gone from the page. |
+| A question in the control center | A form of the model's `question` tool (`GET /api/session/<id>/form`), shown as Claude Code's AskUserQuestion. The choices go back to `…/form/<form>/reply`, each field given the option's value, a list for a multiple choice; **Deny** withdraws the form (`DELETE …/form/<form>`). A form of another kind, or with a field that is neither text nor a multiple choice, stays in the pane. |
 | A message from the control center | `POST /api/session/<id>/prompt` with `"delivery": "queue"` |
 | `Ctrl+Shift+K` | `POST /api/session/<id>/interrupt`, then the session is hidden |
 | The purge | `PATCH /api/session/<id>` with `{"archived": true}`: the session leaves kindric and OpenCode's list, `{"archived": false}` brings it back |
 | Last activity | `time.updated` of the session, from the service |
 
-Not yet for OpenCode: answering a permission or a question in the control center (the API can: `…/permission/<id>/reply`, `…/form/<id>/reply`), away mode (OpenCode has no hooks, only plugins in JavaScript), messages between sessions and kept files (the MCP server of kindric), its last steps and images, its context and limits, the task list. Not on Windows: an OpenCode account cannot be made there yet.
+Not yet for OpenCode: always allowing a permission from the control center (the TUI can), away mode (OpenCode has no hooks, only plugins in JavaScript), messages between sessions and kept files (the MCP server of kindric), its last steps and images, its context and limits, the task list. Not on Windows: an OpenCode account cannot be made there yet.
 
 ## Limits
 

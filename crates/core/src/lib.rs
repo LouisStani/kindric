@@ -15,6 +15,7 @@ pub mod mailbox;
 pub mod mcp;
 pub mod ollama;
 pub mod opencode;
+pub mod opencode_request;
 pub mod origins;
 pub mod overview;
 pub mod permission;

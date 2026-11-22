@@ -28,7 +28,7 @@ use kindric_core::launcher::{self, Request, resolve_directory};
 use kindric_core::mailbox::Mailbox;
 use kindric_core::accounts::SessionInfo;
 use kindric_core::artifacts::{self, Kind};
-use kindric_core::{accounts, activity, attach, atlas, codex_approval, away, changes, checks, claude_theme, images, mailbox, origins, overview, refresher, steps, worktrees};
+use kindric_core::{accounts, activity, attach, atlas, codex_approval, opencode_request, away, changes, checks, claude_theme, images, mailbox, origins, overview, refresher, steps, worktrees};
 use serde::Serialize;
 use serde::de::DeserializeOwned;
 use tauri::ipc::{Channel, InvokeResponseBody, Response};
@@ -84,6 +84,9 @@ struct Shared {
     /// The approval each Codex session waiting for one asks, by session id, read once from its
     /// daemon while it waits (decision 431); `None` when the daemon gave none.
     codex_asked: Mutex<HashMap<String, Option<overview::Request>>>,
+    /// When the page first saw each request of an OpenCode session, by request id (decision 441):
+    /// those requests are read again from the service at each reading, and keep their time.
+    opencode_seen: Mutex<HashMap<String, i64>>,
 }
 
 /// The Claude Code shown in a terminal over a dialog: asking whether a folder is trusted, or
@@ -1322,8 +1325,8 @@ fn overview_root() -> Result<PathBuf, String> {
     overview::default_root().map_err(|error| format!("cannot find kindric's data: {error}"))
 }
 
-/// What the sessions ask the user, oldest first: what their hooks wrote, and the approvals Codex
-/// sessions wait for. The approval of a Codex session is read from its daemon once while the
+/// What the sessions ask the user, oldest first: what their hooks wrote, the approvals Codex
+/// sessions wait for, and the permissions and questions of OpenCode sessions. The approval of a Codex session is read from its daemon once while the
 /// session waits: the page asks every second.
 #[tauri::command]
 async fn overview_requests(shared: State<'_, Shared>) -> Result<Vec<overview::Request>, String> {
@@ -1349,10 +1352,35 @@ async fn overview_requests(shared: State<'_, Shared>) -> Result<Vec<overview::Re
             asked.insert(info.session_id.clone(), request);
         }
     }
-    let asked = shared.codex_asked.lock().unwrap_or_else(PoisonError::into_inner);
-    requests.extend(asked.values().flatten().cloned());
+    {
+        let asked = shared.codex_asked.lock().unwrap_or_else(PoisonError::into_inner);
+        requests.extend(asked.values().flatten().cloned());
+    }
+    requests.extend(opencode_requests(&shared).await?);
     requests.sort_by_key(|request| request.asked_at);
     Ok(requests)
+}
+
+/// What the OpenCode sessions waiting for the user ask, read from their services now: a request
+/// costs a few milliseconds and stays right when it is answered in the TUI. Each keeps the time it
+/// was first seen.
+async fn opencode_requests(shared: &Shared) -> Result<Vec<overview::Request>, String> {
+    let asking: Vec<SessionInfo> = {
+        let view = shared.view.lock().unwrap_or_else(PoisonError::into_inner);
+        view.sessions.iter().map(|row| row.info.clone()).filter(opencode_request::asks).collect()
+    };
+    let now = unix_now()?;
+    let mut found = if asking.is_empty() {
+        Vec::new()
+    } else {
+        tauri::async_runtime::spawn_blocking(move || opencode_request::requests(&asking, now)).await.map_err(|error| error.to_string())?
+    };
+    let mut seen = shared.opencode_seen.lock().unwrap_or_else(PoisonError::into_inner);
+    seen.retain(|id, _| found.iter().any(|request| &request.id == id));
+    for request in &mut found {
+        request.asked_at = *seen.entry(request.id.clone()).or_insert(request.asked_at);
+    }
+    Ok(found)
 }
 
 /// The user answers a permission or a question of AskUserQuestion: the hook waiting in the
@@ -1362,6 +1390,9 @@ async fn answer_request(shared: State<'_, Shared>, session_id: String, id: Strin
     let _span = shared.trace.span("answer_request");
     if matches!(answer, overview::Answer::Text { .. }) {
         return Err("the answer to kindric ask is typed into the session, not written for a hook".into());
+    }
+    if opencode_request::is_opencode_request(&id) {
+        return tauri::async_runtime::spawn_blocking(move || opencode_request::answer(&id, &answer)).await.map_err(|error| error.to_string())?;
     }
     if codex_approval::is_codex_request(&id) {
         let allow = match answer {
@@ -1729,6 +1760,7 @@ fn main() -> ExitCode {
             .map_err(|error| format!("cannot tell whether another kindric window shows a session: {error}")),
         claude_facts: Mutex::new(None),
         codex_asked: Mutex::new(HashMap::new()),
+        opencode_seen: Mutex::new(HashMap::new()),
     };
     let built = tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())

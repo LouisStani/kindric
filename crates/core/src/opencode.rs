@@ -99,7 +99,17 @@ fn parse_response(response: &[u8]) -> io::Result<Vec<u8>> {
     };
     match code {
         Some(200..=299) => Ok(body),
-        _ => Err(io::Error::other(format!("the OpenCode service answered {status:?}: {}", said(&body)))),
+        _ => Err(io::Error::new(error_kind(code), format!("the OpenCode service answered {status:?}: {}", said(&body)))),
+    }
+}
+
+/// The kind of the error for an HTTP status: 404 is a session or request the service does not
+/// know (any more), 409 a question already answered.
+fn error_kind(code: Option<u16>) -> io::ErrorKind {
+    match code {
+        Some(404) => io::ErrorKind::NotFound,
+        Some(409) => io::ErrorKind::AlreadyExists,
+        _ => io::ErrorKind::Other,
     }
 }
 
@@ -147,6 +157,11 @@ impl Service {
     }
 
     /// The service of the account in `dir` if it runs: it answers.
+    #[cfg(test)]
+    pub(crate) fn on_port(port: u16) -> Self {
+        Self { port, authorization: "Basic eA==".into() }
+    }
+
     pub fn running(dir: &Path) -> io::Result<Option<Self>> {
         let Some(service) = Self::of(dir)? else {
             return Ok(None);
@@ -185,17 +200,43 @@ impl Service {
         serde_json::from_slice(&body).map_err(|error| io::Error::other(format!("the OpenCode service's answer to {path} is not JSON: {error}")))
     }
 
-    fn has_any(&self, path: &str) -> io::Result<bool> {
-        let answer = self.request("GET", path, None)?;
-        Ok(answer.get("data").and_then(Value::as_array).is_some_and(|items| !items.is_empty()))
+    fn items(&self, path: &str) -> io::Result<Vec<Value>> {
+        Ok(data_items(&self.request("GET", path, None)?).collect())
+    }
+
+    /// The permissions the session `id` waits for: `[{id "per_…", action, resources, …}]`.
+    pub fn permissions(&self, id: &str) -> io::Result<Vec<Value>> {
+        self.items(&format!("/api/session/{id}/permission"))
+    }
+
+    /// The forms the session `id` waits for, its questions among them: `[{id "frm_…", metadata,
+    /// fields, …}]`.
+    pub fn forms(&self, id: &str) -> io::Result<Vec<Value>> {
+        self.items(&format!("/api/session/{id}/form"))
+    }
+
+    /// Allows the permission `request` of the session `id` once, or refuses it.
+    pub fn reply_permission(&self, id: &str, request: &str, allow: bool) -> io::Result<()> {
+        let decision = if allow { "once" } else { "reject" };
+        self.request("POST", &format!("/api/session/{id}/permission/{request}/reply"), Some(&json!({ "decision": decision }))).map(|_| ())
+    }
+
+    /// Answers the form `form` of the session `id`: `answer` holds a value for each field key.
+    pub fn reply_form(&self, id: &str, form: &str, answer: Value) -> io::Result<()> {
+        self.request("POST", &format!("/api/session/{id}/form/{form}/reply"), Some(&json!({ "answer": answer }))).map(|_| ())
+    }
+
+    /// Withdraws the form `form` of the session `id`, unanswered: the model goes on without it.
+    pub fn cancel_form(&self, id: &str, form: &str) -> io::Result<()> {
+        self.request("DELETE", &format!("/api/session/{id}/form/{form}"), None).map(|_| ())
     }
 
     /// What the running session `id` waits for, if anything.
     fn running_status(&self, id: &str) -> io::Result<Status> {
-        if self.has_any(&format!("/api/session/{id}/permission"))? {
+        if !self.permissions(id)?.is_empty() {
             return Ok(Status::WaitingOnPermission);
         }
-        if self.has_any(&format!("/api/session/{id}/form"))? {
+        if !self.forms(id)?.is_empty() {
             return Ok(Status::WaitingOnAnswer);
         }
         Ok(Status::Working)
@@ -335,11 +376,46 @@ pub fn sessions(dir: &Path, include_stopped: bool) -> io::Result<Vec<Session>> {
     }
 }
 
+/// A fake service for the tests of this crate.
+#[cfg(test)]
+pub(crate) mod fake {
+    use std::io::{Read, Write};
+    use std::net::TcpListener;
+    use std::sync::mpsc::{self, Receiver};
+    use std::thread;
+
+    /// A fake service on a free port: answers each request with the body its path maps to, as the
+    /// real one does (content-length, connection closed), 404 for any other path. Returns the port
+    /// and each request seen, whole.
+    pub fn service(routes: Vec<(&'static str, &'static str)>) -> (u16, Receiver<String>) {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let (seen, requests) = mpsc::channel();
+        thread::spawn(move || {
+            for stream in listener.incoming() {
+                let mut stream = stream.unwrap();
+                let mut buffer = [0u8; 16384];
+                let read = stream.read(&mut buffer).unwrap();
+                let request = String::from_utf8_lossy(&buffer[..read]).to_string();
+                let line = request.lines().next().unwrap_or_default().to_string();
+                let target = line.split_whitespace().nth(1).unwrap_or_default().to_string();
+                let found = routes.iter().find(|(path, _)| target == *path);
+                let (code, body) = found.map_or(("404 Not Found", "{\"message\":\"no route\"}"), |(_, body)| ("200 OK", body));
+                let answer = format!("HTTP/1.1 {code}\r\ncontent-length: {}\r\nConnection: close\r\n\r\n{body}", body.len());
+                stream.write_all(answer.as_bytes()).unwrap();
+                if seen.send(request).is_err() {
+                    return;
+                }
+            }
+        });
+        (port, requests)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use std::net::TcpListener;
-    use std::thread;
 
     #[test]
     fn base64_matches_rfc_4648() {
@@ -409,30 +485,13 @@ mod tests {
         assert_eq!(create_body(Path::new("/w/api"), " "), json!({ "location": { "directory": "/w/api" } }));
     }
 
-    /// A fake service on a free port: answers each request with the body its path maps to, as the
-    /// real one does (content-length, connection closed). Returns the port and the requests seen.
     fn fake_service(routes: Vec<(&'static str, &'static str)>) -> (u16, std::sync::mpsc::Receiver<String>) {
-        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
-        let port = listener.local_addr().unwrap().port();
-        let (seen, requests) = std::sync::mpsc::channel();
-        thread::spawn(move || {
-            for stream in listener.incoming() {
-                let mut stream = stream.unwrap();
-                let mut buffer = [0u8; 4096];
-                let read = stream.read(&mut buffer).unwrap();
-                let request = String::from_utf8_lossy(&buffer[..read]).to_string();
-                let line = request.lines().next().unwrap_or_default().to_string();
-                let target = line.split_whitespace().nth(1).unwrap_or_default().to_string();
-                let body = routes.iter().find(|(path, _)| target == *path).map_or("{\"message\":\"no route\"}", |(_, body)| body);
-                let code = if routes.iter().any(|(path, _)| target == *path) { "200 OK" } else { "404 Not Found" };
-                let answer = format!("HTTP/1.1 {code}\r\ncontent-length: {}\r\nConnection: close\r\n\r\n{body}", body.len());
-                stream.write_all(answer.as_bytes()).unwrap();
-                if seen.send(line).is_err() {
-                    return;
-                }
-            }
-        });
-        (port, requests)
+        fake::service(routes)
+    }
+
+    /// The first line of the next request the fake service saw.
+    fn first_line(requests: &std::sync::mpsc::Receiver<String>) -> String {
+        requests.recv().unwrap().lines().next().unwrap_or_default().to_string()
     }
 
     const LIST: &str = "/api/session?archived=false&parentID=null&order=desc&limit=50";
@@ -497,7 +556,7 @@ mod tests {
         let (port, requests) = fake_service(vec![("/api/session/active", r#"{"data":{}}"#)]);
         let running = account_with("running", Some(&format!(r#"{{"port": {port}, "password": "p"}}"#)));
         assert!(Service::running(&running).unwrap().is_some());
-        assert_eq!(requests.recv().unwrap(), "GET /api/session/active HTTP/1.1");
+        assert_eq!(first_line(&requests), "GET /api/session/active HTTP/1.1");
     }
 
     #[test]
@@ -510,11 +569,11 @@ mod tests {
         ]);
         let service = Service { port, authorization: "Basic eA==".into() };
         service.interrupt("ses_a").unwrap();
-        assert_eq!(requests.recv().unwrap(), "POST /api/session/ses_a/interrupt HTTP/1.1");
+        assert_eq!(first_line(&requests), "POST /api/session/ses_a/interrupt HTTP/1.1");
         service.archive("ses_a").unwrap();
-        assert_eq!(requests.recv().unwrap(), "PATCH /api/session/ses_a HTTP/1.1");
+        assert_eq!(first_line(&requests), "PATCH /api/session/ses_a HTTP/1.1");
         service.prompt("ses_a", "go on").unwrap();
-        assert_eq!(requests.recv().unwrap(), "POST /api/session/ses_a/prompt HTTP/1.1");
+        assert_eq!(first_line(&requests), "POST /api/session/ses_a/prompt HTTP/1.1");
         assert_eq!(service.create(Path::new("/w"), "t").unwrap(), "ses_new");
         let error = service.interrupt("ses_gone").unwrap_err().to_string();
         assert!(error.contains("404"), "{error}");
