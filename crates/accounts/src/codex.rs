@@ -514,9 +514,20 @@ pub fn sessions(dir: &Path, include_stopped: bool) -> io::Result<Vec<Thread>> {
     Ok(threads)
 }
 
-/// Starts a session of the account in `dir`, in the folder `cwd`, named `name` unless it is
-/// empty, in the daemon of the account, which must run (see `ensure_daemon`). The session waits
-/// for its first message; `codex resume` joins it. Returns its id.
+/// The name a new session gets: `name`, else the last folder of `cwd`, the title kindric shows for
+/// a session without a name anyway.
+fn session_name(name: &str, cwd: &Path) -> String {
+    if !name.trim().is_empty() {
+        return name.trim().to_string();
+    }
+    cwd.file_name().map_or_else(|| "codex".to_string(), |folder| folder.to_string_lossy().into_owned())
+}
+
+/// Starts a session of the account in `dir`, in the folder `cwd`, in the daemon of the account,
+/// which must run (see `ensure_daemon`). The session waits for its first message; `codex resume`
+/// joins it. It is always named (see `session_name`): Codex 0.171.0 writes the file of a session
+/// only at its first turn or when it is named, and `codex resume` refuses a session without one
+/// ("no rollout found"), so a pane opened on an unnamed new session closed at once. Returns its id.
 pub fn start_session(dir: &Path, cwd: &Path, name: &str) -> io::Result<String> {
     let Some(mut daemon) = AppServer::connect_daemon(dir)? else {
         return Err(io::Error::other("the Codex daemon of this account does not run"));
@@ -525,9 +536,7 @@ pub fn start_session(dir: &Path, cwd: &Path, name: &str) -> io::Result<String> {
     let Some(id) = started.get("thread").and_then(|thread| thread.get("id")).and_then(Value::as_str) else {
         return Err(io::Error::other("Codex daemon, thread/start: no session id in the answer"));
     };
-    if !name.trim().is_empty() {
-        daemon.request("thread/name/set", json!({ "threadId": id, "name": name.trim() }))?;
-    }
+    daemon.request("thread/name/set", json!({ "threadId": id, "name": session_name(name, cwd) }))?;
     Ok(id.to_string())
 }
 
@@ -745,6 +754,15 @@ pub fn prepare_hooks(codex: &Path, dir: &Path, hooks: &usage::KindricHooks) -> V
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_new_session_is_named_after_its_folder_when_no_name_is_given() {
+        let folder = Path::new("/home/u").join("api");
+        assert_eq!(session_name(" review ", &folder), "review");
+        assert_eq!(session_name("", &folder), "api");
+        assert_eq!(session_name("  ", &folder), "api");
+        assert_eq!(session_name("", Path::new("/")), "codex", "a folder without a name");
+    }
     use serde_json::json;
 
     #[test]
