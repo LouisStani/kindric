@@ -19,7 +19,8 @@ kindric-accounts gives each account its own directory and links the shared parts
 - Create a shared directory later and existing accounts pick it up on their next launch.
 - An account can also take its model from an Anthropic API key, OpenRouter, a local Ollama or any gateway that speaks Anthropic's API. See [Accounts without a Claude login](#accounts-without-a-claude-login).
 - An account can run OpenAI's Codex instead of Claude Code. See [Codex accounts](#codex-accounts).
-- kindric-accounts never reads, copies or sends your Claude or Codex credentials. The key of an API or gateway account stays in that account's directory and only goes to Claude Code. It makes no network requests: it only talks to the local daemon of a Codex account.
+- An account can run OpenCode instead of Claude Code. See [OpenCode accounts](#opencode-accounts).
+- kindric-accounts never reads, copies or sends your Claude, Codex or OpenCode credentials. The key of an API or gateway account stays in that account's directory and only goes to Claude Code. It makes no network requests: it only talks to the local daemon of a Codex account.
 - One self-contained binary for Linux, macOS and Windows. Nothing else to install.
 
 ## Installation
@@ -108,11 +109,12 @@ Or just run `kindric-accounts` to open the menu. It shows whether each account i
 | `kindric-accounts add <name>` | Creates an account and its private directory. |
 | `kindric-accounts add <name> --provider <provider> [--url <address>] [--model <name>]` | Creates an account whose model comes from an API key or a gateway. See [Accounts without a Claude login](#accounts-without-a-claude-login). |
 | `kindric-accounts add <name> --agent codex` | Creates an account that runs Codex instead of Claude Code. See [Codex accounts](#codex-accounts). |
+| `kindric-accounts add <name> --agent opencode` | Creates an account that runs OpenCode, with a port of its own. See [OpenCode accounts](#opencode-accounts). |
 | `kindric-accounts token <name>` | Keeps the key of such an account, read from standard input (hidden on a terminal). |
 | `kindric-accounts list [--json]` | Prints account names, one per line. |
 | `kindric-accounts status [--json]` | Shows whether each account is logged in, its plan (`pro`, `max`…) and its active sessions. |
 | `kindric-accounts remove <name> [--delete-dir \| --keep-dir]` | Removes an account from the list. Its directory is deleted only after you confirm, or as the option says. |
-| `kindric-accounts run <name> [args]` | Starts Claude with this account, or Codex on a Codex account. Extra arguments go to `claude` (or `codex`), for example `--resume`. |
+| `kindric-accounts run <name> [args]` | Starts Claude with this account, or Codex, or OpenCode, on an account of those. Extra arguments go to `claude` (or `codex`, `opencode`), for example `--resume`. |
 | `kindric-accounts isolate <name>` | Stops sharing MCP servers with and from this account. See [Isolated accounts](#isolated-accounts). |
 | `kindric-accounts unisolate <name>` | Shares MCP servers again from the next launch. |
 | `kindric-accounts isolated [--json]` | Lists isolated accounts. |
@@ -155,14 +157,14 @@ Other programs can drive kindric-accounts through the commands below. Their outp
 ```
 
 - `state` is `logged-in`, `logged-out` or `unknown` (Claude Code did not answer).
-- `sessions` is the number of running Claude sessions on the account; for a Codex account, the sessions loaded in its daemon (always `0` on Windows for now).
+- `sessions` is the number of running Claude sessions on the account; for a Codex account, the sessions loaded in its daemon (always `0` on Windows for now); for an OpenCode account, those running a turn in its service (`0` while it is stopped).
 - `plan` is the subscription type reported by Claude Code, or `null`.
-- `dir` is the account's `CLAUDE_CONFIG_DIR`, or the `CODEX_HOME` of a Codex account.
+- `dir` is the account's `CLAUDE_CONFIG_DIR`, the `CODEX_HOME` of a Codex account, or the folder that holds the XDG directories of an OpenCode account.
 - `isolated` is `true` for an isolated account (since 1.2.0).
 - `login_expires` is when the login must be renewed, in ISO UTC as Claude Code gives it, or `null` (since 2.1.0).
-- `provider` is where the model comes from: `claude` for a Claude login, else `api`, `openrouter`, `ollama` or `gateway` (since 2.2.0), and `openai` for a Codex account (since 2.3.0). For `api`, `openrouter`, `ollama` and `gateway`, `state` is `logged-in` once the account has the key it needs.
+- `provider` is where the model comes from: `claude` for a Claude login, else `api`, `openrouter`, `ollama` or `gateway` (since 2.2.0), `openai` for a Codex account (since 2.3.0) and `opencode` for an OpenCode account (since 2.4.0). For `api`, `openrouter`, `ollama` and `gateway`, `state` is `logged-in` once the account has the key it needs.
 - `model` is the model of a provider account, as the provider names it, or `null` (since 2.2.0).
-- `agent` is the program the account runs: `claude-code` or `codex` (since 2.3.0).
+- `agent` is the program the account runs: `claude-code`, `codex` (since 2.3.0) or `opencode` (since 2.4.0).
 
 On error, the exit code is not 0 and stderr explains why: one line starting with `kindric-accounts:`, or the usage text for an unknown command or option. `jq` is not needed.
 
@@ -242,12 +244,37 @@ How it works:
 - `AGENTS.md`, `skills/` and `prompts/` are linked to `~/.codex`, like the shared parts of a Claude account. `~/.codex` is never written, and it is not an account of its own.
 - `run` starts `codex` with `CODEX_HOME` set to the account's directory, without `OPENAI_API_KEY` and `CODEX_API_KEY`. To use an OpenAI key instead of ChatGPT: `printenv OPENAI_API_KEY | kindric-accounts run cx login --with-api-key`. Codex keeps that key itself.
 - `status` asks `codex login status` whether the account is signed in. Its sessions are those loaded in the account's Codex daemon, asked over its socket, `<CODEX_HOME>/app-server-control/app-server-control.sock`.
+- [kindric](../../docs/desktop.md#codex-accounts) lists, opens, starts and stops the sessions of a Codex account through the same daemon.
 
 Limits:
 
 - A Unix socket path cannot be longer than 103 bytes on every system, so `add` refuses a name that would make it longer. Take a shorter name.
 - On Windows, the sessions of a Codex account are not counted yet.
 - `--provider`, `token` and `isolate` do not apply to a Codex account yet: it shares no MCP servers with the other accounts.
+
+## OpenCode accounts
+
+An account can run [OpenCode](https://opencode.ai) instead of Claude Code (since 2.4.0). `opencode` must be in your `PATH`. Not on Windows yet.
+
+```sh
+kindric-accounts add oc --agent opencode
+kindric-accounts run oc auth login     # pick a provider and sign in
+kindric-accounts run oc                # start OpenCode on this account
+```
+
+How it works:
+
+- OpenCode keeps everything under the four XDG base directories. The account's directory holds `config/`, `data/`, `state/` and `cache/`, and `run` starts `opencode` with `XDG_CONFIG_HOME`, `XDG_DATA_HOME`, `XDG_STATE_HOME` and `XDG_CACHE_HOME` pointing at them. `HOME` stays yours. `kindric-agent.json` says the account runs OpenCode.
+- The commands of its sessions would inherit those variables too, and git would no longer read `~/.config/git/config`. So `add` writes `kindric-shell` in the account's directory and names it as the shell in `config/opencode/opencode.json`: OpenCode runs each command with `kindric-shell -c <command>`, which gives the command your own XDG directories back, then runs your `$SHELL`. `opencode.json` is written only when the account has none; if yours names another shell, `run` warns.
+- `AGENTS.md`, `agents/`, `agent/`, `commands/` and `command/` are linked to your own OpenCode configuration (`$XDG_CONFIG_HOME/opencode`, else `~/.config/opencode`), like the shared parts of a Claude account. That folder is never written. Skills are not linked: OpenCode does not read them from there.
+- OpenCode keeps the sessions of an account in a background service on 127.0.0.1, and every service takes the port 49374 unless told otherwise. `add` gives each OpenCode account the first free port from 49375, with `opencode service set port`, so that two accounts and your own OpenCode run at the same time.
+- `run` starts `opencode` without `ANTHROPIC_API_KEY`, `OPENAI_API_KEY` and `OPENCODE_API_KEY`, and without the variables of a Claude Code or Codex session (`CLAUDE_CODE_*`, `CLAUDE_CONFIG_DIR`, `CLAUDE_JOB_DIR`, `CODEX_HOME`, `CODEX_THREAD_ID`): the service keeps the environment it starts with and hands it to every command of every session. OpenCode keeps its keys itself.
+- `status` asks only while the account's service runs, since asking would start it: `opencode auth list` for the login, the running sessions from its API. While the service is stopped, the state is `unknown` and `sessions` is `0`.
+
+Limits:
+
+- kindric lists, opens and starts the sessions of an OpenCode account through its service, which kindric itself asks: kindric-accounts makes no request to it.
+- `--provider`, `token` and `isolate` do not apply to an OpenCode account: OpenCode keeps its own providers, and the account shares no MCP servers with the other accounts yet.
 
 ## Shared MCP servers
 
@@ -297,7 +324,7 @@ In kindric, you can say you are away for a while from a session. kindric-account
 - PreToolUse, shell commands only: it refuses a command that pushes, merges, deletes, installs or uses another account, and tells the session why, so that it goes on with the rest. Claude Code runs this hook in every permission mode. The command is read word by word, not run in a shell. It looks past `sudo`, `timeout 60`, `nice -n 10`, `xargs` and the like, into `( … )`, `$( … )`, backquotes, `sh -c "…"` and `eval`. Pulling counts as merging; `git reset --hard`, `git stash drop`, `git restore`, `find -exec rm` and `rsync --delete` as deleting; `cargo add`, `npm ci`, `go get` and `python -m pip install` as installing. A command built at run time (a variable that holds `push`, a script file) is not seen.
 - PermissionRequest: it answers yes to the questions Claude Code would ask you, and no to those same commands.
 
-A session that has finished runs `kindric away done <session id>` and stops.
+A session that has finished runs `kindric away done <session id>` and stops. A session that cannot go on without you runs `kindric away blocked <session id> "<what it needs>"`: what it needs goes to the overview, and Stop lets it end its turns until you answer. Stop also lets a session stop when, relaunched by the hook, it ran no tool: that turn goes to the overview with its last words, and the session is not relaunched in a loop. Commands are still checked until you are back.
 
 - The hook comes after your own hooks, and does nothing for a session you are not away from: Claude Code decides and asks as usual.
 - An isolated account gets this hook too, with those of the overview (below) and no other hook of kindric's: it reads only kindric's marks of absence, nothing of another account.

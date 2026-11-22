@@ -29,7 +29,7 @@ fn badge(status: &AccountStatus) -> String {
     let mut badge = match status.state {
         LoginState::LoggedIn if !plan.is_empty() => format!("logged in · {plan}"),
         LoginState::LoggedIn => "logged in".to_string(),
-        LoginState::LoggedOut if status.agent == Agent::Codex => format!("logged out · {plan}"),
+        LoginState::LoggedOut if status.agent != Agent::ClaudeCode => format!("logged out · {plan}"),
         LoginState::LoggedOut if status.provider != status::CLAUDE_PROVIDER => format!("no key · {plan}"),
         LoginState::LoggedOut => "logged out".to_string(),
         LoginState::Unknown => "status unknown".to_string(),

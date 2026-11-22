@@ -128,7 +128,7 @@ impl App {
             AppEvent::Snapshot(result) => {
                 match result {
                     Ok((snapshot, unread)) => {
-                        self.snapshot = Some(accounts::without_implicit_default(snapshot));
+                        self.snapshot = Some(accounts::without_codex(accounts::without_implicit_default(snapshot)));
                         self.unread = unread;
                     },
                     Err(error) => self.status = Some(format!("session list unavailable: {error}")),

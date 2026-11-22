@@ -854,9 +854,10 @@ def hook_commands(settings: dict[str, Any]) -> dict[str, list[str]]:
             for event, matchers in settings.get("hooks", {}).items()}
 
 
-def away_hook(event: str, session_id: str, command: str | None = None) -> str:
-    """What `kindric away-hook` answers Claude Code for this event of the session."""
-    asked: dict[str, Any] = {"hook_event_name": event, "session_id": session_id}
+def away_hook(event: str, session_id: str, command: str | None = None, **fields: Any) -> str:
+    """What `kindric away-hook` answers Claude Code for this event of the session; `fields` are
+    added to what Claude Code gives the hook."""
+    asked: dict[str, Any] = {"hook_event_name": event, "session_id": session_id, **fields}
     if command is not None:
         asked.update(tool_name="Bash", tool_input={"command": command})
     done = subprocess.run(["kindric", "away-hook"], input=json.dumps(asked), capture_output=True, text=True, timeout=30)
@@ -904,6 +905,36 @@ class AwayOnAnIsolatedAccount(Journey):
         self.assertIn('"decision":"block"', away_hook("Stop", session_id))
         self.assertIn('"permissionDecision":"deny"', away_hook("PreToolUse", session_id, "git push"))
         self.assertEqual(away_hook("PreToolUse", session_id, "cargo test"), "")
+
+        # Nothing left without the user: what it needs goes to the overview, and the session may
+        # stop until that is answered; its commands are still checked (433).
+        blocked = subprocess.run(["kindric", "away", "blocked", session_id, "the key of the bench"],
+                                 cwd=PROJECT, capture_output=True, text=True, timeout=10)
+        self.assertEqual(blocked.returncode, 0, blocked.stderr)
+        self.assertIn("You may end your turn now", blocked.stdout)
+        wait_until("the need in the bar", lambda: dot_sign(driver, "alone") == "?", timeout=10)
+        self.assertEqual(away_hook("Stop", session_id), "")
+        self.assertIn('"permissionDecision":"deny"', away_hook("PreToolUse", session_id, "git push"))
+        requests = [os.path.join(folder, name) for folder, _, files in os.walk(OVERVIEW) for name in files if name.endswith(".json")]
+        self.assertEqual(len(requests), 1, requests)
+        with open(requests[0]) as request:
+            self.assertEqual(json.load(request)["question"], "the key of the bench")
+        # Answered, the request goes as the page settles it: the session works on the answer.
+        os.remove(requests[0])
+        self.assertIn('"decision":"block"', away_hook("Stop", session_id))
+
+        # Relaunched by the hook, the session ran no tool: it may stop, its last words in the
+        # overview, instead of being relaunched in a loop (435).
+        transcript = os.path.join(OUT, "away-idle.jsonl")
+        with open(transcript, "w") as lines:
+            lines.write(json.dumps({"type": "user", "isMeta": True, "message": {"role": "user",
+                        "content": "Stop hook feedback:\nThe user is away for 50 more minutes and asked you to keep working."}}) + "\n")
+            lines.write(json.dumps({"type": "assistant", "message": {"role": "assistant",
+                        "content": [{"type": "text", "text": "Still waiting on the key."}]}}) + "\n")
+        self.assertEqual(away_hook("Stop", session_id, stop_hook_active=True, transcript_path=transcript, cwd=PROJECT), "")
+        wait_until("the idle turn in the overview", lambda: len(overview_requests()) == 1, timeout=10)
+        self.assertEqual(away_hook("Stop", session_id, stop_hook_active=True, transcript_path=transcript, cwd=PROJECT), "", "still waiting")
+        self.assertEqual(len(overview_requests()), 1, "asked once")
 
     @classmethod
     def tearDownClass(cls) -> None:
@@ -2147,6 +2178,183 @@ class AccountAddedThenRemoved(Journey):
         wait_until("extra off the list", lambda: self.account_names() == ["work"] or None)
         self.assertNotIn("extra", accounts("list"))
         self.assertTrue(os.path.isdir(self.EXTRA_DIR), "the account's folder removed")
+
+
+class CodexAccountAddedFromSettings(Journey):
+    """The settings add a Codex account: no address, model or key field; kindric-accounts makes it
+    a Codex account, Codex's login runs in the helper window, and the row says "codex"."""
+
+    CODEX_DIR = os.path.join(HOME, ".local/share/kindric-accounts/cx")
+
+    def test_add_and_log_in(self) -> None:
+        driver = self.driver
+        driver.press(CONTROL, ",")
+        wait_until("the settings", lambda: dialog_open(driver, "settings"))
+        click_text(driver, "#settings .settings-categories li", "accounts")
+        wait_until("the account work", lambda: texts(driver, "#settings li.account .account-name") == ["work"] or None)
+        driver.script("""const kind = document.querySelector('#settings .accounts-add select[name=kind]');
+          kind.value = 'codex';
+          kind.dispatchEvent(new Event('change'));""")
+        hidden = driver.script("""return ['.provider-url', '.provider-model', '.provider-key']
+          .map((selector) => document.querySelector('#settings ' + selector).hidden);""")
+        self.assertEqual(hidden, [True, True, True], "a Codex account asks for its name only")
+        driver.type_into(driver.find("#settings .accounts-add input[name=name]"), "cx" + ENTER)
+
+        wait_until("Codex's login of cx", lambda: os.path.exists(os.path.join(self.CODEX_DIR, "fake-logins.log")))
+        with open(os.path.join(self.CODEX_DIR, "kindric-agent.json"), encoding="utf-8") as file:
+            self.assertEqual(json.load(file), {"agent": "codex"})
+        if dialog_open(driver, "helper"):
+            driver.click(driver.find("#helper-done"))
+        wait_until("the login window closed", lambda: not dialog_open(driver, "helper"))
+        row = wait_until("cx logged in", lambda: driver.script("""const row = [...document.querySelectorAll('#settings li.account')].find((item) => item.querySelector('.account-name').textContent === 'cx');
+          if (!row || !row.querySelector('.account-state').classList.contains('logged-in')) return null;
+          return [row.querySelector('.account-details').textContent, [...row.querySelectorAll('.account-actions button')].map((button) => button.textContent)];"""))
+        self.assertEqual(row, ["codex", ["remove"]])
+
+
+CODEX_ACCOUNT_DIR = os.path.join(HOME, ".local/share/kindric-accounts/cx")
+
+
+def codex_threads() -> list[dict[str, Any]]:
+    """What the fake codex knows of the sessions of the Codex account cx (tests/e2e/bin/codex)."""
+    try:
+        with open(os.path.join(CODEX_ACCOUNT_DIR, "fake-threads.json"), encoding="utf-8") as source:
+            threads: list[dict[str, Any]] = json.load(source)
+            return threads
+    except (OSError, ValueError):
+        return []
+
+
+def codex_thread(name: str) -> dict[str, Any] | None:
+    return next((thread for thread in codex_threads() if thread.get("name") == name), None)
+
+
+def codex_resumed() -> list[str]:
+    """The lines "<id> <folder>" of each `codex resume` the fake ran."""
+    try:
+        with open(os.path.join(CODEX_ACCOUNT_DIR, "fake-resumed.log"), encoding="utf-8") as log:
+            return log.read().splitlines()
+    except OSError:
+        return []
+
+
+class CodexSessionsInKindric(Journey):
+    """A Codex account's sessions, read from its daemon: in the bar with their states (a permission
+    waiting is a question); one opens in a pane, Codex's TUI started in its folder; Ctrl+N on the
+    Codex account starts a named session in the daemon; Ctrl+Shift+K stops the turn of a working
+    one and hides it; a message typed in the control center goes to Codex for the session; the
+    command a session asks to run shows in the control center, and "a" allows it through the
+    daemon; the purge archives the one idle for 10 days."""
+
+    THREADS = [
+        {"id": "11111111-1111-4111-8111-111111111111", "name": "codex-idle", "status": "idle", "turns": [{"id": "a1", "status": "completed"}]},
+        {"id": "22222222-2222-4222-8222-222222222222", "name": "codex-asks", "status": "approval", "turns": [{"id": "b1", "status": "inProgress"}],
+         "approval": {"itemId": "b-item", "command": "rm -rf build", "reason": "clean the build"}},
+        {"id": "33333333-3333-4333-8333-333333333333", "name": "codex-busy", "status": "working",
+         "turns": [{"id": "c1", "status": "completed"}, {"id": "c2", "status": "inProgress"}]},
+        {"id": "44444444-4444-4444-8444-444444444444", "name": "codex-old", "status": "notLoaded", "turns": []},
+    ]
+
+    @classmethod
+    def prepare(cls) -> None:
+        accounts("add", "cx", "--agent", "codex")
+        with open(os.path.join(CODEX_ACCOUNT_DIR, "fake-logged-in"), "w", encoding="utf-8") as file:
+            file.write("chatgpt\n")
+        threads = [dict(thread, cwd=PROJECT, archived=False) for thread in cls.THREADS]
+        with open(os.path.join(CODEX_ACCOUNT_DIR, "fake-threads.json"), "w", encoding="utf-8") as file:
+            json.dump(threads, file)
+        # The old one was last active 10 days ago: its rollout says so.
+        day = os.path.join(CODEX_ACCOUNT_DIR, "sessions/2026/11/01")
+        os.makedirs(day, exist_ok=True)
+        old = os.path.join(day, f"rollout-2026-11-01T10-00-00-{cls.THREADS[3]['id']}.jsonl")
+        with open(old, "w", encoding="utf-8") as file:
+            file.write("{}\n")
+        then = time.time() - 10 * 86400
+        os.utime(old, (then, then))
+        accounts("run", "cx", "app-server", "daemon", "start")
+
+    @classmethod
+    def tearDownClass(cls) -> None:
+        try:
+            super().tearDownClass()
+        finally:
+            subprocess.run(["kindric-accounts", "run", "cx", "app-server", "daemon", "stop"], cwd=PROJECT, capture_output=True, timeout=30)
+
+    def test_list_open_start_hide_purge(self) -> None:
+        driver = self.driver
+        wait_until("the Codex sessions in the bar", lambda: chip_state(driver, "codex-idle") and chip_state(driver, "codex-asks"))
+        self.assertEqual(chip_state(driver, "codex-asks"), "asking")
+        self.assertEqual(chip_state(driver, "codex-idle"), "waiting")
+        self.assertEqual(chip_state(driver, "codex-busy"), "working")
+
+        open_from_bar(driver, "codex-idle")
+        wait_until("Codex's TUI started in the session's folder",
+                   lambda: f"{self.THREADS[0]['id']} {PROJECT}" in codex_resumed() or None)
+
+        driver.press(CONTROL, "n")
+        wait_until("the new session form", lambda: dialog_open(driver, "new-session"))
+        found = driver.script("""return [...document.querySelectorAll('#new-account .launch-list li')].find(
+          (item) => item.textContent.trim().startsWith('cx'));""")
+        self.assertTrue(isinstance(found, dict) and ELEMENT_KEY in found, "no cx in the new session form")
+        driver.click(str(found[ELEMENT_KEY]))
+        directory = driver.find("#new-form input[name=directory]")
+        driver.clear(directory)
+        driver.type_into(directory, PROJECT)
+        driver.type_into(driver.find("#new-form input[name=name]"), "codex-new" + ENTER)
+        started = wait_until("the session started in the daemon", lambda: codex_thread("codex-new"))
+        self.assertEqual(started["cwd"], PROJECT)
+        wait_until("the new session in the bar", lambda: chip_state(driver, "codex-new"))
+        wait_until("the new session open in a pane", lambda: f"{started['id']} {PROJECT}" in codex_resumed() or None)
+        # Before starting it, kindric gave the account its hooks, the ones that work in Codex.
+        with open(os.path.join(CODEX_ACCOUNT_DIR, "hooks.json"), encoding="utf-8") as file:
+            hooks = json.load(file)["hooks"]
+        commands = sorted({hook["command"].split()[-1] for groups in hooks.values() for group in groups for hook in group["hooks"]})
+        self.assertEqual(commands, ["away-hook", "overview-start"])
+        self.assertTrue(os.path.exists(os.path.join(CODEX_ACCOUNT_DIR, ".kindric-hooks-trusted")), "Codex was not asked to trust them")
+
+        open_from_bar(driver, "codex-busy")
+        driver.press(CONTROL, SHIFT, "k")
+        wait_until("the question before hiding", lambda: dialog_open(driver, "confirm-hide"))
+        driver.click(driver.find("#hide-form button[type=submit]"))
+        wait_until("the working session hidden", lambda: chip_state(driver, "codex-busy") is None)
+        busy = codex_thread("codex-busy") or {}
+        self.assertEqual([turn["status"] for turn in busy.get("turns", [])], ["completed", "interrupted"])
+
+        driver.press(CONTROL, SHIFT, "0")
+        idle = self.THREADS[0]["id"]
+        wait_until("codex-idle in the control center", lambda: driver.find(f"[data-key='row/{idle}']"))
+        picked = "return document.querySelector('.control-row.selected')?.dataset.session ?? null"
+        for _ in range(8):
+            if driver.script(picked) == idle:
+                break
+            driver.press(ARROW_DOWN)
+        self.assertEqual(driver.script(picked), idle, "codex-idle never picked with the arrow keys")
+        driver.press(ENTER)
+        field = wait_until("its field", lambda: driver.find(f"[data-key='prompt/{idle}']"))
+        driver.type_into(field, "hello codex" + ENTER)
+        wait_until("the message given to Codex for the session", lambda: (codex_thread("codex-idle") or {}).get("messages") == ["hello codex"] or None)
+
+        driver.press(ESCAPE)
+        asking = self.THREADS[1]["id"]
+        command = wait_until("the command codex-asks asks to run", lambda: driver.text(driver.find(f"[data-key='row/{asking}'] .request-command")))
+        self.assertEqual(command, "$ rm -rf build")
+        driver.press("n")
+        wait_until("codex-asks picked, the session that asks", lambda: driver.script(picked) == asking or None)
+        driver.press("a")
+        wait_until("the approval given to Codex", lambda: (codex_thread("codex-asks") or {}).get("decision") == "accept" or None)
+        wait_until("the question gone from the row of codex-asks", lambda: not driver.find_all(f"[data-key='row/{asking}'] .request-command") or None)
+
+        driver.press(CONTROL, ",")
+        wait_until("the settings", lambda: dialog_open(driver, "settings"))
+        click_text(driver, "#settings .settings-categories li", "sessions")
+        driver.click(driver.find("#settings .purge button[data-days='7']"))
+        question = wait_until("the question", lambda: driver.text(driver.find("#settings .purge .purge-question")))
+        self.assertTrue(question.startswith("1 session of cx, idle for more than 7 days"), question)
+        driver.click(driver.find("#settings .purge .purge-go"))
+        result = wait_until("the result", lambda: (text := driver.text(driver.find("#settings .purge .purge-message"))) != "purging…" and text)
+        self.assertEqual(result, "1 session removed.")
+        self.assertTrue((codex_thread("codex-old") or {}).get("archived"), "the old session not archived")
+        self.assertFalse((codex_thread("codex-idle") or {}).get("archived"), "a session without a known age archived")
 
 
 class ControlCenterKeysAndPromptAll(Journey):

@@ -321,7 +321,7 @@ pub struct KindricHooks {
 }
 
 impl KindricHooks {
-    fn is_empty(&self) -> bool {
+    pub(crate) fn is_empty(&self) -> bool {
         [&self.unread, &self.away, &self.wake, &self.permission, &self.start, &self.artifacts, &self.question, &self.tasks]
             .iter()
             .all(|hook| hook.is_none())

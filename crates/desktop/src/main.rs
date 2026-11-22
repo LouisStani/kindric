@@ -23,12 +23,12 @@ use std::process::ExitCode;
 use std::sync::{Mutex, MutexGuard, PoisonError};
 use std::time::{Duration, Instant};
 
-use kindric_core::attach::{AttachCommand, attach_command, login_command, remove_command, stop_command, trust_command};
+use kindric_core::attach::{Agent, AttachCommand, attach_command, login_command, remove_command, stop_command, trust_command};
 use kindric_core::launcher::{self, Request, resolve_directory};
 use kindric_core::mailbox::Mailbox;
 use kindric_core::accounts::SessionInfo;
 use kindric_core::artifacts::{self, Kind};
-use kindric_core::{accounts, activity, atlas, away, changes, checks, claude_theme, images, mailbox, origins, overview, refresher, steps, worktrees};
+use kindric_core::{accounts, activity, attach, atlas, codex_approval, opencode_request, away, changes, checks, claude_theme, images, mailbox, origins, overview, refresher, steps, worktrees};
 use serde::Serialize;
 use serde::de::DeserializeOwned;
 use tauri::ipc::{Channel, InvokeResponseBody, Response};
@@ -81,6 +81,12 @@ struct Shared {
     claims_dir: Result<PathBuf, String>,
     /// What `claude --version` and `--help` said, kept while the same claude is found.
     claude_facts: Mutex<Option<checks::ClaudeFacts>>,
+    /// The approval each Codex session waiting for one asks, by session id, read once from its
+    /// daemon while it waits (decision 431); `None` when the daemon gave none.
+    codex_asked: Mutex<HashMap<String, Option<overview::Request>>>,
+    /// When the page first saw each request of an OpenCode session, by request id (decision 441):
+    /// those requests are read again from the service at each reading, and keep their time.
+    opencode_seen: Mutex<HashMap<String, i64>>,
 }
 
 /// The Claude Code shown in a terminal over a dialog: asking whether a folder is trusted, or
@@ -322,11 +328,13 @@ async fn account_statuses(shared: State<'_, Shared>) -> Result<Vec<accounts::Acc
 /// Creates an account of kindric-accounts; returns its warnings, if any. With `provider`, its
 /// model comes from an API key or a gateway, and `key` is kept for it.
 #[tauri::command]
-fn add_account(name: String, provider: Option<accounts::NewProvider>, key: Option<String>) -> Result<Vec<String>, String> {
+fn add_account(name: String, provider: Option<accounts::NewProvider>, key: Option<String>, agent: Option<String>) -> Result<Vec<String>, String> {
     let paths = accounts::paths().map_err(|error| error.to_string())?;
-    match provider {
-        None => accounts::add_account(&paths, name.trim()),
-        Some(provider) => accounts::add_provider_account(&paths, name.trim(), &provider, key.as_deref()),
+    match (agent.as_deref(), provider) {
+        (Some("codex"), _) => accounts::add_codex_account(&paths, name.trim()),
+        (Some(other), _) => return Err(format!("unknown agent {other:?}")),
+        (None, None) => accounts::add_account(&paths, name.trim()),
+        (None, Some(provider)) => accounts::add_provider_account(&paths, name.trim(), &provider, key.as_deref()),
     }
     .map_err(|error| error.to_string())
 }
@@ -603,14 +611,24 @@ async fn hide_session(app: AppHandle, shared: State<'_, Shared>, account: String
     let session_id = session_id_of(&shared, &account, &short_id)?;
     let implicit = implicit_default(&account)?;
     let (stop_account, stop_id) = (account.clone(), short_id.clone());
-    let stopped =
-        tauri::async_runtime::spawn_blocking(move || stop_command(&stop_account, &stop_id, implicit).output())
-            .await
-            .map_err(|error| error.to_string())?
-            .map_err(|error| format!("cannot stop {short_id}: {error}"))?;
-    if !stopped.status.success() {
-        let reason = String::from_utf8_lossy(&stopped.stderr).trim().to_string();
-        return Err(format!("cannot stop {short_id}: {reason}"));
+    let agent = attach::agent_of(&account, implicit);
+    if agent != Agent::ClaudeCode {
+        tauri::async_runtime::spawn_blocking(move || match agent {
+            Agent::OpenCode => attach::stop_opencode_session(&stop_account, &stop_id),
+            _ => attach::stop_codex_session(&stop_account, &stop_id),
+        })
+        .await
+        .map_err(|error| error.to_string())??;
+    } else {
+        let stopped =
+            tauri::async_runtime::spawn_blocking(move || stop_command(&stop_account, &stop_id, implicit).output())
+                .await
+                .map_err(|error| error.to_string())?
+                .map_err(|error| format!("cannot stop {short_id}: {error}"))?;
+        if !stopped.status.success() {
+            let reason = String::from_utf8_lossy(&stopped.stderr).trim().to_string();
+            return Err(format!("cannot stop {short_id}: {reason}"));
+        }
     }
     update_prefs(&app, &shared, |prefs| prefs::set_hidden(prefs, &session_id, true))?;
     let mut workspace = shared.workspace();
@@ -653,6 +671,11 @@ async fn purge_sessions(app: AppHandle, shared: State<'_, Shared>, days: u32) ->
     let report = tauri::async_runtime::spawn_blocking(move || {
         purge::purge(targets, |target| {
             let implicit = implicit_default(&target.account)?;
+            match attach::agent_of(&target.account, implicit) {
+                Agent::Codex => return attach::archive_codex_session(&target.account, &target.short_id),
+                Agent::OpenCode => return attach::archive_opencode_session(&target.account, &target.short_id),
+                Agent::ClaudeCode => {},
+            }
             let output = remove_command(&target.account, &target.short_id, implicit)
                 .output()
                 .map_err(|error| format!("cannot run claude rm: {error}"))?;
@@ -797,6 +820,8 @@ fn open_session(
     let _span = shared.trace.span("open_session");
     shared.trace.record(&format!("attach {short_id} in pane {pane} at {columns}x{rows}"), Duration::ZERO);
     let implicit = implicit_default(&account)?;
+    // Before the lock: starting the daemon of a Codex account takes a moment.
+    let command = attach::session_attach_command(&account, &short_id, implicit)?;
     let mut workspace = shared.workspace();
     let key = SessionKey { account: account.clone(), short_id: short_id.clone() };
     let left = match workspace.tabs.show(pane, key.clone()) {
@@ -825,7 +850,7 @@ fn open_session(
     let traced = app.clone();
     let mut first_output = Some((Instant::now(), format!("attach {short_id} first output")));
     let opened = Pane::open(
-        &attach_command(&account, &short_id, implicit),
+        &command,
         columns,
         rows,
         move |bytes| {
@@ -1300,20 +1325,84 @@ fn overview_root() -> Result<PathBuf, String> {
     overview::default_root().map_err(|error| format!("cannot find kindric's data: {error}"))
 }
 
-/// What the sessions ask the user, oldest first.
+/// What the sessions ask the user, oldest first: what their hooks wrote, the approvals Codex
+/// sessions wait for, and the permissions and questions of OpenCode sessions. The approval of a Codex session is read from its daemon once while the
+/// session waits: the page asks every second.
 #[tauri::command]
-fn overview_requests(shared: State<'_, Shared>) -> Result<Vec<overview::Request>, String> {
+async fn overview_requests(shared: State<'_, Shared>) -> Result<Vec<overview::Request>, String> {
     let _span = shared.trace.span("overview_requests");
-    Ok(overview::live_pending(&overview_root()?, std::time::SystemTime::now()))
+    let mut requests = overview::live_pending(&overview_root()?, std::time::SystemTime::now());
+    let waiting: Vec<SessionInfo> = {
+        let view = shared.view.lock().unwrap_or_else(PoisonError::into_inner);
+        view.sessions.iter().map(|row| row.info.clone()).filter(codex_approval::asks_approval).collect()
+    };
+    let unknown: Vec<SessionInfo> = {
+        let mut asked = shared.codex_asked.lock().unwrap_or_else(PoisonError::into_inner);
+        let still: HashSet<&str> = waiting.iter().map(|info| info.session_id.as_str()).collect();
+        asked.retain(|session, _| still.contains(session.as_str()));
+        waiting.into_iter().filter(|info| !asked.contains_key(&info.session_id)).collect()
+    };
+    if !unknown.is_empty() {
+        let now = unix_now()?;
+        let read = unknown.clone();
+        let found = tauri::async_runtime::spawn_blocking(move || codex_approval::requests(&read, now)).await.map_err(|error| error.to_string())?;
+        let mut asked = shared.codex_asked.lock().unwrap_or_else(PoisonError::into_inner);
+        for info in &unknown {
+            let request = found.iter().find(|request| request.session_id == info.session_id).cloned();
+            asked.insert(info.session_id.clone(), request);
+        }
+    }
+    {
+        let asked = shared.codex_asked.lock().unwrap_or_else(PoisonError::into_inner);
+        requests.extend(asked.values().flatten().cloned());
+    }
+    requests.extend(opencode_requests(&shared).await?);
+    requests.sort_by_key(|request| request.asked_at);
+    Ok(requests)
+}
+
+/// What the OpenCode sessions waiting for the user ask, read from their services now: a request
+/// costs a few milliseconds and stays right when it is answered in the TUI. Each keeps the time it
+/// was first seen.
+async fn opencode_requests(shared: &Shared) -> Result<Vec<overview::Request>, String> {
+    let asking: Vec<SessionInfo> = {
+        let view = shared.view.lock().unwrap_or_else(PoisonError::into_inner);
+        view.sessions.iter().map(|row| row.info.clone()).filter(opencode_request::asks).collect()
+    };
+    let now = unix_now()?;
+    let mut found = if asking.is_empty() {
+        Vec::new()
+    } else {
+        tauri::async_runtime::spawn_blocking(move || opencode_request::requests(&asking, now)).await.map_err(|error| error.to_string())?
+    };
+    let mut seen = shared.opencode_seen.lock().unwrap_or_else(PoisonError::into_inner);
+    seen.retain(|id, _| found.iter().any(|request| &request.id == id));
+    for request in &mut found {
+        request.asked_at = *seen.entry(request.id.clone()).or_insert(request.asked_at);
+    }
+    Ok(found)
 }
 
 /// The user answers a permission or a question of AskUserQuestion: the hook waiting in the
 /// session reads the answer and gives it to Claude Code.
 #[tauri::command]
-fn answer_request(shared: State<'_, Shared>, session_id: String, id: String, answer: overview::Answer) -> Result<(), String> {
+async fn answer_request(shared: State<'_, Shared>, session_id: String, id: String, answer: overview::Answer) -> Result<(), String> {
     let _span = shared.trace.span("answer_request");
     if matches!(answer, overview::Answer::Text { .. }) {
         return Err("the answer to kindric ask is typed into the session, not written for a hook".into());
+    }
+    if opencode_request::is_opencode_request(&id) {
+        return tauri::async_runtime::spawn_blocking(move || opencode_request::answer(&id, &answer)).await.map_err(|error| error.to_string())?;
+    }
+    if codex_approval::is_codex_request(&id) {
+        let allow = match answer {
+            overview::Answer::Allow => true,
+            overview::Answer::Deny => false,
+            _ => return Err("a Codex session asks to allow or deny".into()),
+        };
+        // Read again once answered: the session asks the next one, or none.
+        shared.codex_asked.lock().unwrap_or_else(PoisonError::into_inner).remove(&session_id);
+        return tauri::async_runtime::spawn_blocking(move || codex_approval::answer(&id, allow)).await.map_err(|error| error.to_string())?;
     }
     overview::answer(&overview_root()?, &session_id, &id, &answer).map_err(|error| error.to_string())
 }
@@ -1359,6 +1448,11 @@ async fn type_answer(
 /// Types `words` into a session no pane shows, then Enter, holding its claim meanwhile as a pane
 /// does. Blocks for a few seconds.
 fn type_as_user(claims: &Path, account: &str, short_id: &str, implicit: bool, words: &str) -> Result<(), String> {
+    match attach::agent_of(account, implicit) {
+        Agent::Codex => return attach::send_codex_message(account, short_id, words),
+        Agent::OpenCode => return attach::send_opencode_message(account, short_id, words),
+        Agent::ClaudeCode => {},
+    }
     let key = SessionKey { account: account.to_string(), short_id: short_id.to_string() };
     let _claim = claim::claim(claims, &key)?;
     typing::type_into(&attach_command(account, short_id, implicit), words, &typing::TIMINGS).map_err(|error| format!("cannot type into {short_id}: {error}"))
@@ -1665,6 +1759,8 @@ fn main() -> ExitCode {
             .map(|directory| directory.join("attached"))
             .map_err(|error| format!("cannot tell whether another kindric window shows a session: {error}")),
         claude_facts: Mutex::new(None),
+        codex_asked: Mutex::new(HashMap::new()),
+        opencode_seen: Mutex::new(HashMap::new()),
     };
     let built = tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())

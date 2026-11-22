@@ -353,6 +353,7 @@ mod tests {
             progress: None,
             tasks: None,
             waiting_for: None,
+            agent: Default::default(),
         }
     }
 

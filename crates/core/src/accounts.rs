@@ -9,15 +9,16 @@ pub use kindric_accounts::registry::DEFAULT_ACCOUNT;
 pub use kindric_accounts::status::AccountStatus;
 use kindric_accounts::agent::{self, Agent};
 use kindric_accounts::provider::{self, Kind, Provider};
-use kindric_accounts::{Paths, account, launch, memory, registry, status, usage};
+use kindric_accounts::{Paths, account, codex, launch, memory, registry, status, usage};
 use serde::{Deserialize, Serialize};
 
+use crate::opencode;
 use crate::progress;
 use crate::task_list;
 
 pub(crate) const LAUNCHER: &str = "kindric-accounts";
-/// 2.2.0: `token`, the key of the accounts whose model comes from an API key or a gateway.
-pub const MIN_LAUNCHER_VERSION: (u32, u32, u32) = (2, 3, 0);
+/// 2.4.0: OpenCode accounts, whose login kindric starts with `run <name> auth login`.
+pub const MIN_LAUNCHER_VERSION: (u32, u32, u32) = (2, 4, 0);
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum SessionState {
@@ -56,6 +57,9 @@ pub struct SessionInfo {
     /// What the session waits for from the user, in Claude Code's words ("permission prompt",
     /// "input needed"), while a question of Claude Code is on its screen.
     pub waiting_for: Option<String>,
+    /// The program of its account: Claude Code, or Codex or OpenCode, whose sessions are attached
+    /// and started otherwise.
+    pub agent: Agent,
 }
 
 impl SessionInfo {
@@ -142,6 +146,7 @@ fn parse_agents_with(account: &str, json: &str, session_file: impl Fn(u32) -> Se
                 progress: None,
                 tasks: None,
                 waiting_for: file.waiting_for,
+                agent: Agent::ClaudeCode,
             }
         })
         .collect())
@@ -336,10 +341,11 @@ fn account_sessions(paths: &Paths, account: &str, implicit_default: bool, includ
     } else {
         launch::require_account(paths, account).map_err(library_error)?
     };
-    // The sessions of a Codex account live in its daemon, not in `claude agents`: listed from the
-    // next step of the Codex accounts.
     if !is_implicit_default(account, implicit_default) && is_codex(paths, account) {
-        return Ok(Vec::new());
+        return codex_sessions(account, &dir, include_stopped);
+    }
+    if !is_implicit_default(account, implicit_default) && is_opencode(paths, account) {
+        return opencode_sessions(account, &dir, include_stopped);
     }
     let claude = launch::require_claude().map_err(library_error)?;
     let mut command = claude_command(claude);
@@ -361,6 +367,75 @@ fn account_sessions(paths: &Paths, account: &str, implicit_default: bool, includ
         session.tasks = task_list::progress(&dir, &session.session_id);
     }
     Ok(sessions)
+}
+
+/// A session of Codex as kindric shows it. Its id serves both to attach (`codex resume`) and to
+/// address it. Waiting for a permission or an answer reads as Claude Code's words, so it asks the
+/// user the same way.
+fn codex_session(account: &str, thread: codex::Thread) -> SessionInfo {
+    let (state, waiting_for) = match thread.status {
+        codex::ThreadStatus::Working => (SessionState::Working, None),
+        codex::ThreadStatus::Idle | codex::ThreadStatus::SystemError => (SessionState::Waiting, None),
+        codex::ThreadStatus::WaitingOnApproval => (SessionState::Waiting, Some("permission prompt".to_string())),
+        codex::ThreadStatus::WaitingOnUserInput => (SessionState::Waiting, Some("input needed".to_string())),
+        codex::ThreadStatus::NotLoaded => (SessionState::Paused, None),
+    };
+    SessionInfo {
+        account: account.to_string(),
+        short_id: Some(thread.id.clone()),
+        session_id: thread.id,
+        name: thread.name.unwrap_or_default(),
+        cwd: thread.cwd,
+        state,
+        isolated: false,
+        progress: None,
+        tasks: None,
+        waiting_for,
+        agent: Agent::Codex,
+    }
+}
+
+/// The sessions of the Codex account in `dir`, read from its daemon (see `codex::sessions`).
+fn codex_sessions(account: &str, dir: &Path, include_stopped: bool) -> io::Result<Vec<SessionInfo>> {
+    let threads = codex::sessions(dir, include_stopped)?;
+    Ok(threads.into_iter().map(|thread| codex_session(account, thread)).collect())
+}
+
+/// A session of OpenCode as kindric shows it. Its id serves both to attach (`opencode -s`) and to
+/// address it. One at rest counts as paused, as a Codex session its daemon has not loaded.
+fn opencode_session(account: &str, session: opencode::Session) -> SessionInfo {
+    let (state, waiting_for) = match session.status {
+        opencode::Status::Working => (SessionState::Working, None),
+        opencode::Status::WaitingOnPermission => (SessionState::Waiting, Some("permission prompt".to_string())),
+        opencode::Status::WaitingOnAnswer => (SessionState::Waiting, Some("input needed".to_string())),
+        opencode::Status::AtRest => (SessionState::Paused, None),
+    };
+    SessionInfo {
+        account: account.to_string(),
+        short_id: Some(session.id.clone()),
+        session_id: session.id,
+        name: session.title,
+        cwd: session.directory,
+        state,
+        isolated: false,
+        progress: None,
+        tasks: None,
+        waiting_for,
+        agent: Agent::OpenCode,
+    }
+}
+
+/// The sessions of the OpenCode account in `dir`, read from its service (see `opencode::sessions`).
+fn opencode_sessions(account: &str, dir: &Path, include_stopped: bool) -> io::Result<Vec<SessionInfo>> {
+    let sessions = opencode::sessions(dir, include_stopped)?;
+    Ok(sessions.into_iter().map(|session| opencode_session(account, session)).collect())
+}
+
+/// The snapshot without the sessions of Codex accounts, for the terminal interface: frozen, it
+/// gets no new kind of session.
+pub fn without_codex(mut snapshot: Snapshot) -> Snapshot {
+    snapshot.sessions.retain(|session| session.agent == Agent::ClaudeCode);
+    snapshot
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -465,10 +540,22 @@ pub fn add_provider_account(paths: &Paths, name: &str, new: &NewProvider, key: O
 /// Keeps `key` for the provider account `name`, in place of the one it had.
 pub fn set_account_key(paths: &Paths, name: &str, key: &str) -> io::Result<()> {
     let dir = launch::require_account(paths, name).map_err(library_error)?;
+    if is_codex(paths, name) {
+        return Err(io::Error::other(format!("{name} is a Codex account: Codex keeps its own key, give it with log in")));
+    }
+    if is_opencode(paths, name) {
+        return Err(io::Error::other(format!("{name} is an OpenCode account: OpenCode keeps its own keys, give them with log in")));
+    }
     if provider::read(&dir).map_err(library_error)?.is_none() {
         return Err(io::Error::other(format!("{name} is a Claude account: it signs in with log in, not with a key")));
     }
     provider::save_token(&dir, key).map_err(library_error)
+}
+
+/// Creates the Codex account `name`, as `kindric-accounts add <name> --agent codex` does; returns
+/// what it warned about while linking what it shares with `~/.codex`.
+pub fn add_codex_account(paths: &Paths, name: &str) -> io::Result<Vec<String>> {
+    account::add_codex(paths, name).map(|created| created.warnings).map_err(library_error)
 }
 
 /// Whether `name` is an account of kindric-accounts that runs Codex; an unreadable file counts as
@@ -477,15 +564,26 @@ pub fn is_codex(paths: &Paths, name: &str) -> bool {
     agent::read(&paths.account_dir(name)).is_ok_and(|agent| agent == Agent::Codex)
 }
 
-/// `openrouter qwen/qwen3-coder` for each of `names` whose model comes from a provider, `codex` for
-/// a Codex account: what the overview shows in place of the limits of a Claude subscription. Read
-/// from small files, no call to Claude Code.
+/// Whether `name` is an account of kindric-accounts that runs OpenCode.
+pub fn is_opencode(paths: &Paths, name: &str) -> bool {
+    agent::read(&paths.account_dir(name)).is_ok_and(|agent| agent == Agent::OpenCode)
+}
+
+/// Whether `name` runs Claude Code: every account but those of Codex and OpenCode, `default`
+/// included.
+pub fn is_claude_code(paths: &Paths, name: &str) -> bool {
+    !is_codex(paths, name) && !is_opencode(paths, name)
+}
+
+/// `openrouter qwen/qwen3-coder` for each of `names` whose model comes from a provider, `codex` or
+/// `opencode` for an account of those: what the overview shows in place of the limits of a Claude
+/// subscription. Read from small files, no call to Claude Code.
 pub fn provider_labels(paths: &Paths, names: &[String]) -> BTreeMap<String, String> {
     names
         .iter()
         .filter_map(|name| {
-            if is_codex(paths, name) {
-                return Some((name.clone(), Agent::Codex.name().to_string()));
+            if let Ok(agent @ (Agent::Codex | Agent::OpenCode)) = agent::read(&paths.account_dir(name)) {
+                return Some((name.clone(), agent.name().to_string()));
             }
             let provider = provider::read(&paths.account_dir(name)).ok()??;
             let label = match &provider.model {
@@ -653,10 +751,49 @@ mod tests {
     }
 
     #[test]
+    fn a_codex_session_reads_as_a_session_of_kindric() {
+        let thread = |status| codex::Thread { id: "01a1ff4a".into(), name: None, cwd: "/home/u/api".into(), status };
+        let session = codex_session("cx", thread(codex::ThreadStatus::Working));
+        assert_eq!((session.short_id.as_deref(), session.session_id.as_str()), (Some("01a1ff4a"), "01a1ff4a"));
+        assert_eq!((session.agent, session.title()), (Agent::Codex, "api".to_string()));
+        assert!(session.can_attach());
+        let state = |status| {
+            let session = codex_session("cx", thread(status));
+            (session.state, session.waiting_for)
+        };
+        assert_eq!(state(codex::ThreadStatus::Working), (SessionState::Working, None));
+        assert_eq!(state(codex::ThreadStatus::Idle), (SessionState::Waiting, None));
+        assert_eq!(state(codex::ThreadStatus::SystemError), (SessionState::Waiting, None));
+        assert_eq!(state(codex::ThreadStatus::WaitingOnApproval), (SessionState::Waiting, Some("permission prompt".into())));
+        assert_eq!(state(codex::ThreadStatus::WaitingOnUserInput), (SessionState::Waiting, Some("input needed".into())));
+        assert_eq!(state(codex::ThreadStatus::NotLoaded), (SessionState::Paused, None));
+        let named = codex_session("cx", codex::Thread { name: Some("review".into()), ..thread(codex::ThreadStatus::Idle) });
+        assert_eq!(named.title(), "review");
+    }
+
+    #[test]
+    fn an_opencode_session_reads_as_a_session_of_kindric() {
+        let found = |status| opencode::Session { id: "ses_dfd5".into(), title: String::new(), directory: "/home/u/api".into(), status };
+        let session = opencode_session("oc", found(opencode::Status::Working));
+        assert_eq!((session.short_id.as_deref(), session.session_id.as_str()), (Some("ses_dfd5"), "ses_dfd5"));
+        assert_eq!((session.agent, session.title()), (Agent::OpenCode, "api".to_string()));
+        let state = |status| {
+            let session = opencode_session("oc", found(status));
+            (session.state, session.waiting_for)
+        };
+        assert_eq!(state(opencode::Status::Working), (SessionState::Working, None));
+        assert_eq!(state(opencode::Status::WaitingOnPermission), (SessionState::Waiting, Some("permission prompt".into())));
+        assert_eq!(state(opencode::Status::WaitingOnAnswer), (SessionState::Waiting, Some("input needed".into())));
+        assert_eq!(state(opencode::Status::AtRest), (SessionState::Paused, None));
+        let titled = opencode_session("oc", opencode::Session { title: "review".into(), ..found(opencode::Status::AtRest) });
+        assert_eq!(titled.title(), "review");
+    }
+
+    #[test]
     fn a_codex_account_gets_its_label_and_no_claude_query() {
         let base = if cfg!(unix) { PathBuf::from("/tmp") } else { std::env::temp_dir() };
         let (root, paths) = scratch_paths_in(&base, "cx");
-        account::add_codex(&paths, "cx").expect("add");
+        add_codex_account(&paths, "cx").expect("add");
         add_account(&paths, "plain").expect("add");
         assert!(is_codex(&paths, "cx"));
         assert!(!is_codex(&paths, "plain"));
@@ -665,6 +802,23 @@ mod tests {
         assert_eq!(labels.into_iter().collect::<Vec<_>>(), [("cx".to_string(), "codex".to_string())]);
         // No claude is called for it: an empty list even where claude is missing.
         assert_eq!(account_sessions(&paths, "cx", false, false).expect("no session yet"), Vec::new());
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn an_opencode_account_gets_its_label_no_session_yet_and_no_key() {
+        let base = if cfg!(unix) { PathBuf::from("/tmp") } else { std::env::temp_dir() };
+        let (root, paths) = scratch_paths_in(&base, "oc");
+        // Made by hand: `add_opencode` needs opencode, which the tests do not have.
+        add_account(&paths, "oc").expect("add");
+        agent::write(&paths.account_dir("oc"), Agent::OpenCode).expect("agent");
+        add_account(&paths, "plain").expect("add");
+        assert!(is_opencode(&paths, "oc") && !is_codex(&paths, "oc") && !is_claude_code(&paths, "oc"));
+        assert!(is_claude_code(&paths, "plain") && is_claude_code(&paths, "default"));
+        let names = registry::list_accounts(&paths).expect("list");
+        assert_eq!(provider_labels(&paths, &names).into_iter().collect::<Vec<_>>(), [("oc".to_string(), "opencode".to_string())]);
+        assert_eq!(account_sessions(&paths, "oc", false, false).expect("no session yet"), Vec::new());
+        assert!(set_account_key(&paths, "oc", "sk").unwrap_err().to_string().contains("OpenCode account"));
         let _ = std::fs::remove_dir_all(&root);
     }
 

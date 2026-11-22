@@ -64,6 +64,34 @@ printf 'OPENAI=%s\n' "${OPENAI_API_KEY:-unset}"
 printf 'ARGS=%s\n' "$*"
 EOF
 	chmod +x "$SANDBOX/bin/codex"
+	mkdir -p "$HOME/.config/opencode/agents"
+	printf '# opencode commun\n' >"$HOME/.config/opencode/AGENTS.md"
+	cat >"$SANDBOX/bin/opencode" <<'EOF'
+#!/usr/bin/env bash
+case "$*" in
+'service set port '*)
+	mkdir -p "$XDG_CONFIG_HOME/opencode"
+	printf '{\n  "port": %s\n}\n' "$4" >"$XDG_CONFIG_HOME/opencode/service.json"
+	exit 0 ;;
+'service status')
+	[[ -f "$XDG_STATE_HOME/.fake-running" ]] && { echo 'http://127.0.0.1:49375'; exit 0; }
+	echo stopped
+	exit 0 ;;
+'auth list --format json')
+	[[ -f "$XDG_STATE_HOME/.fake-login" ]] && { echo '[{"id":"cred_1"}]'; exit 0; }
+	echo '[]'
+	exit 0 ;;
+'api GET /api/session/active')
+	echo '{"data":{"ses_a":{"type":"running"}}}'
+	exit 0 ;;
+esac
+printf 'XDG_CONFIG_HOME=%s\n' "$XDG_CONFIG_HOME"
+printf 'XDG_STATE_HOME=%s\n' "$XDG_STATE_HOME"
+printf 'USER_CACHE=%s\n' "${KINDRIC_USER_XDG_CACHE_HOME:-unset}"
+printf 'SESSION=%s\n' "${CLAUDE_CODE_SESSION_ID:-unset}"
+printf 'ARGS=%s\n' "$*"
+EOF
+	chmod +x "$SANDBOX/bin/opencode"
 	BASE_PATH="/usr/bin:/bin"
 	export PATH="$SANDBOX/bin:$BASE_PATH"
 }
@@ -488,6 +516,46 @@ test_codex() {
 	check "compte Codex retiré" bash -c '! "$0" list | grep -qx cx && [[ ! -d "$1" ]]' "$SCRIPT" "$dir"
 }
 
+test_opencode() {
+	local out dir second
+	dir=$(data_dir oc)
+	second=$(data_dir oc2)
+	check "add --agent opencode avec --model refusé, rien créé" bash -c '! "$0" add oc --agent opencode --model m 2>/dev/null && [[ ! -d "$1" ]]' "$SCRIPT" "$dir"
+	check "add --agent opencode sans opencode refusé, rien créé" bash -c \
+		'PATH=$1 "$0" add oc --agent opencode 2>&1 | grep -q "opencode not found" && [[ ! -d "$2" ]]' "$SCRIPT" "$SANDBOX/claude-only:$SANDBOX/sys" "$dir"
+	out=$(ca add oc --agent opencode)
+	check "add --agent opencode dit comment se connecter" grep -qF "kindric-accounts run oc auth login" <<<"$out"
+	check "fichier de l'agent OpenCode écrit" json_true '.agent == "opencode"' "$dir/kindric-agent.json"
+	check "dossiers XDG du compte en 700" bash -c 'for d in config data state cache; do [[ $(stat -c %a "$0/$d") == 700 ]] || exit 1; done' "$dir"
+	check "kindric-shell exécutable" test -x "$dir/kindric-shell"
+	check "opencode.json nomme kindric-shell" jq -e --arg s "$dir/kindric-shell" '.shell == $s' "$dir/config/opencode/opencode.json"
+	check "premier port 49375" json_true '.port == 49375' "$dir/config/opencode/service.json"
+	check "AGENTS.md lié à la config OpenCode" test "$(readlink "$dir/config/opencode/AGENTS.md")" = "$HOME/.config/opencode/AGENTS.md"
+	check "agents liés à la config OpenCode" test "$(readlink "$dir/config/opencode/agents")" = "$HOME/.config/opencode/agents"
+	ca add oc2 --agent opencode >/dev/null
+	check "deuxième compte, port suivant" json_true '.port == 49376' "$second/config/opencode/service.json"
+	out=$(ca status --json)
+	check "status --json : service arrêté, état inconnu" jq -e --arg d "$dir" \
+		'.[] | select(.name == "oc") == {name: "oc", state: "unknown", sessions: 0, plan: null, dir: $d, isolated: false, login_expires: null, provider: "opencode", model: null, agent: "opencode"}' <<<"$out"
+	touch "$dir/state/.fake-running"
+	check "status --json : service lancé, sans identifiant" bash -c \
+		'"$0" status --json | jq -e ".[] | select(.name == \"oc\") | .state == \"logged-out\" and .sessions == 1" >/dev/null' "$SCRIPT"
+	touch "$dir/state/.fake-login"
+	check "status : compte OpenCode connecté" bash -c '"$0" status | grep -qE "^oc +logged in +opencode +1 active$"' "$SCRIPT"
+	out=$(CLAUDE_CODE_SESSION_ID=f78a XDG_CACHE_HOME=/u/.cache ca run oc auth login)
+	check "run lance opencode avec les XDG du compte" grep -qxF "XDG_CONFIG_HOME=$dir/config" <<<"$out"
+	check "run garde le cache de l utilisateur pour kindric-shell" grep -qxF "USER_CACHE=/u/.cache" <<<"$out"
+	check "run retire les variables de la session Claude" grep -qxF "SESSION=unset" <<<"$out"
+	check "run passe les arguments à opencode" grep -qxF "ARGS=auth login" <<<"$out"
+	check "run sans opencode échoue et le dit" bash -c \
+		'PATH=$1 "$0" run oc 2>&1 | grep -q "opencode not found"' "$SCRIPT" "$SANDBOX/claude-only:$SANDBOX/sys"
+	check "token sur un compte OpenCode refusé" bash -c '"$0" token oc 2>&1 | grep -q "OpenCode account"' "$SCRIPT"
+	check "isolate sur un compte OpenCode refusé" bash -c '! "$0" isolate oc 2>/dev/null && ! "$0" isolated | grep -qx oc' "$SCRIPT"
+	ca remove oc --delete-dir >/dev/null
+	ca remove oc2 --delete-dir >/dev/null
+	check "comptes OpenCode retirés" bash -c '! "$0" list | grep -qxE "oc2?" && [[ ! -d "$1" && ! -d "$2" ]]' "$SCRIPT" "$dir" "$second"
+}
+
 make_minimal_path() {
 	local tool
 	mkdir -p "$SANDBOX/claude-only" "$SANDBOX/sys"
@@ -506,6 +574,7 @@ test_status
 test_status_json_escaping
 test_providers
 test_codex
+test_opencode
 test_sessions
 test_shared_mcp
 test_isolation

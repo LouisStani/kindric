@@ -31,7 +31,7 @@ function modelLabel(model) {
 }
 
 // The provider and model of an account whose model is not a Claude login: "openrouter qwen3";
-// "codex" for an account that runs Codex.
+// "codex" for an account that runs Codex, "opencode" (its provider) for one that runs OpenCode.
 export function providerLabel(account) {
   if (account.agent === "codex") return "codex";
   if (!account.provider || account.provider === "claude") return null;
@@ -349,7 +349,7 @@ export class SettingsWindow {
       actions.append(button("remove", () => this.forget(account.name), "danger"), button("cancel", () => this.confirm(null)));
     } else if (this.keying === account.name) {
       item.append(this.keyForm(account));
-    } else if (provider && account.agent !== "codex") {
+    } else if (provider && (account.agent ?? "claude-code") === "claude-code") {
       if (PROVIDERS[account.provider]?.key) {
         actions.append(button(account.state === "logged-in" ? "change key" : "set key", () => this.askKey(account.name)));
       }
@@ -413,7 +413,8 @@ export class SettingsWindow {
     this.showInstalled(models);
   }
 
-  // A Claude account opens its login window; a provider account is ready once it has its key.
+  // A Claude or Codex account opens its login window; a provider account is ready once it has its
+  // key.
   async add() {
     const name = this.name.value.trim();
     if (name === "") return;
@@ -422,6 +423,8 @@ export class SettingsWindow {
     const kind = fields.kind.value;
     const shape = PROVIDERS[kind] ?? null;
     const request = { name };
+    // Codex is not a provider of Claude Code's model but another program: its own login only.
+    if (kind === "codex") request.agent = "codex";
     if (shape) {
       const model = fields.installed.hidden ? fields.model.value.trim() : fields.installed.value;
       const url = shape.url === null ? null : fields.url.value.trim() || null;

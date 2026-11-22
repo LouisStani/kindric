@@ -5,6 +5,7 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use crate::codex;
+use crate::opencode;
 use crate::error::{Result, fail};
 use crate::injection;
 use crate::isolation::{self, IsolatedSettings};
@@ -213,16 +214,30 @@ pub fn prepare(
 }
 
 /// Prepares `codex` for the Codex account `name`: links what it shares with `~/.codex` again,
-/// removes the keys of the shell, sets `CODEX_HOME` to the account's directory. `user_args` go
+/// gives it kindric's hooks (see `codex::prepare_hooks`), removes the keys of the shell, sets
+/// `CODEX_HOME` to the account's directory. `user_args` go
 /// to `codex` as they are (`login`, `resume`…).
 pub fn prepare_codex(paths: &Paths, name: &str, user_args: &[OsString]) -> Result<Launch> {
     let dir = require_account(paths, name)?;
     let codex = codex::require_codex()?;
-    let warnings = match paths.codex_root() {
+    let mut warnings = match paths.codex_root() {
         Some(codex_root) => shared::link_entries(&codex_root, &dir, &shared::CODEX_SHARED_ENTRIES)?,
         None => Vec::new(),
     };
+    warnings.extend(codex::prepare_hooks(&codex, &dir, &codex::kindric_hooks(usage::kindric_hooks())));
     let mut command = codex::command(&codex, &dir);
+    command.args(user_args);
+    Ok(Launch { command, warnings })
+}
+
+/// Prepares `opencode` for the OpenCode account `name`: its folders, `kindric-shell`, its
+/// configuration and links again (see `opencode::prepare`), then its XDG directories and a clean
+/// environment. `user_args` go to `opencode` as they are (`auth login`, `run`…).
+pub fn prepare_opencode(paths: &Paths, name: &str, user_args: &[OsString]) -> Result<Launch> {
+    let dir = require_account(paths, name)?;
+    let program = opencode::require_opencode()?;
+    let warnings = opencode::prepare(paths, &dir)?;
+    let mut command = opencode::command(&program, &dir);
     command.args(user_args);
     Ok(Launch { command, warnings })
 }
@@ -247,7 +262,7 @@ fn survive_ctrl_c() {
     }
 }
 
-/// Windows has no exec: starts Claude Code or Codex, waits, and returns its exit code.
+/// Windows has no exec: starts Claude Code, Codex or OpenCode, waits, and returns its exit code.
 #[cfg(windows)]
 pub fn run_and_wait(mut command: Command) -> Result<i32> {
     survive_ctrl_c();
@@ -255,7 +270,7 @@ pub fn run_and_wait(mut command: Command) -> Result<i32> {
     Ok(status.code().unwrap_or(1))
 }
 
-/// Replaces this process with Claude Code or Codex; returns only if that failed.
+/// Replaces this process with Claude Code, Codex or OpenCode; returns only if that failed.
 #[cfg(unix)]
 pub fn exec(mut command: Command) -> crate::error::Error {
     use std::os::unix::process::CommandExt;

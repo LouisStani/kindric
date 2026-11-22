@@ -98,6 +98,12 @@ impl Paths {
         self.home().map(|home| home.join(".codex"))
     }
 
+    /// The user's own OpenCode configuration (`$XDG_CONFIG_HOME/opencode`, else
+    /// `~/.config/opencode`), what every OpenCode account shares; read, never written.
+    pub fn opencode_root(&self) -> Option<PathBuf> {
+        self.config_dir.parent().map(|config| config.join("opencode"))
+    }
+
     /// `~/.kindric/memory`.
     pub fn default_memory_root(&self) -> Option<PathBuf> {
         self.home().map(|home| home.join(".kindric").join("memory"))
