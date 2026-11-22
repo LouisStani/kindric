@@ -8,9 +8,10 @@ use std::process::{Command, Stdio};
 use kindric_accounts::injection;
 use kindric_accounts::memory::Memory;
 use kindric_accounts::paths::expand_home;
-use kindric_accounts::{Paths, codex, isolation, launch, mcp, registry, usage};
+use kindric_accounts::{Paths, codex, isolation, launch, mcp, opencode as opencode_account, registry, usage};
 
 use crate::accounts;
+use crate::opencode;
 
 #[derive(Debug, PartialEq, Eq)]
 pub struct Request {
@@ -120,6 +121,19 @@ fn launch_codex(paths: &Paths, request: &Request) -> Result<Launched, String> {
     Ok(Launched { short_id, warnings })
 }
 
+/// A session of an OpenCode account: started in the service of the account, which starts first
+/// when it does not run, after its folders, `kindric-shell` and links are made again. It waits for
+/// its first message; the pane joins it with `opencode -s`.
+fn launch_opencode(paths: &Paths, request: &Request) -> Result<Launched, String> {
+    opencode_account::check_supported().map_err(library_error)?;
+    let dir = paths.account_dir(&request.account);
+    let failed = |error: std::io::Error| format!("{}: {error}", request.account);
+    let warnings = opencode_account::prepare(paths, &dir).map_err(library_error)?;
+    let service = opencode::ensure_service(&dir).map_err(failed)?;
+    let short_id = service.create(&request.directory, &request.name).map_err(failed)?;
+    Ok(Launched { short_id, warnings })
+}
+
 /// Whether `error`, from `launch`, is Claude Code refusing a folder the account has not trusted
 /// yet, which `attach::trust_command` lets it ask about. The home directory is refused too, but
 /// its trust is never saved: asking would not help, and Claude Code's text says so.
@@ -150,10 +164,7 @@ pub fn launch(request: &Request, theme: Option<&str>) -> Result<Launched, String
         return launch_codex(&paths, request);
     }
     if accounts::is_opencode(&paths, &request.account) {
-        return Err(format!(
-            "{} is an OpenCode account: kindric does not start its sessions yet; run kindric-accounts run {} in a terminal",
-            request.account, request.account
-        ));
+        return launch_opencode(&paths, request);
     }
     launch::require_claude().map_err(library_error)?;
     let shared = mcp::prepare(&paths, &request.account).map_err(library_error)?;

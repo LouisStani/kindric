@@ -268,4 +268,14 @@ Not yet: answering a question of the model in the control center, away mode, mes
 
 ## OpenCode accounts
 
-An OpenCode account is added with `kindric-accounts add <name> --agent opencode`, then signed in with **log in** in the settings, which runs `kindric-accounts run <name> auth login`. Its card says `opencode`. Its sessions do not show in kindric yet, and `Ctrl+N` refuses the account: start OpenCode with `kindric-accounts run <name>` in a terminal. How it works: [OpenCode accounts](how-it-works.md#opencode-accounts).
+An OpenCode account is added with `kindric-accounts add <name> --agent opencode`, then signed in with **log in** in the settings, which runs `kindric-accounts run <name> auth login`. Its card says `opencode`. Its sessions show next to the others:
+
+- In the bar, the control center and `Ctrl+P`, with their state. A session waiting for a permission or for an answer to a question of the model carries the `?`: answer it in its pane. A session at rest is paused, as in OpenCode nothing runs for it.
+- In a pane: the OpenCode TUI joins the session, in its folder. Closing the pane leaves the session, and a turn it runs, going.
+- `Ctrl+N` on an OpenCode account starts an OpenCode session in the folder.
+- A message typed in the control center reaches the session as yours: OpenCode starts a turn with it, or after the one running.
+- `Ctrl+Shift+K` stops the turn running and hides the session. The purge of the settings archives an OpenCode session: OpenCode keeps it, archived, not deleted.
+
+The sessions of an account live in its OpenCode service. kindric starts it when it does not run, and leaves it running: about 370 MB of memory per OpenCode account. `kindric-accounts run <name> service stop` stops it, until kindric needs it again.
+
+Not yet: answering a permission or a question in the control center, away mode, messages between sessions and kept files, its last steps, images, context and limits. How it works: [OpenCode accounts](how-it-works.md#opencode-accounts).

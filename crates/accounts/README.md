@@ -273,7 +273,7 @@ How it works:
 
 Limits:
 
-- kindric does not list, open or start the sessions of an OpenCode account yet: use `kindric-accounts run`.
+- kindric lists, opens and starts the sessions of an OpenCode account through its service, which kindric itself asks: kindric-accounts makes no request to it.
 - `--provider`, `token` and `isolate` do not apply to an OpenCode account: OpenCode keeps its own providers, and the account shares no MCP servers with the other accounts yet.
 
 ## Shared MCP servers

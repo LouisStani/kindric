@@ -2,12 +2,15 @@
 //! was last written. Claude Code writes it at every step, and it stays after the session stops,
 //! so a paused session has one too. A Codex session has its own,
 //! `<account>/sessions/<year>/<month>/<day>/rollout-<time>-<session id>.jsonl`. Neither file is
-//! documented: a session whose transcript cannot be found has no time, never an error.
+//! documented: a session whose transcript cannot be found has no time, never an error. An OpenCode
+//! session has no file of its own: its time is the one its service gives, while it runs.
 
 use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::time::UNIX_EPOCH;
+
+use crate::opencode;
 
 /// For each session of `wanted` with a transcript in `account_dir`, when it was last written
 /// (Unix seconds); the latest when several folders hold one (the folder changes when the session
@@ -21,6 +24,10 @@ pub fn last_written(account_dir: &Path, wanted: &HashSet<&str>) -> HashMap<Strin
     let days = subfolders(&account_dir.join("sessions")).into_iter().flat_map(|year| subfolders(&year)).flat_map(|month| subfolders(&month));
     for day in days {
         note_files(&day, wanted, codex_session, &mut latest);
+    }
+    if let Ok(Some(service)) = opencode::Service::of(account_dir) {
+        let times = service.updated_times().unwrap_or_default();
+        latest.extend(times.into_iter().filter(|(session, _)| wanted.contains(session.as_str())));
     }
     latest
 }

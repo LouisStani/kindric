@@ -14,6 +14,7 @@ pub mod launcher;
 pub mod mailbox;
 pub mod mcp;
 pub mod ollama;
+pub mod opencode;
 pub mod origins;
 pub mod overview;
 pub mod permission;

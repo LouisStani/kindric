@@ -72,7 +72,23 @@ Not yet for Codex: answering a question of the model in the control center (only
 
 ## OpenCode accounts
 
-An OpenCode account (`kindric-accounts add <name> --agent opencode`) runs OpenCode with XDG directories of its own, a shell that gives the commands of its sessions your own back, and a port of its own for its service (see [OpenCode accounts](../crates/accounts/README.md#opencode-accounts)). In kindric, for now, it is an account and no more: its card says `opencode`, **log in** runs `kindric-accounts run <name> auth login`, and the checks of messages leave it out. Its sessions are not listed, `Ctrl+N` refuses it, and nothing of the control center reaches it yet.
+An OpenCode account (`kindric-accounts add <name> --agent opencode`) runs OpenCode with XDG directories of its own, a shell that gives the commands of its sessions your own back, and a port of its own for its service (see [OpenCode accounts](../crates/accounts/README.md#opencode-accounts)). Its card says `opencode`, **log in** runs `kindric-accounts run <name> auth login`, and the checks of messages leave it out.
+
+OpenCode keeps all the sessions of an account in its background service, which answers HTTP on 127.0.0.1, at the port and with the password OpenCode writes in `<account>/config/opencode/service.json` (Basic authentication, user `opencode`). kindric reads that file, never writes it, and asks the service directly: a request takes a few milliseconds, where `opencode api` would start an OpenCode process each time. The client is in `crates/core/src/opencode.rs`. Read on OpenCode 2.3.2.
+
+| kindric | OpenCode |
+| --- | --- |
+| The list | The sessions running (`GET /api/session/active`), and the 50 changed last, neither archived nor of a subagent (`GET /api/session?archived=false&parentID=null`). When the service does not run, kindric starts it (`opencode service start`, with the environment of `kindric-accounts run`) and leaves it running. |
+| States | Running is working; running with a permission asked (`GET /api/session/<id>/permission`) or a question of the model open (`GET /api/session/<id>/form`) shows the `?` of a question; any other session is paused |
+| Refresh | The service writes `<account>/data/opencode/opencode.db-wal` at each change of a session, and nothing there at rest. kindric watches that file. Not a contract of OpenCode: the full refresh every 5 minutes still catches up. |
+| A pane | `kindric-accounts run <account> -s <id>`, started in the session's folder. The service is started first when it does not run. Closing the pane ends the TUI, not the turn. |
+| `Ctrl+N` | `POST /api/session` with the folder and the name |
+| A message from the control center | `POST /api/session/<id>/prompt` with `"delivery": "queue"` |
+| `Ctrl+Shift+K` | `POST /api/session/<id>/interrupt`, then the session is hidden |
+| The purge | `PATCH /api/session/<id>` with `{"archived": true}`: the session leaves kindric and OpenCode's list, `{"archived": false}` brings it back |
+| Last activity | `time.updated` of the session, from the service |
+
+Not yet for OpenCode: answering a permission or a question in the control center (the API can: `…/permission/<id>/reply`, `…/form/<id>/reply`), away mode (OpenCode has no hooks, only plugins in JavaScript), messages between sessions and kept files (the MCP server of kindric), its last steps and images, its context and limits, the task list. Not on Windows: an OpenCode account cannot be made there yet.
 
 ## Limits
 

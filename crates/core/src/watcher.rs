@@ -10,7 +10,8 @@ use notify::{RecommendedWatcher, RecursiveMode, Watcher};
 
 /// What to watch in one account directory (`CLAUDE_CONFIG_DIR`):
 /// `sessions/` gets a file per running session, rewritten when its state changes;
-/// `daemon/` holds the roster of background sessions; `jobs/<id>/` their state.
+/// `daemon/` holds the roster of background sessions; `jobs/<id>/` their state;
+/// `data/opencode/` the state of an OpenCode service (see `OPENCODE_DATA`).
 /// The account directory itself is watched for these three folders, which a new account
 /// does not have yet: what else it holds wakes nothing (`ChangeWatcher::wait`), as
 /// `.claude.json`, which Claude Code rewrites all the time.
@@ -25,6 +26,7 @@ pub fn targets(account_dirs: &[PathBuf], quiet_roots: &[&Path], registry_dir: &P
         targets.push((dir.clone(), RecursiveMode::NonRecursive));
         targets.push((dir.join("sessions"), RecursiveMode::NonRecursive));
         targets.push((dir.join("daemon"), RecursiveMode::NonRecursive));
+        targets.push((dir.join(OPENCODE_DATA[0]).join(OPENCODE_DATA[1]), RecursiveMode::NonRecursive));
         targets.extend(job_dirs(&jobs).into_iter().map(|job| (job, RecursiveMode::NonRecursive)));
         targets.push((jobs, RecursiveMode::NonRecursive));
     }
@@ -58,13 +60,28 @@ const ACCOUNT_FOLDERS: [&str; 3] = ["sessions", "daemon", "jobs"];
 /// change, the full refresh every few minutes still catches up.
 const CODEX_STATE_FILES: [&str; 2] = ["state_", "thread_history_"];
 
+/// Where the service of an OpenCode account keeps its data, under the account directory, and the
+/// one file of it that changes with a session: OpenCode 2.3.2 writes nothing there at rest, and
+/// only `opencode.db-wal` during a turn (measured 2026-11-22). Its `log/` is not watched.
+const OPENCODE_DATA: [&str; 2] = ["data", "opencode"];
+const OPENCODE_STATE_FILE: &str = "opencode.db-wal";
+
+/// Whether `folder` is the data folder of the service of an OpenCode account.
+fn is_opencode_data(folder: &Path, account_dirs: &[PathBuf]) -> bool {
+    account_dirs.iter().any(|dir| folder == dir.join(OPENCODE_DATA[0]).join(OPENCODE_DATA[1]))
+}
+
 /// Whether a write at `path` may change the list: anything but a file or folder right in an
-/// account directory other than `ACCOUNT_FOLDERS` and the state files of Codex.
+/// account directory other than `ACCOUNT_FOLDERS` and the state files of Codex, and in the data
+/// folder of an OpenCode service, only its state file.
 fn counts(path: &Path, account_dirs: &[PathBuf]) -> bool {
     let in_account = path.parent().is_some_and(|parent| account_dirs.iter().any(|dir| dir == parent));
     let Some(name) = path.file_name().and_then(|name| name.to_str()) else {
         return !in_account;
     };
+    if path.parent().is_some_and(|parent| is_opencode_data(parent, account_dirs)) {
+        return name == OPENCODE_STATE_FILE;
+    }
     !in_account
         || ACCOUNT_FOLDERS.contains(&name)
         || CODEX_STATE_FILES.iter().any(|prefix| name.starts_with(prefix) && name.ends_with(".sqlite-wal"))
@@ -179,11 +196,12 @@ mod tests {
     fn targets_cover_each_account_the_list_of_accounts_and_the_quiet_roots() {
         let dirs = [PathBuf::from("/a/louis"), PathBuf::from("/a/pro")];
         let targets = targets(&dirs, &[Path::new("/m"), Path::new("/o")], Path::new("/c"));
-        assert_eq!(targets.len(), 11);
+        assert_eq!(targets.len(), 13);
         assert!(targets.contains(&(PathBuf::from("/c"), RecursiveMode::NonRecursive)));
         assert!(targets.contains(&(PathBuf::from("/a/louis"), RecursiveMode::NonRecursive)));
         assert!(targets.contains(&(PathBuf::from("/a/pro/jobs"), RecursiveMode::NonRecursive)));
         assert!(targets.contains(&(PathBuf::from("/a/louis/sessions"), RecursiveMode::NonRecursive)));
+        assert!(targets.contains(&(PathBuf::from("/a/pro/data/opencode"), RecursiveMode::NonRecursive)));
         assert!(targets.contains(&(PathBuf::from("/m"), RecursiveMode::Recursive)));
         assert_eq!(targets.last(), Some(&(PathBuf::from("/o"), RecursiveMode::Recursive)));
         assert!(!targets.iter().any(|(path, _)| path.ends_with(".claude.json")));
@@ -269,6 +287,19 @@ mod tests {
         assert!(!counts(&account.join("history.jsonl"), &dirs));
         assert!(counts(&account.join("sessions"), &dirs));
         assert!(counts(&account.join("sessions").join("x.json"), &dirs), "inside a folder, as before");
+    }
+
+    #[test]
+    fn the_state_file_of_an_opencode_service_wakes_the_list_up_and_the_rest_of_its_data_does_not() {
+        let account = PathBuf::from("/d/kindric-accounts/oc");
+        let dirs = [account.clone()];
+        let data = account.join("data").join("opencode");
+        assert!(counts(&data.join("opencode.db-wal"), &dirs));
+        assert!(!counts(&data.join("opencode.db-shm"), &dirs));
+        assert!(!counts(&data.join("opencode.db"), &dirs));
+        assert!(!counts(&data.join("log"), &dirs));
+        assert!(!counts(&account.join("data"), &dirs));
+        assert!(targets(&dirs, &[], Path::new("/d/registry")).contains(&(data, RecursiveMode::NonRecursive)));
     }
 
     #[test]

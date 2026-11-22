@@ -23,7 +23,7 @@ use std::process::ExitCode;
 use std::sync::{Mutex, MutexGuard, PoisonError};
 use std::time::{Duration, Instant};
 
-use kindric_core::attach::{AttachCommand, attach_command, login_command, remove_command, stop_command, trust_command};
+use kindric_core::attach::{Agent, AttachCommand, attach_command, login_command, remove_command, stop_command, trust_command};
 use kindric_core::launcher::{self, Request, resolve_directory};
 use kindric_core::mailbox::Mailbox;
 use kindric_core::accounts::SessionInfo;
@@ -608,10 +608,14 @@ async fn hide_session(app: AppHandle, shared: State<'_, Shared>, account: String
     let session_id = session_id_of(&shared, &account, &short_id)?;
     let implicit = implicit_default(&account)?;
     let (stop_account, stop_id) = (account.clone(), short_id.clone());
-    if attach::is_codex_account(&account, implicit) {
-        tauri::async_runtime::spawn_blocking(move || attach::stop_codex_session(&stop_account, &stop_id))
-            .await
-            .map_err(|error| error.to_string())??;
+    let agent = attach::agent_of(&account, implicit);
+    if agent != Agent::ClaudeCode {
+        tauri::async_runtime::spawn_blocking(move || match agent {
+            Agent::OpenCode => attach::stop_opencode_session(&stop_account, &stop_id),
+            _ => attach::stop_codex_session(&stop_account, &stop_id),
+        })
+        .await
+        .map_err(|error| error.to_string())??;
     } else {
         let stopped =
             tauri::async_runtime::spawn_blocking(move || stop_command(&stop_account, &stop_id, implicit).output())
@@ -664,8 +668,10 @@ async fn purge_sessions(app: AppHandle, shared: State<'_, Shared>, days: u32) ->
     let report = tauri::async_runtime::spawn_blocking(move || {
         purge::purge(targets, |target| {
             let implicit = implicit_default(&target.account)?;
-            if attach::is_codex_account(&target.account, implicit) {
-                return attach::archive_codex_session(&target.account, &target.short_id);
+            match attach::agent_of(&target.account, implicit) {
+                Agent::Codex => return attach::archive_codex_session(&target.account, &target.short_id),
+                Agent::OpenCode => return attach::archive_opencode_session(&target.account, &target.short_id),
+                Agent::ClaudeCode => {},
             }
             let output = remove_command(&target.account, &target.short_id, implicit)
                 .output()
@@ -1411,8 +1417,10 @@ async fn type_answer(
 /// Types `words` into a session no pane shows, then Enter, holding its claim meanwhile as a pane
 /// does. Blocks for a few seconds.
 fn type_as_user(claims: &Path, account: &str, short_id: &str, implicit: bool, words: &str) -> Result<(), String> {
-    if attach::is_codex_account(account, implicit) {
-        return attach::send_codex_message(account, short_id, words);
+    match attach::agent_of(account, implicit) {
+        Agent::Codex => return attach::send_codex_message(account, short_id, words),
+        Agent::OpenCode => return attach::send_opencode_message(account, short_id, words),
+        Agent::ClaudeCode => {},
     }
     let key = SessionKey { account: account.to_string(), short_id: short_id.to_string() };
     let _claim = claim::claim(claims, &key)?;

@@ -4,9 +4,12 @@
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
+pub use kindric_accounts::agent::Agent;
+use kindric_accounts::agent;
 use kindric_accounts::{Paths, codex};
 
 use crate::accounts::{self, LAUNCHER, default_removed_env};
+use crate::opencode;
 
 pub struct AttachCommand {
     pub program: String,
@@ -58,11 +61,39 @@ pub fn codex_attach_command(account: &str, thread_id: &str, dir: &Path, cwd: Opt
     AttachCommand { program: LAUNCHER.into(), args, env: colours(), env_remove: Vec::new(), directory }
 }
 
+/// `kindric-accounts run <account> -s <id>`: the OpenCode TUI joins the session in the service of
+/// the account, which must run. Ending this process leaves the session, and a turn it runs, in the
+/// service. `cwd`, the folder of the session, where the TUI starts.
+pub fn opencode_attach_command(account: &str, session_id: &str, cwd: Option<PathBuf>) -> AttachCommand {
+    AttachCommand {
+        program: LAUNCHER.into(),
+        args: ["run", account, "-s", session_id].map(String::from).to_vec(),
+        env: colours(),
+        env_remove: Vec::new(),
+        directory: cwd.filter(|cwd| cwd.is_dir()),
+    }
+}
+
+/// What `account` runs: Claude Code for the implicit `default`, and for an account whose agent
+/// cannot be read.
+pub fn agent_of(account: &str, implicit_default: bool) -> Agent {
+    if implicit_default {
+        return Agent::ClaudeCode;
+    }
+    Paths::from_env().ok().and_then(|paths| agent::read(&paths.account_dir(account)).ok()).unwrap_or(Agent::ClaudeCode)
+}
+
 /// The command that shows the session `short_id` of `account` in a pane, whatever its account
 /// runs. For Codex, the daemon of the account is started first when it does not run: a session at
-/// rest lives on disk until a client joins it.
+/// rest lives on disk until a client joins it. For OpenCode, its service, where every session
+/// lives.
 pub fn session_attach_command(account: &str, short_id: &str, implicit_default: bool) -> Result<AttachCommand, String> {
     let paths = Paths::from_env().map_err(|error| error.to_string())?;
+    if !implicit_default && accounts::is_opencode(&paths, account) {
+        let service = opencode::ensure_service(&paths.account_dir(account)).map_err(|error| format!("{account}: {error}"))?;
+        let cwd = service.directory(short_id).map_err(|error| format!("{account}: {error}"))?;
+        return Ok(opencode_attach_command(account, short_id, cwd));
+    }
     if implicit_default || !accounts::is_codex(&paths, account) {
         return Ok(attach_command(account, short_id, implicit_default));
     }
@@ -73,11 +104,6 @@ pub fn session_attach_command(account: &str, short_id: &str, implicit_default: b
     }
     let cwd = codex::session_cwd(&dir, short_id).map_err(|error| format!("{account}: {error}"))?;
     Ok(codex_attach_command(account, short_id, &dir, cwd))
-}
-
-/// Whether `account` is an account of kindric-accounts that runs Codex.
-pub fn is_codex_account(account: &str, implicit_default: bool) -> bool {
-    !implicit_default && Paths::from_env().is_ok_and(|paths| accounts::is_codex(&paths, account))
 }
 
 /// `kindric-accounts run <account> queue --thread <id> --message <text> --resume`: Codex keeps
@@ -120,6 +146,33 @@ pub fn stop_codex_session(account: &str, thread_id: &str) -> Result<(), String> 
 pub fn archive_codex_session(account: &str, thread_id: &str) -> Result<(), String> {
     let paths = Paths::from_env().map_err(|error| error.to_string())?;
     codex::archive(&paths.account_dir(account), thread_id).map_err(|error| format!("cannot archive {thread_id}: {error}"))
+}
+
+/// Sends `text` to the OpenCode session `id` of `account` as the user's message, starting the
+/// service of the account if it does not run.
+pub fn send_opencode_message(account: &str, id: &str, text: &str) -> Result<(), String> {
+    let paths = Paths::from_env().map_err(|error| error.to_string())?;
+    let service = opencode::ensure_service(&paths.account_dir(account)).map_err(|error| format!("{account}: {error}"))?;
+    service.prompt(id, text).map_err(|error| format!("cannot send the message to {id}: {error}"))
+}
+
+/// Stops the turn the OpenCode session `id` of `account` runs, if any: the session stays in the
+/// service, at rest. Nothing to do when the service does not run.
+pub fn stop_opencode_session(account: &str, id: &str) -> Result<(), String> {
+    let paths = Paths::from_env().map_err(|error| error.to_string())?;
+    match opencode::Service::running(&paths.account_dir(account)) {
+        Ok(Some(service)) => service.interrupt(id).map_err(|error| format!("cannot stop {id}: {error}")),
+        Ok(None) => Ok(()),
+        Err(error) => Err(format!("cannot stop {id}: {error}")),
+    }
+}
+
+/// Archives the OpenCode session `id` of `account`: gone from kindric and from OpenCode's list,
+/// its conversation kept in the service.
+pub fn archive_opencode_session(account: &str, id: &str) -> Result<(), String> {
+    let paths = Paths::from_env().map_err(|error| error.to_string())?;
+    let service = opencode::ensure_service(&paths.account_dir(account)).map_err(|error| format!("{account}: {error}"))?;
+    service.archive(id).map_err(|error| format!("cannot archive {id}: {error}"))
 }
 
 /// Claude Code itself, not in the background, in `directory`: `claude --bg` refuses a folder the
@@ -211,6 +264,16 @@ mod tests {
         assert_eq!(command.directory, Some(PathBuf::from("/work/api")));
         assert!(command.env.contains(&("TERM".into(), "xterm-256color".into())));
         assert!(command.env_remove.is_empty());
+    }
+
+    #[test]
+    fn an_opencode_session_is_joined_through_its_service() {
+        let command = opencode_attach_command("oc", "ses_dfd5", Some(std::env::temp_dir()));
+        assert_eq!((command.program.as_str(), command.args.as_slice()), ("kindric-accounts", ["run", "oc", "-s", "ses_dfd5"].map(String::from).as_slice()));
+        assert_eq!(command.directory, Some(std::env::temp_dir()), "the TUI starts in the folder of the session");
+        assert_eq!(opencode_attach_command("oc", "ses_dfd5", Some(PathBuf::from("/gone/away"))).directory, None);
+        assert!(command.env.contains(&("TERM".into(), "xterm-256color".into())));
+        assert_eq!(agent_of("oc", true), Agent::ClaudeCode, "the implicit default");
     }
 
     #[test]

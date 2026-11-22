@@ -12,6 +12,7 @@ use kindric_accounts::provider::{self, Kind, Provider};
 use kindric_accounts::{Paths, account, codex, launch, memory, registry, status, usage};
 use serde::{Deserialize, Serialize};
 
+use crate::opencode;
 use crate::progress;
 use crate::task_list;
 
@@ -56,8 +57,8 @@ pub struct SessionInfo {
     /// What the session waits for from the user, in Claude Code's words ("permission prompt",
     /// "input needed"), while a question of Claude Code is on its screen.
     pub waiting_for: Option<String>,
-    /// The program of its account: Claude Code, or Codex, whose sessions are attached and started
-    /// otherwise.
+    /// The program of its account: Claude Code, or Codex or OpenCode, whose sessions are attached
+    /// and started otherwise.
     pub agent: Agent,
 }
 
@@ -343,9 +344,8 @@ fn account_sessions(paths: &Paths, account: &str, implicit_default: bool, includ
     if !is_implicit_default(account, implicit_default) && is_codex(paths, account) {
         return codex_sessions(account, &dir, include_stopped);
     }
-    // The sessions of an OpenCode account come with the next step of its support.
     if !is_implicit_default(account, implicit_default) && is_opencode(paths, account) {
-        return Ok(Vec::new());
+        return opencode_sessions(account, &dir, include_stopped);
     }
     let claude = launch::require_claude().map_err(library_error)?;
     let mut command = claude_command(claude);
@@ -399,6 +399,36 @@ fn codex_session(account: &str, thread: codex::Thread) -> SessionInfo {
 fn codex_sessions(account: &str, dir: &Path, include_stopped: bool) -> io::Result<Vec<SessionInfo>> {
     let threads = codex::sessions(dir, include_stopped)?;
     Ok(threads.into_iter().map(|thread| codex_session(account, thread)).collect())
+}
+
+/// A session of OpenCode as kindric shows it. Its id serves both to attach (`opencode -s`) and to
+/// address it. One at rest counts as paused, as a Codex session its daemon has not loaded.
+fn opencode_session(account: &str, session: opencode::Session) -> SessionInfo {
+    let (state, waiting_for) = match session.status {
+        opencode::Status::Working => (SessionState::Working, None),
+        opencode::Status::WaitingOnPermission => (SessionState::Waiting, Some("permission prompt".to_string())),
+        opencode::Status::WaitingOnAnswer => (SessionState::Waiting, Some("input needed".to_string())),
+        opencode::Status::AtRest => (SessionState::Paused, None),
+    };
+    SessionInfo {
+        account: account.to_string(),
+        short_id: Some(session.id.clone()),
+        session_id: session.id,
+        name: session.title,
+        cwd: session.directory,
+        state,
+        isolated: false,
+        progress: None,
+        tasks: None,
+        waiting_for,
+        agent: Agent::OpenCode,
+    }
+}
+
+/// The sessions of the OpenCode account in `dir`, read from its service (see `opencode::sessions`).
+fn opencode_sessions(account: &str, dir: &Path, include_stopped: bool) -> io::Result<Vec<SessionInfo>> {
+    let sessions = opencode::sessions(dir, include_stopped)?;
+    Ok(sessions.into_iter().map(|session| opencode_session(account, session)).collect())
 }
 
 /// The snapshot without the sessions of Codex accounts, for the terminal interface: frozen, it
@@ -739,6 +769,24 @@ mod tests {
         assert_eq!(state(codex::ThreadStatus::NotLoaded), (SessionState::Paused, None));
         let named = codex_session("cx", codex::Thread { name: Some("review".into()), ..thread(codex::ThreadStatus::Idle) });
         assert_eq!(named.title(), "review");
+    }
+
+    #[test]
+    fn an_opencode_session_reads_as_a_session_of_kindric() {
+        let found = |status| opencode::Session { id: "ses_dfd5".into(), title: String::new(), directory: "/home/u/api".into(), status };
+        let session = opencode_session("oc", found(opencode::Status::Working));
+        assert_eq!((session.short_id.as_deref(), session.session_id.as_str()), (Some("ses_dfd5"), "ses_dfd5"));
+        assert_eq!((session.agent, session.title()), (Agent::OpenCode, "api".to_string()));
+        let state = |status| {
+            let session = opencode_session("oc", found(status));
+            (session.state, session.waiting_for)
+        };
+        assert_eq!(state(opencode::Status::Working), (SessionState::Working, None));
+        assert_eq!(state(opencode::Status::WaitingOnPermission), (SessionState::Waiting, Some("permission prompt".into())));
+        assert_eq!(state(opencode::Status::WaitingOnAnswer), (SessionState::Waiting, Some("input needed".into())));
+        assert_eq!(state(opencode::Status::AtRest), (SessionState::Paused, None));
+        let titled = opencode_session("oc", opencode::Session { title: "review".into(), ..found(opencode::Status::AtRest) });
+        assert_eq!(titled.title(), "review");
     }
 
     #[test]
