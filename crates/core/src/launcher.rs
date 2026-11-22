@@ -149,6 +149,12 @@ pub fn launch(request: &Request, theme: Option<&str>) -> Result<Launched, String
     if accounts::is_codex(&paths, &request.account) {
         return launch_codex(&paths, request);
     }
+    if accounts::is_opencode(&paths, &request.account) {
+        return Err(format!(
+            "{} is an OpenCode account: kindric does not start its sessions yet; run kindric-accounts run {} in a terminal",
+            request.account, request.account
+        ));
+    }
     launch::require_claude().map_err(library_error)?;
     let shared = mcp::prepare(&paths, &request.account).map_err(library_error)?;
     let args = background_args(&request.name);

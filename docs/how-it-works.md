@@ -1,6 +1,6 @@
 # How it works
 
-kindric never reads the credentials of Claude Code or Codex: each keeps its own. All account handling goes through [kindric-accounts](../crates/accounts/README.md). The one exception is the key of an account whose model comes from an API key or a gateway: typed in the settings, kindric hands it to the kindric-accounts library, which keeps it in `kindric-token` in the account's directory (`600` on Linux and macOS). kindric itself keeps no copy.
+kindric never reads the credentials of Claude Code, Codex or OpenCode: each keeps its own. All account handling goes through [kindric-accounts](../crates/accounts/README.md). The one exception is the key of an account whose model comes from an API key or a gateway: typed in the settings, kindric hands it to the kindric-accounts library, which keeps it in `kindric-token` in the account's directory (`600` on Linux and macOS). kindric itself keeps no copy.
 
 <img src="how-it-works.svg" alt="kindric-desktop starts and attaches sessions through kindric-accounts, which runs Claude Code on each account. The sessions call the kindric command, its MCP server and hooks, which write to kindric's data folder. kindric-desktop watches that folder." width="100%">
 
@@ -69,6 +69,10 @@ A Codex account (`kindric-accounts add <name> --agent codex`) has no `claude age
 | Last activity | When `<account>/sessions/<year>/<month>/<day>/rollout-<time>-<id>.jsonl` was last written |
 
 Not yet for Codex: answering a question of the model in the control center (only approvals of commands and changes are), away mode, messages between sessions and kept files (the MCP server of kindric), its last steps and images, its context and limits, the task list. kindric already writes its hooks for absence and how to ask in the account's `hooks.json` (only when that file is kindric's own), and has Codex trust them, but this is not checked with a real Codex yet. Not the hook that puts questions on the page: Codex waits for it before showing the question in its TUI, which would stay blank meanwhile. Its permissions are answered in its pane. On Windows, the daemon cannot be reached yet: every Codex session shows as paused, and none can be started from kindric.
+
+## OpenCode accounts
+
+An OpenCode account (`kindric-accounts add <name> --agent opencode`) runs OpenCode with XDG directories of its own, a shell that gives the commands of its sessions your own back, and a port of its own for its service (see [OpenCode accounts](../crates/accounts/README.md#opencode-accounts)). In kindric, for now, it is an account and no more: its card says `opencode`, **log in** runs `kindric-accounts run <name> auth login`, and the checks of messages leave it out. Its sessions are not listed, `Ctrl+N` refuses it, and nothing of the control center reaches it yet.
 
 ## Limits
 

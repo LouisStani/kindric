@@ -16,8 +16,8 @@ use crate::progress;
 use crate::task_list;
 
 pub(crate) const LAUNCHER: &str = "kindric-accounts";
-/// 2.2.0: `token`, the key of the accounts whose model comes from an API key or a gateway.
-pub const MIN_LAUNCHER_VERSION: (u32, u32, u32) = (2, 3, 0);
+/// 2.4.0: OpenCode accounts, whose login kindric starts with `run <name> auth login`.
+pub const MIN_LAUNCHER_VERSION: (u32, u32, u32) = (2, 4, 0);
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum SessionState {
@@ -343,6 +343,10 @@ fn account_sessions(paths: &Paths, account: &str, implicit_default: bool, includ
     if !is_implicit_default(account, implicit_default) && is_codex(paths, account) {
         return codex_sessions(account, &dir, include_stopped);
     }
+    // The sessions of an OpenCode account come with the next step of its support.
+    if !is_implicit_default(account, implicit_default) && is_opencode(paths, account) {
+        return Ok(Vec::new());
+    }
     let claude = launch::require_claude().map_err(library_error)?;
     let mut command = claude_command(claude);
     if is_implicit_default(account, implicit_default) {
@@ -400,7 +404,7 @@ fn codex_sessions(account: &str, dir: &Path, include_stopped: bool) -> io::Resul
 /// The snapshot without the sessions of Codex accounts, for the terminal interface: frozen, it
 /// gets no new kind of session.
 pub fn without_codex(mut snapshot: Snapshot) -> Snapshot {
-    snapshot.sessions.retain(|session| session.agent != Agent::Codex);
+    snapshot.sessions.retain(|session| session.agent == Agent::ClaudeCode);
     snapshot
 }
 
@@ -509,6 +513,9 @@ pub fn set_account_key(paths: &Paths, name: &str, key: &str) -> io::Result<()> {
     if is_codex(paths, name) {
         return Err(io::Error::other(format!("{name} is a Codex account: Codex keeps its own key, give it with log in")));
     }
+    if is_opencode(paths, name) {
+        return Err(io::Error::other(format!("{name} is an OpenCode account: OpenCode keeps its own keys, give them with log in")));
+    }
     if provider::read(&dir).map_err(library_error)?.is_none() {
         return Err(io::Error::other(format!("{name} is a Claude account: it signs in with log in, not with a key")));
     }
@@ -527,15 +534,26 @@ pub fn is_codex(paths: &Paths, name: &str) -> bool {
     agent::read(&paths.account_dir(name)).is_ok_and(|agent| agent == Agent::Codex)
 }
 
-/// `openrouter qwen/qwen3-coder` for each of `names` whose model comes from a provider, `codex` for
-/// a Codex account: what the overview shows in place of the limits of a Claude subscription. Read
-/// from small files, no call to Claude Code.
+/// Whether `name` is an account of kindric-accounts that runs OpenCode.
+pub fn is_opencode(paths: &Paths, name: &str) -> bool {
+    agent::read(&paths.account_dir(name)).is_ok_and(|agent| agent == Agent::OpenCode)
+}
+
+/// Whether `name` runs Claude Code: every account but those of Codex and OpenCode, `default`
+/// included.
+pub fn is_claude_code(paths: &Paths, name: &str) -> bool {
+    !is_codex(paths, name) && !is_opencode(paths, name)
+}
+
+/// `openrouter qwen/qwen3-coder` for each of `names` whose model comes from a provider, `codex` or
+/// `opencode` for an account of those: what the overview shows in place of the limits of a Claude
+/// subscription. Read from small files, no call to Claude Code.
 pub fn provider_labels(paths: &Paths, names: &[String]) -> BTreeMap<String, String> {
     names
         .iter()
         .filter_map(|name| {
-            if is_codex(paths, name) {
-                return Some((name.clone(), Agent::Codex.name().to_string()));
+            if let Ok(agent @ (Agent::Codex | Agent::OpenCode)) = agent::read(&paths.account_dir(name)) {
+                return Some((name.clone(), agent.name().to_string()));
             }
             let provider = provider::read(&paths.account_dir(name)).ok()??;
             let label = match &provider.model {
@@ -736,6 +754,23 @@ mod tests {
         assert_eq!(labels.into_iter().collect::<Vec<_>>(), [("cx".to_string(), "codex".to_string())]);
         // No claude is called for it: an empty list even where claude is missing.
         assert_eq!(account_sessions(&paths, "cx", false, false).expect("no session yet"), Vec::new());
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn an_opencode_account_gets_its_label_no_session_yet_and_no_key() {
+        let base = if cfg!(unix) { PathBuf::from("/tmp") } else { std::env::temp_dir() };
+        let (root, paths) = scratch_paths_in(&base, "oc");
+        // Made by hand: `add_opencode` needs opencode, which the tests do not have.
+        add_account(&paths, "oc").expect("add");
+        agent::write(&paths.account_dir("oc"), Agent::OpenCode).expect("agent");
+        add_account(&paths, "plain").expect("add");
+        assert!(is_opencode(&paths, "oc") && !is_codex(&paths, "oc") && !is_claude_code(&paths, "oc"));
+        assert!(is_claude_code(&paths, "plain") && is_claude_code(&paths, "default"));
+        let names = registry::list_accounts(&paths).expect("list");
+        assert_eq!(provider_labels(&paths, &names).into_iter().collect::<Vec<_>>(), [("oc".to_string(), "opencode".to_string())]);
+        assert_eq!(account_sessions(&paths, "oc", false, false).expect("no session yet"), Vec::new());
+        assert!(set_account_key(&paths, "oc", "sk").unwrap_err().to_string().contains("OpenCode account"));
         let _ = std::fs::remove_dir_all(&root);
     }
 

@@ -291,10 +291,10 @@ fn default_state_file(paths: &Paths) -> Option<std::path::PathBuf> {
 pub fn check_messages(paths: &Paths) -> Result<MessagesCheck, String> {
     let isolated = registry::list_isolated(paths).map_err(|error| error.to_string())?;
     let registered = registry::list_accounts(paths).map_err(|error| error.to_string())?;
-    // A Codex account takes no MCP server of Claude Code: it carries no messages yet.
+    // A Codex or OpenCode account takes no MCP server of Claude Code: it carries no messages yet.
     let carriers: Vec<&String> = registered
         .iter()
-        .filter(|account| !isolated.contains(account) && !accounts::is_codex(paths, account))
+        .filter(|account| !isolated.contains(account) && accounts::is_claude_code(paths, account))
         .collect();
     let accounts = carriers.iter().any(|account| has_messages_server(&paths.account_dir(account).join(".claude.json")));
     let named_default = |accounts: &[String]| accounts.iter().any(|account| account == DEFAULT_ACCOUNT);

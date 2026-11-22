@@ -265,3 +265,7 @@ A Codex account (added in the settings with **model from** set to codex, or with
 - `Ctrl+Shift+K` stops the turn running and hides the session. The purge of the settings archives a Codex session: `codex unarchive <id>` brings it back.
 
 Not yet: answering a question of the model in the control center, away mode, messages between sessions and kept files, its last steps, images, context and limits. How it works: [Codex accounts](how-it-works.md#codex-accounts).
+
+## OpenCode accounts
+
+An OpenCode account is added with `kindric-accounts add <name> --agent opencode`, then signed in with **log in** in the settings, which runs `kindric-accounts run <name> auth login`. Its card says `opencode`. Its sessions do not show in kindric yet, and `Ctrl+N` refuses the account: start OpenCode with `kindric-accounts run <name>` in a terminal. How it works: [OpenCode accounts](how-it-works.md#opencode-accounts).

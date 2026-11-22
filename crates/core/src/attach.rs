@@ -148,7 +148,8 @@ pub fn trust_command(account: &str, directory: &Path, implicit_default: bool) ->
 /// `kindric-accounts run <account> auth login`: Claude Code signs the account in and keeps the
 /// credentials in the account's own directory. Accounts of kindric-accounts only.
 pub fn login_command(account: &str, codex: bool) -> AttachCommand {
-    // Claude Code signs in with `claude auth login`, Codex with `codex login`.
+    // Claude Code signs in with `claude auth login`, OpenCode with `opencode auth login`, Codex
+    // with `codex login`.
     let login: &[&str] = if codex { &["login"] } else { &["auth", "login"] };
     AttachCommand {
         program: LAUNCHER.into(),

@@ -12,6 +12,7 @@ use crate::agent::{self, Agent};
 use crate::codex;
 use crate::error::Result;
 use crate::launch;
+use crate::opencode;
 use crate::paths::Paths;
 use crate::provider;
 use crate::registry;
@@ -50,7 +51,7 @@ pub struct AccountStatus {
     pub provider: String,
     /// The model of a provider account, as the provider names it; `null` for Claude (since 2.2.0).
     pub model: Option<String>,
-    /// The program the account runs: `claude-code` or `codex` (since 2.3.0).
+    /// The program the account runs: `claude-code`, `codex` (since 2.3.0) or `opencode` (since 2.4.0).
     pub agent: Agent,
 }
 
@@ -60,6 +61,9 @@ pub const CLAUDE_PROVIDER: &str = "claude";
 /// The provider name of a Codex account: its model comes from OpenAI, through the account's
 /// ChatGPT login or API key.
 pub const CODEX_PROVIDER: &str = "openai";
+
+/// The provider name of an OpenCode account: OpenCode itself picks among its providers.
+pub const OPENCODE_PROVIDER: &str = "opencode";
 
 /// `subscriptionType` of `claude auth status --json`, if it is a plain lowercase word.
 pub fn subscription_type(output: &str) -> Option<String> {
@@ -180,10 +184,33 @@ fn codex_login(codex: Option<&Path>, dir: &Path) -> Login {
     Login { state, plan: None, expires: None, provider: CODEX_PROVIDER.into(), model: None }
 }
 
+/// Whether an OpenCode account has a credential, asked only while its service runs; unknown
+/// otherwise, and without `opencode`.
+fn opencode_login(opencode: Option<&Path>, dir: &Path) -> Login {
+    let state = match opencode.and_then(|opencode| opencode::logged_in(opencode, dir)) {
+        Some(true) => LoginState::LoggedIn,
+        Some(false) => LoginState::LoggedOut,
+        None => LoginState::Unknown,
+    };
+    Login { state, plan: None, expires: None, provider: OPENCODE_PROVIDER.into(), model: None }
+}
+
+/// The programs `collect` runs: `claude`, `codex` and `opencode`, when found.
+#[derive(Clone, Copy, Default)]
+struct Programs<'a> {
+    claude: Option<&'a Path>,
+    codex: Option<&'a Path>,
+    opencode: Option<&'a Path>,
+}
+
 /// Login and running sessions of one account, after the program it runs.
-fn account_status(agent: Result<Agent>, claude: Option<&Path>, codex: Option<&Path>, dir: &Path) -> (Login, usize, Agent) {
-    match (agent, claude) {
-        (Ok(Agent::Codex), _) => (codex_login(codex, dir), codex::running_sessions(dir), Agent::Codex),
+fn account_status(agent: Result<Agent>, programs: Programs, dir: &Path) -> (Login, usize, Agent) {
+    match (agent, programs.claude) {
+        (Ok(Agent::Codex), _) => (codex_login(programs.codex, dir), codex::running_sessions(dir), Agent::Codex),
+        (Ok(Agent::OpenCode), _) => {
+            let sessions = programs.opencode.map_or(0, |opencode| opencode::running_sessions(opencode, dir));
+            (opencode_login(programs.opencode, dir), sessions, Agent::OpenCode)
+        },
         (Ok(Agent::ClaudeCode), Some(claude)) => (account_login(claude, dir), active_sessions(dir), Agent::ClaudeCode),
         (Ok(Agent::ClaudeCode), None) | (Err(_), _) => (Login::claude(LoginState::Unknown, None, None), 0, Agent::ClaudeCode),
     }
@@ -195,6 +222,7 @@ pub fn collect(paths: &Paths, names: &[String]) -> Result<Vec<AccountStatus>> {
     let agents: Vec<Result<Agent>> = names.iter().map(|name| agent::read(&paths.account_dir(name))).collect();
     let claude = if agents.iter().any(|agent| matches!(agent, Ok(Agent::ClaudeCode))) { Some(launch::require_claude()?) } else { None };
     let codex = if agents.iter().any(|agent| matches!(agent, Ok(Agent::Codex))) { codex::require_codex().ok() } else { None };
+    let opencode = if agents.iter().any(|agent| matches!(agent, Ok(Agent::OpenCode))) { opencode::require_opencode().ok() } else { None };
     let isolated = registry::list_isolated(paths)?;
     let statuses = thread::scope(|scope| {
         let handles: Vec<_> = names
@@ -202,9 +230,9 @@ pub fn collect(paths: &Paths, names: &[String]) -> Result<Vec<AccountStatus>> {
             .zip(agents)
             .map(|(name, agent)| {
                 let dir = paths.account_dir(name);
-                let (claude, codex) = (claude.as_deref(), codex.as_deref());
+                let programs = Programs { claude: claude.as_deref(), codex: codex.as_deref(), opencode: opencode.as_deref() };
                 scope.spawn(move || {
-                    let (login, sessions, agent) = account_status(agent, claude, codex, &dir);
+                    let (login, sessions, agent) = account_status(agent, programs, &dir);
                     (login, sessions, dir, agent)
                 })
             })
@@ -233,11 +261,11 @@ pub fn collect(paths: &Paths, names: &[String]) -> Result<Vec<AccountStatus>> {
         .collect())
 }
 
-/// The plan of a Claude account, `codex` for a Codex account, the provider and its model for the
-/// others.
+/// The plan of a Claude account, `codex` or `opencode` for an account of those, the provider and
+/// its model for the others.
 pub fn plan_label(status: &AccountStatus) -> String {
-    if status.agent == Agent::Codex {
-        return Agent::Codex.name().into();
+    if status.agent != Agent::ClaudeCode {
+        return status.agent.name().into();
     }
     if status.provider == CLAUDE_PROVIDER {
         return status.plan.clone().unwrap_or_default();
@@ -353,9 +381,22 @@ mod tests {
     #[test]
     fn an_account_runs_what_its_file_says() {
         let dir = Path::new("/nowhere");
-        let (login, sessions, agent) = account_status(Ok(Agent::Codex), None, None, dir);
+        let (login, sessions, agent) = account_status(Ok(Agent::Codex), Programs::default(), dir);
         assert_eq!((login.state, login.provider.as_str(), sessions, agent), (LoginState::Unknown, CODEX_PROVIDER, 0, Agent::Codex));
-        let (login, _, agent) = account_status(Err(crate::Error("broken".into())), None, None, dir);
+        let (login, sessions, agent) = account_status(Ok(Agent::OpenCode), Programs::default(), dir);
+        assert_eq!((login.state, login.provider.as_str(), sessions, agent), (LoginState::Unknown, OPENCODE_PROVIDER, 0, Agent::OpenCode));
+        let (login, _, agent) = account_status(Err(crate::Error("broken".into())), Programs::default(), dir);
         assert_eq!((login.state, agent), (LoginState::Unknown, Agent::ClaudeCode));
+    }
+
+    #[test]
+    fn an_opencode_account_says_so_in_place_of_a_plan() {
+        let mut opencode = status("oc", LoginState::LoggedOut, 0, None, false);
+        opencode.provider = OPENCODE_PROVIDER.into();
+        opencode.agent = Agent::OpenCode;
+        assert_eq!(plan_label(&opencode), "opencode");
+        assert_eq!(format_lines(&[opencode.clone()]), ["oc  logged out  opencode"]);
+        let json = serde_json::to_string(&opencode).unwrap();
+        assert!(json.ends_with(r#","provider":"opencode","model":null,"agent":"opencode"}"#), "{json}");
     }
 }

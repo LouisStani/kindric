@@ -1,7 +1,8 @@
-//! Which program an account runs (since 2.3.0): Claude Code, or OpenAI's Codex.
+//! Which program an account runs: Claude Code, OpenAI's Codex (since 2.3.0) or OpenCode (since 2.4.0).
 //!
 //! `<account>/kindric-agent.json` names it. An account without the file runs Claude Code, so the
-//! accounts made before 2.3.0 stay as they were. A Codex account's directory is its `CODEX_HOME`.
+//! accounts made before 2.3.0 stay as they were. A Codex account's directory is its `CODEX_HOME`;
+//! an OpenCode account's holds the four XDG directories OpenCode runs with.
 
 use std::fs;
 use std::io;
@@ -20,15 +21,18 @@ pub enum Agent {
     #[default]
     ClaudeCode,
     Codex,
+    #[serde(rename = "opencode")]
+    OpenCode,
 }
 
 impl Agent {
-    pub const NAMES: [&str; 2] = ["claude-code", "codex"];
+    pub const NAMES: [&str; 3] = ["claude-code", "codex", "opencode"];
 
     pub fn parse(name: &str) -> Option<Self> {
         match name {
             "claude-code" => Some(Self::ClaudeCode),
             "codex" => Some(Self::Codex),
+            "opencode" => Some(Self::OpenCode),
             _ => None,
         }
     }
@@ -37,6 +41,7 @@ impl Agent {
         match self {
             Self::ClaudeCode => "claude-code",
             Self::Codex => "codex",
+            Self::OpenCode => "opencode",
         }
     }
 }
@@ -93,6 +98,15 @@ mod tests {
         write(&dir, Agent::Codex).unwrap();
         assert_eq!(fs::read_to_string(agent_file(&dir)).unwrap(), "{\n  \"agent\": \"codex\"\n}\n");
         assert_eq!(read(&dir).unwrap(), Agent::Codex);
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn an_opencode_account_keeps_its_agent() {
+        let dir = test_dir::fresh("agent-opencode");
+        write(&dir, Agent::OpenCode).unwrap();
+        assert_eq!(fs::read_to_string(agent_file(&dir)).unwrap(), "{\n  \"agent\": \"opencode\"\n}\n");
+        assert_eq!(read(&dir).unwrap(), Agent::OpenCode);
         fs::remove_dir_all(dir).unwrap();
     }
 

@@ -7,6 +7,7 @@ use crate::agent::{self, Agent};
 use crate::codex;
 use crate::error::{Error, Result, fail};
 use crate::files;
+use crate::opencode;
 use crate::paths::Paths;
 use crate::provider::{self, Provider};
 use crate::registry;
@@ -48,6 +49,23 @@ pub fn add_codex(paths: &Paths, name: &str) -> Result<Created> {
         None => Vec::new(),
     };
     agent::write(&dir, Agent::Codex)?;
+    files::append_line(&paths.registry_file(), name)?;
+    Ok(Created { dir, warnings })
+}
+
+/// An OpenCode account (since 2.4.0): its directory holds the XDG folders OpenCode runs with,
+/// `kindric-shell` and an `opencode.json` that names it, links to what it shares with the user's
+/// OpenCode configuration, and a port of its own for its service, which OpenCode writes down.
+/// Needs `opencode`, which keeps the port. Refused on Windows for now.
+pub fn add_opencode(paths: &Paths, name: &str) -> Result<Created> {
+    opencode::check_supported()?;
+    check_new_name(paths, name)?;
+    let program = opencode::require_opencode()?;
+    let port = opencode::free_port(paths)?;
+    let dir = create_dir(paths, name)?;
+    let warnings = opencode::prepare(paths, &dir)?;
+    opencode::set_port(&program, &dir, port)?;
+    agent::write(&dir, Agent::OpenCode)?;
     files::append_line(&paths.registry_file(), name)?;
     Ok(Created { dir, warnings })
 }
