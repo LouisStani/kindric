@@ -269,7 +269,7 @@ Not yet: answering a question of the model in the control center, away mode, its
 
 ## OpenCode accounts
 
-An OpenCode account is added with `kindric-accounts add <name> --agent opencode`, then signed in with **log in** in the settings, which runs `kindric-accounts run <name> auth login`. Its card says `opencode`. Its sessions show next to the others:
+An OpenCode account is added in the settings with **model from** set to opencode, or with `kindric-accounts add <name> --agent opencode`. Its login, `kindric-accounts run <name> auth login`, opens right after, and again with **log in**: OpenCode asks there which provider to use. An account that only uses Ollama on this computer can close it, OpenCode finds Ollama by itself. Its card says `opencode`. Its sessions show next to the others:
 
 - In the bar, the control center and `Ctrl+P`, with their state. A session waiting for a permission or for an answer to a question of the model carries the `?`, and the control center shows what it asks: a command with **Allow** and **Deny**, a question with its choices, as for Claude Code. Allow lets it run once. A form of another kind is answered in the pane. A session at rest is paused, as in OpenCode nothing runs for it.
 - In a pane: the OpenCode TUI joins the session, in its folder. Closing the pane leaves the session, and a turn it runs, going.

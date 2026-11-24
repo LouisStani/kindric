@@ -2265,6 +2265,37 @@ class CodexAccountAddedFromSettings(Journey):
         self.assertEqual(row, ["codex", ["remove"]])
 
 
+class OpenCodeAccountAddedFromSettings(Journey):
+    """The settings add an OpenCode account: no address, model or key field; kindric-accounts makes
+    it an OpenCode account with a port of its own, and OpenCode's login runs in the helper window."""
+
+    OPENCODE_DIR = os.path.join(HOME, ".local/share/kindric-accounts/oc")
+
+    def test_add_and_log_in(self) -> None:
+        driver = self.driver
+        driver.press(CONTROL, ",")
+        wait_until("the settings", lambda: dialog_open(driver, "settings"))
+        click_text(driver, "#settings .settings-categories li", "accounts")
+        wait_until("the account work", lambda: texts(driver, "#settings li.account .account-name") == ["work"] or None)
+        driver.script("""const kind = document.querySelector('#settings .accounts-add select[name=kind]');
+          kind.value = 'opencode';
+          kind.dispatchEvent(new Event('change'));""")
+        hidden = driver.script("""return ['.provider-url', '.provider-model', '.provider-key']
+          .map((selector) => document.querySelector('#settings ' + selector).hidden);""")
+        self.assertEqual(hidden, [True, True, True], "an OpenCode account asks for its name only")
+        driver.type_into(driver.find("#settings .accounts-add input[name=name]"), "oc" + ENTER)
+
+        wait_until("OpenCode's login of oc", lambda: os.path.exists(os.path.join(self.OPENCODE_DIR, "data", "fake-logins.log")))
+        with open(os.path.join(self.OPENCODE_DIR, "kindric-agent.json"), encoding="utf-8") as file:
+            self.assertEqual(json.load(file), {"agent": "opencode"})
+        with open(os.path.join(self.OPENCODE_DIR, "config", "opencode", "service.json"), encoding="utf-8") as file:
+            self.assertEqual(json.load(file), {"port": 49375}, "the first port after OpenCode's own")
+        if dialog_open(driver, "helper"):
+            driver.click(driver.find("#helper-done"))
+        wait_until("the login window closed", lambda: not dialog_open(driver, "helper"))
+        wait_until("oc in the list", lambda: "oc" in texts(driver, "#settings li.account .account-name") or None)
+
+
 CODEX_ACCOUNT_DIR = os.path.join(HOME, ".local/share/kindric-accounts/cx")
 
 

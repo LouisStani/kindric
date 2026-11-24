@@ -582,6 +582,11 @@ pub fn add_codex_account(paths: &Paths, name: &str) -> io::Result<Vec<String>> {
     account::add_codex(paths, name).map(|created| created.warnings).map_err(library_error)
 }
 
+/// Adds an OpenCode account `name`: refused on Windows, where OpenCode is not supported yet.
+pub fn add_opencode_account(paths: &Paths, name: &str) -> io::Result<Vec<String>> {
+    account::add_opencode(paths, name).map(|created| created.warnings).map_err(library_error)
+}
+
 /// Whether `name` is an account of kindric-accounts that runs Codex; an unreadable file counts as
 /// Claude Code, which every older account runs.
 pub fn is_codex(paths: &Paths, name: &str) -> bool {

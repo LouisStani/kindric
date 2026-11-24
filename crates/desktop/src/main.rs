@@ -336,6 +336,7 @@ fn add_account(name: String, provider: Option<accounts::NewProvider>, key: Optio
     let paths = accounts::paths().map_err(|error| error.to_string())?;
     match (agent.as_deref(), provider) {
         (Some("codex"), _) => accounts::add_codex_account(&paths, name.trim()),
+        (Some("opencode"), _) => accounts::add_opencode_account(&paths, name.trim()),
         (Some(other), _) => return Err(format!("unknown agent {other:?}")),
         (None, None) => accounts::add_account(&paths, name.trim()),
         (None, Some(provider)) => accounts::add_provider_account(&paths, name.trim(), &provider, key.as_deref()),
