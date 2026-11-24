@@ -6,7 +6,8 @@
 //! A permission or a question of AskUserQuestion has a hook waiting for its answer, which touches
 //! the request every second (`beat`). Claude Code may end that hook without a word (with its
 //! session, or killed): a request left untouched for `GONE_SECONDS` has nobody waiting, and goes
-//! (decision 356, case of 2026-11-18).
+//! (decision 356, case of 2026-11-18). A `kindric ask` has no hook: it goes once unanswered for
+//! `ASK_LIFETIME_SECONDS`, or with every other request of its session when the user hides it.
 
 use std::collections::BTreeMap;
 use std::fs;
@@ -110,6 +111,9 @@ pub fn ask(root: &Path, request: &Request) -> io::Result<()> {
 /// A request of a waiting hook untouched for this long has nobody waiting for its answer.
 pub const GONE_SECONDS: u64 = 10;
 
+/// A `kindric ask` nobody answered for this long is no longer waited for (decision 356).
+pub const ASK_LIFETIME_SECONDS: i64 = 18 * 3600;
+
 /// The requests waiting for the user, oldest first, with their files. A file that cannot be read
 /// is left out.
 fn pending_files(root: &Path) -> Vec<(PathBuf, Request)> {
@@ -142,12 +146,22 @@ fn hook_gone(path: &Path, request: &Request, now: SystemTime) -> bool {
     waits && touched.and_then(|touched| now.duration_since(touched).ok()).is_some_and(|age| age.as_secs() >= GONE_SECONDS)
 }
 
-/// The requests still waiting, once those whose hook is gone are settled. One that cannot be
-/// removed stays.
+/// Whether `request` is a `kindric ask` asked `ASK_LIFETIME_SECONDS` or more before `now`. A
+/// permission or a question is left to its hook, which would write it again.
+fn ask_expired(request: &Request, now: SystemTime) -> bool {
+    let now = now.duration_since(UNIX_EPOCH).ok().and_then(|since| i64::try_from(since.as_secs()).ok());
+    matches!(request.body, Body::Ask { .. }) && now.is_some_and(|now| now.saturating_sub(request.asked_at) >= ASK_LIFETIME_SECONDS)
+}
+
+/// The requests still waiting, once those whose hook is gone and the expired ones are settled.
+/// One that cannot be removed stays.
 pub fn live_pending(root: &Path, now: SystemTime) -> Vec<Request> {
     pending_files(root)
         .into_iter()
-        .filter(|(path, request)| !(hook_gone(path, request, now) && settle(root, &request.session_id, &request.id).is_ok()))
+        .filter(|(path, request)| {
+            let dead = hook_gone(path, request, now) || ask_expired(request, now);
+            !(dead && settle(root, &request.session_id, &request.id).is_ok())
+        })
         .map(|(_, request)| request)
         .collect()
 }
@@ -196,13 +210,13 @@ fn written_after(path: &Path, at: i64) -> bool {
     written.is_some_and(|written| i64::try_from(written.as_secs()).unwrap_or(i64::MAX) > at)
 }
 
-/// The requests still waiting, once those of `kindric ask` the user answered by typing into their
-/// session are settled (decision 363), and those whose hook is gone too. `account_dir(session id)` is the folder of the session's
+/// The requests still waiting at `now`, once those of `kindric ask` the user answered by typing
+/// into their session are settled (decision 363), and the dead ones too (see `live_pending`). `account_dir(session id)` is the folder of the session's
 /// account, `None` for a session kindric does not know. A transcript is read only when it was
 /// written after the question.
-pub fn pending_after_typed_answers(root: &Path, account_dir: impl Fn(&str) -> Option<PathBuf>) -> Vec<Request> {
+pub fn pending_after_typed_answers(root: &Path, now: SystemTime, account_dir: impl Fn(&str) -> Option<PathBuf>) -> Vec<Request> {
     let mut waiting = Vec::new();
-    for request in live_pending(root, SystemTime::now()) {
+    for request in live_pending(root, now) {
         let answered = matches!(request.body, Body::Ask { .. })
             && account_dir(&request.session_id)
                 .and_then(|dir| transcript_of(&dir, &request.session_id))
@@ -227,6 +241,15 @@ pub fn settle(root: &Path, session: &str, id: &str) -> io::Result<()> {
     }
     // Fails while another request of the session waits: that one keeps the folder.
     let _ = fs::remove_dir(session_dir(root, session)?);
+    Ok(())
+}
+
+/// Removes every request of `session`, the user hid it: nobody answers them any more. A session
+/// with none is no error.
+pub fn settle_session(root: &Path, session: &str) -> io::Result<()> {
+    for (_, request) in pending_files(root).into_iter().filter(|(_, request)| request.session_id == session) {
+        settle(root, session, &request.id)?;
+    }
     Ok(())
 }
 
@@ -392,7 +415,9 @@ mod tests {
         fs::write(folder.join("bbbb-2222.jsonl"), entry("user", "2026-11-17T21:40:00.000Z", serde_json::json!("before"))).unwrap();
         let known = |session: &str| (session != "cccc-3333").then(|| account.clone());
 
-        let waiting: Vec<String> = pending_after_typed_answers(&root, known).into_iter().map(|request| request.id).collect();
+        // An hour after the question: none has expired.
+        let now = UNIX_EPOCH + std::time::Duration::from_secs(1_794_952_000 + 3600);
+        let waiting: Vec<String> = pending_after_typed_answers(&root, now, known).into_iter().map(|request| request.id).collect();
         assert_eq!(waiting, ["1794952000000-10", "1794952000000-8", "1794952000000-9"]);
         assert_eq!(pending(&root).len(), 3, "the answered one is gone from the folder too");
         fs::remove_dir_all(root).unwrap();
@@ -537,7 +562,7 @@ mod tests {
         let waiting = request("aaaa-1111", "1-2", 2, Body::Question { questions: serde_json::json!([]) });
         // From its JSON: the fields of an ask may grow.
         let ask_body: Body = serde_json::from_value(serde_json::json!({"kind": "ask", "question": "q", "context": "c"})).unwrap();
-        let asked = request("bbbb-2222", "1-3", 3, ask_body);
+        let asked = request("bbbb-2222", "1-3", unix(ago(3600)), ask_body);
         for each in [&killed, &waiting, &asked] {
             ask(&root, each).unwrap();
         }
@@ -552,13 +577,52 @@ mod tests {
         fs::remove_dir_all(&root).unwrap();
     }
 
+    fn unix(time: SystemTime) -> i64 {
+        i64::try_from(time.duration_since(UNIX_EPOCH).unwrap().as_secs()).unwrap()
+    }
+
+    #[test]
+    fn a_kindric_ask_unanswered_for_18_hours_goes_and_a_hook_decides_for_its_own() {
+        let root = temp_root("expired");
+        let now = SystemTime::now();
+        let asked_ago = |seconds: i64| unix(now) - seconds;
+        let ask_body = || Body::Ask { question: "q".into(), context: "c".into(), from_reply: false };
+        let young = request("aaaa-1111", "1-1", asked_ago(ASK_LIFETIME_SECONDS - 1), ask_body());
+        let old = request("aaaa-1111", "1-2", asked_ago(ASK_LIFETIME_SECONDS), ask_body());
+        let from_reply = request("bbbb-2222", "1-3", asked_ago(ASK_LIFETIME_SECONDS + 60), Body::Ask { question: "q".into(), context: "c".into(), from_reply: true });
+        let hooked = request("bbbb-2222", "1-4", asked_ago(2 * ASK_LIFETIME_SECONDS), permission());
+        for each in [&young, &old, &from_reply, &hooked] {
+            ask(&root, each).unwrap();
+        }
+        let ids: Vec<String> = live_pending(&root, now).into_iter().map(|each| each.id).collect();
+        assert_eq!(ids, ["1-4", "1-1"], "the hook still touches its permission");
+        assert!(!file(&root, "aaaa-1111", "1-2", REQUEST).unwrap().exists(), "its file goes too");
+        assert_eq!(pending(&root).len(), 2);
+        fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn hiding_a_session_settles_its_requests_only() {
+        let root = temp_root("hidden");
+        let ask_body = || Body::Ask { question: "q".into(), context: "c".into(), from_reply: false };
+        ask(&root, &request("aaaa-1111", "1-1", 1, ask_body())).unwrap();
+        ask(&root, &request("aaaa-1111", "1-2", 2, permission())).unwrap();
+        answer(&root, "aaaa-1111", "1-2", &Answer::Allow).unwrap();
+        ask(&root, &request("bbbb-2222", "1-3", 3, ask_body())).unwrap();
+        settle_session(&root, "aaaa-1111").unwrap();
+        assert_eq!(pending(&root).into_iter().map(|each| each.id).collect::<Vec<_>>(), ["1-3"]);
+        assert!(!root.join("aaaa-1111").exists(), "its folder and the answer go");
+        settle_session(&root, "cccc-3333").unwrap();
+        fs::remove_dir_all(&root).unwrap();
+    }
+
     #[test]
     fn the_bar_does_not_ask_for_a_request_whose_hook_is_gone() {
         let root = temp_root("gone-bar");
         let killed = request("aaaa-1111", "1-1", 1, Body::Permission { tool: "Bash".into(), input: serde_json::json!({"command": "ls"}) });
         ask(&root, &killed).unwrap();
         touched_at(&root, &killed, SystemTime::now() - std::time::Duration::from_secs(GONE_SECONDS + 1));
-        assert_eq!(pending_after_typed_answers(&root, |_| None), []);
+        assert_eq!(pending_after_typed_answers(&root, SystemTime::now(), |_| None), []);
         assert_eq!(pending(&root), [], "settled");
         fs::remove_dir_all(&root).unwrap();
     }

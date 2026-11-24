@@ -680,6 +680,37 @@ class HookGoneLeavesTheOverview(Journey):
         self.assertEqual(overview_requests(), [], "its file goes too")
         wait_until("nothing needs you", lambda: texts(driver, "h2.control-group.is-need") == [] or None, timeout=10)
 
+
+class AskLeavesWhenHidden(Journey):
+    """A `kindric ask` has no hook that could stop waiting: once the user hides its session
+    (Ctrl+Shift+K), nobody answers it any more, and it leaves the control center (356)."""
+
+    started = [("asks", "a task that asks work:0")]
+
+    def test_hiding_the_session_drops_its_question(self) -> None:
+        driver = self.driver
+        session = session_id_of("asks")
+        asked = subprocess.run(["kindric", "ask", "Keep the old routes?", "Asked by the end-to-end journey."],
+                               cwd=PROJECT, capture_output=True, text=True, timeout=10, env={**os.environ, "CLAUDE_CODE_SESSION_ID": session})
+        self.assertEqual(asked.returncode, 0, asked.stderr)
+        driver.press(CONTROL, SHIFT, "0")
+        wait_until("the control center", lambda: not overview_hidden(driver))
+        wait_until("the question in the row", lambda: driver.find_all("article.control-row .request.is-ask") or None)
+        self.assertEqual(len(overview_requests()), 1)
+
+        driver.press(CONTROL, SHIFT, "1")
+        wait_until("the first tab shown", lambda: overview_hidden(driver))
+        open_from_bar(driver, "asks")
+        driver.press(CONTROL, SHIFT, "k")
+        wait_until("the question before hiding", lambda: dialog_open(driver, "confirm-hide"))
+        driver.click(driver.find("#hide-form button[type=submit]"))
+        wait_until("the session stopped", lambda: not fake_running("asks"))
+        wait_until("its question's file gone", lambda: overview_requests() == [] or None, timeout=10)
+
+        driver.press(CONTROL, SHIFT, "0")
+        wait_until("the control center again", lambda: not overview_hidden(driver))
+        wait_until("no question left in the page", lambda: driver.find_all("article.control-row .request") == [] or None, timeout=10)
+
 # The mark of each tab of the bar, as the page draws it: [name, state class, sign in its dot].
 TAB_MARKS = """return [...document.querySelectorAll('#tabs button.tab')].map((tab) => {
   const dot = tab.querySelector('.dot');

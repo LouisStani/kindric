@@ -608,7 +608,8 @@ fn rename_session(app: AppHandle, shared: State<'_, Shared>, account: String, sh
     update_prefs(&app, &shared, |prefs| prefs::set_label(prefs, &session_id, &name))
 }
 
-/// Stops the session (its conversation is kept) and hides it from the bar; its panes empty.
+/// Stops the session (its conversation is kept) and hides it from the bar; its panes empty. What it
+/// asked leaves the control center (decision 356).
 #[tauri::command]
 async fn hide_session(app: AppHandle, shared: State<'_, Shared>, account: String, short_id: String) -> Result<Tabs, String> {
     let _span = shared.trace.span("hide_session");
@@ -635,6 +636,7 @@ async fn hide_session(app: AppHandle, shared: State<'_, Shared>, account: String
         }
     }
     update_prefs(&app, &shared, |prefs| prefs::set_hidden(prefs, &session_id, true))?;
+    overview::settle_session(&overview_root()?, &session_id).map_err(|error| format!("cannot remove the requests of {short_id}: {error}"))?;
     let mut workspace = shared.workspace();
     // Detaching: the session is stopped already.
     for pane in workspace.tabs.clear_session(&SessionKey { account, short_id }) {
@@ -1322,7 +1324,7 @@ fn mark_asking(view: &mut view::ListView, implicit_default: bool) {
         Some(accounts::dir_of(paths.as_ref()?, &row.account, implicit_default))
     };
     let requested: HashSet<String> = overview::default_root()
-        .map(|root| overview::pending_after_typed_answers(&root, account_dir).into_iter().map(|request| request.session_id).collect())
+        .map(|root| overview::pending_after_typed_answers(&root, std::time::SystemTime::now(), account_dir).into_iter().map(|request| request.session_id).collect())
         .unwrap_or_default();
     view::mark_asking(view, &requested);
 }
