@@ -1,5 +1,7 @@
 # kindric
 
+[![CI](https://github.com/LouisStani/kindric/actions/workflows/ci.yml/badge.svg)](https://github.com/LouisStani/kindric/actions/workflows/ci.yml)
+
 <img src="assets/header.svg" alt="kindric: every claude code session, every account, one window. sessions can leave each other messages." width="100%">
 
 kindric shows the Claude Code sessions of all your accounts in one window, side by side. Sessions can leave each other short messages, even across accounts.
