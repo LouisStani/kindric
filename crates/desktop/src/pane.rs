@@ -2,8 +2,10 @@
 //! moves bytes and sizes.
 
 use std::io::{self, Read, Write};
+use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender};
 use std::sync::{Arc, Mutex, PoisonError};
 use std::thread::{self, JoinHandle};
+use std::time::{Duration, Instant};
 
 use kindric_core::attach::AttachCommand;
 use portable_pty::{Child, ChildKiller, CommandBuilder, MasterPty, PtySize, native_pty_system};
@@ -33,16 +35,50 @@ fn close_when_done(mut child: Box<dyn Child + Send + Sync>, master: SharedMaster
     master.lock().unwrap_or_else(PoisonError::into_inner).take();
 }
 
-/// Hands every chunk to `on_output`, then calls `on_exit` once the program has gone.
-fn forward(mut reader: Box<dyn Read + Send>, mut on_output: impl FnMut(&[u8]), on_exit: impl FnOnce()) {
+/// How long more output may wait to join the chunk it follows: about one frame.
+const GATHER: Duration = Duration::from_millis(8);
+
+/// A chunk goes at this size however fast the program keeps writing.
+const CHUNK_MAX: usize = 64 * 1024;
+
+/// Sends every chunk read to `chunks`; dropping the sender tells the end of the program.
+fn forward(mut reader: Box<dyn Read + Send>, chunks: Sender<Vec<u8>>) {
     let mut buffer = [0u8; 8192];
     loop {
         match reader.read(&mut buffer) {
             Ok(0) => break,
-            Ok(read) => on_output(&buffer[..read]),
+            Ok(read) => {
+                if chunks.send(buffer[..read].to_vec()).is_err() {
+                    break;
+                }
+            },
             Err(error) if error.kind() == io::ErrorKind::Interrupted => {},
             // Linux reports the end of the program as EIO on the pty.
             Err(_) => break,
+        }
+    }
+}
+
+/// Hands `on_output` what `chunks` brings, the chunks that follow within `GATHER` joined in one,
+/// then calls `on_exit` once the program has gone. A program at work writes many small pieces
+/// (Claude Code redraws its spinner): each message the page gets costs it a script of its own.
+fn gather(chunks: &Receiver<Vec<u8>>, mut on_output: impl FnMut(&[u8]), on_exit: impl FnOnce()) {
+    while let Ok(mut joined) = chunks.recv() {
+        let until = Instant::now() + GATHER;
+        let mut ended = false;
+        while joined.len() < CHUNK_MAX {
+            match chunks.recv_timeout(until.saturating_duration_since(Instant::now())) {
+                Ok(more) => joined.extend_from_slice(&more),
+                Err(RecvTimeoutError::Timeout) => break,
+                Err(RecvTimeoutError::Disconnected) => {
+                    ended = true;
+                    break;
+                },
+            }
+        }
+        on_output(&joined);
+        if ended {
+            break;
         }
     }
     on_exit();
@@ -78,7 +114,9 @@ impl Pane {
             let master = Arc::clone(&master);
             thread::spawn(move || close_when_done(child, master))
         };
-        thread::spawn(move || forward(reader, on_output, on_exit));
+        let (sender, chunks) = mpsc::channel();
+        thread::spawn(move || forward(reader, sender));
+        thread::spawn(move || gather(&chunks, on_output, on_exit));
         Ok(Self { master, writer, killer, waiter: Some(waiter) })
     }
 
@@ -135,6 +173,33 @@ mod tests {
             env_remove: Vec::new(),
             directory: None,
         }
+    }
+
+    /// The pieces already waiting go as one message, the end of the program after the last.
+    #[test]
+    fn pieces_written_close_together_reach_the_page_as_one_message() {
+        let (sender, chunks) = mpsc::channel();
+        for piece in [b"\x1b[3;1H".to_vec(), b"Working".to_vec(), b"...".to_vec()] {
+            sender.send(piece).unwrap();
+        }
+        drop(sender);
+        let seen = Mutex::new(Vec::new());
+        gather(&chunks, |bytes| seen.lock().unwrap().push(String::from_utf8_lossy(bytes).into_owned()), || seen.lock().unwrap().push("end".into()));
+        assert_eq!(seen.into_inner().unwrap(), ["\x1b[3;1HWorking...", "end"]);
+    }
+
+    #[test]
+    fn a_piece_written_after_a_pause_goes_on_its_own() {
+        let (sender, chunks) = mpsc::channel();
+        let writer = thread::spawn(move || {
+            sender.send(b"first".to_vec()).unwrap();
+            thread::sleep(GATHER * 20);
+            sender.send(b"second".to_vec()).unwrap();
+        });
+        let mut seen = Vec::new();
+        gather(&chunks, |bytes| seen.push(bytes.to_vec()), || {});
+        writer.join().unwrap();
+        assert_eq!(seen, [b"first".to_vec(), b"second".to_vec()]);
     }
 
     fn open(command: &AttachCommand, columns: u16, rows: u16) -> (Pane, Receiver<Seen>) {
