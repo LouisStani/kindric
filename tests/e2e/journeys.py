@@ -711,6 +711,28 @@ class AskLeavesWhenHidden(Journey):
         wait_until("the control center again", lambda: not overview_hidden(driver))
         wait_until("no question left in the page", lambda: driver.find_all("article.control-row .request") == [] or None, timeout=10)
 
+
+class SetupLeftWithSessions(Journey):
+    """The messages server is missing but sessions exist: the welcome list no longer covers the
+    control center, one line on it says what is left and opens F1, whose "add" makes it go (452)."""
+
+    started = [("already-here", "a task work:0")]
+
+    def test_the_control_center_stays_with_a_line(self) -> None:
+        driver = self.driver
+        driver.press(CONTROL, SHIFT, "0")
+        wait_until("the control center", lambda: not overview_hidden(driver))
+        line = wait_until("the line of what is left", lambda: texts(driver, ".control-setup") or None)
+        self.assertEqual(line, ["1 thing left to set up · F1 shows them"])
+        self.assertTrue(driver.script("return document.getElementById('welcome').hidden"))
+        wait_until("the session's row", lambda: texts(driver, "article.control-row .row-name") == ["already-here"])
+
+        click_text(driver, ".control-setup", line[0])
+        wait_until("the help with the list", lambda: dialog_open(driver, "help"))
+        wait_until("its add", lambda: "add" in texts(driver, "#help-checks button"))
+        click_text(driver, "#help-checks button", "add")
+        wait_until("the line gone once added", lambda: texts(driver, ".control-setup") == [] or None)
+
 # The mark of each tab of the bar, as the page draws it: [name, state class, sign in its dot].
 TAB_MARKS = """return [...document.querySelectorAll('#tabs button.tab')].map((tab) => {
   const dot = tab.querySelector('.dot');

@@ -1963,6 +1963,15 @@ input:focus, select:focus {
   padding: 18px 20px;
 }
 
+/* What the welcome list still has to do, on one line once sessions exist (452). */
+.control-setup {
+  flex: none;
+  align-self: stretch;
+  text-align: left;
+  color: var(--waiting);
+  border-color: var(--waiting);
+}
+
 .control-head {
   display: grid;
   grid-template-columns: minmax(0, 1fr);
