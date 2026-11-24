@@ -70,7 +70,8 @@ pub struct Found {
     pub registry: bool,
     /// The accounts the app lists: `default` when logged in, and those of kindric-accounts.
     pub accounts: Vec<String>,
-    /// Those of `accounts` that run Codex: they need no Claude Code and carry no messages yet.
+    /// Those of `accounts` that run Codex: they need no Claude Code, and kindric-accounts gives them
+    /// the messages server itself.
     pub codex: Vec<String>,
     pub sessions: usize,
 }
@@ -291,7 +292,8 @@ fn default_state_file(paths: &Paths) -> Option<std::path::PathBuf> {
 pub fn check_messages(paths: &Paths) -> Result<MessagesCheck, String> {
     let isolated = registry::list_isolated(paths).map_err(|error| error.to_string())?;
     let registered = registry::list_accounts(paths).map_err(|error| error.to_string())?;
-    // A Codex or OpenCode account takes no MCP server of Claude Code: it carries no messages yet.
+    // A Codex or OpenCode account takes no MCP server of Claude Code: kindric-accounts gives Codex
+    // its own, and OpenCode carries no messages yet.
     let carriers: Vec<&String> = registered
         .iter()
         .filter(|account| !isolated.contains(account) && accounts::is_claude_code(paths, account))
@@ -370,7 +372,7 @@ fn messages_line(messages: &MessagesCheck, accounts: &[String], codex_only: bool
         return if accounts.is_empty() {
             Line::new(State::ToDo, "messages between sessions: an account first", Vec::new())
         } else if codex_only {
-            Line::new(State::Optional, "messages between sessions: not for Codex accounts yet", Vec::new())
+            Line::new(State::Ok, "messages between sessions: kindric-accounts gives Codex sessions the server", Vec::new())
         } else {
             Line::new(State::Optional, "messages between sessions: every account is isolated", Vec::new())
         };
@@ -546,7 +548,7 @@ mod tests {
     }
 
     #[test]
-    fn codex_accounts_alone_need_no_claude_code_and_carry_no_messages() {
+    fn codex_accounts_alone_need_no_claude_code_and_get_the_server_from_kindric_accounts() {
         let missing = ClaudeCheck { version: None, tested: false, error: Some("claude not found in PATH".into()) };
         let codex = Found {
             claude: missing.clone(),
@@ -560,7 +562,7 @@ mod tests {
         assert_eq!(lines[0].state, State::Optional, "{lines:?}");
         assert_eq!(lines[0].text, "Claude Code: claude not found in PATH · only needed for Claude Code accounts");
         let messages_line = lines.iter().find(|line| line.text.starts_with("messages")).unwrap();
-        assert_eq!((messages_line.state, messages_line.text.as_str()), (State::Optional, "messages between sessions: not for Codex accounts yet"));
+        assert_eq!((messages_line.state, messages_line.text.as_str()), (State::Ok, "messages between sessions: kindric-accounts gives Codex sessions the server"));
         // With a Claude account too, Claude Code is needed again.
         let both = Found { claude: missing, accounts: vec!["cx".into(), "louis".into()], ..codex };
         assert_eq!(super::lines(&both)[0].state, State::ToDo);

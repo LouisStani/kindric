@@ -633,15 +633,15 @@ pub fn running_sessions(dir: &Path) -> usize {
         .map_or(0, |ids| ids.len())
 }
 
-/// kindric's hooks a Codex session gets, among `all`: the user away, how to ask the user. Not:
+/// kindric's hooks a Codex session gets, among `all`: the user away, how to ask the user, and the
+/// notice of unread messages, read with the `read_messages` tool of kindric's MCP server (see
+/// `prepare_mcp`). Not:
 /// - the questions put on kindric's page: Codex waits for this hook before it shows the question
 ///   in its TUI, which would stay blank until the page answers;
-/// - the unread messages, whose notice sends the session to the `read_messages` tool of kindric's
-///   MCP server, which Codex sessions do not have yet;
 /// - the wait for a message, which relies on a feature of Claude Code (`asyncRewake`);
 /// - those that read Claude Code's transcript or tools.
 pub fn kindric_hooks(all: usage::KindricHooks) -> usage::KindricHooks {
-    usage::KindricHooks { away: all.away, start: all.start, ..usage::KindricHooks::default() }
+    usage::KindricHooks { away: all.away, start: all.start, unread: all.unread, ..usage::KindricHooks::default() }
 }
 
 /// Codex's hooks file of the account in `dir`, in Claude Code's form.
@@ -754,12 +754,7 @@ pub fn prepare_hooks(codex: &Path, dir: &Path, hooks: &usage::KindricHooks) -> V
     if fs::read_to_string(trusted_mark(dir)).is_ok_and(|trusted| trusted == written) {
         return warnings;
     }
-    let server = match AppServer::connect_daemon(dir) {
-        Ok(Some(daemon)) => Ok(daemon),
-        Ok(None) => AppServer::start(codex, dir),
-        Err(error) => Err(error),
-    };
-    match server.and_then(|mut server| trust_hooks(&mut server, dir)) {
+    match app_server(codex, dir).and_then(|mut server| trust_hooks(&mut server, dir)) {
         Ok(()) => {
             if let Err(error) = files::write_atomic(&trusted_mark(dir), &written) {
                 warnings.push(format!("{}: {error}", trusted_mark(dir).display()));
@@ -768,6 +763,83 @@ pub fn prepare_hooks(codex: &Path, dir: &Path, hooks: &usage::KindricHooks) -> V
         Err(error) => warnings.push(format!("kindric's hooks not trusted by Codex: {error}")),
     }
     warnings
+}
+
+/// What kindric gives the Codex account `name` in `dir` before a session: its hooks and its
+/// messages server, with the `kindric` in `PATH`. Returns what went wrong, as warnings.
+pub fn prepare_kindric(codex: &Path, dir: &Path, name: &str, isolated: bool) -> Vec<String> {
+    let mut warnings = prepare_hooks(codex, dir, &kindric_hooks(usage::kindric_hooks()));
+    warnings.extend(prepare_mcp(codex, dir, name, usage::kindric_program().as_deref(), isolated));
+    warnings
+}
+
+/// The daemon of the Codex account in `dir` when it runs, else a Codex app server started for it.
+fn app_server(codex: &Path, dir: &Path) -> io::Result<AppServer> {
+    match AppServer::connect_daemon(dir)? {
+        Some(daemon) => Ok(daemon),
+        None => AppServer::start(codex, dir),
+    }
+}
+
+/// The name of kindric's MCP server in Codex's configuration.
+const MESSAGES_SERVER: &str = "kindric";
+
+/// The fingerprint of kindric's MCP server as Codex was last asked to declare it: asked again only
+/// when it changed, or when it failed.
+fn mcp_mark(dir: &Path) -> PathBuf {
+    dir.join(".kindric-mcp")
+}
+
+/// What Codex gives its MCP servers is only HOME, LANG, LOGNAME, PATH, SHELL, TERM and USER (Codex
+/// 0.172.0): kindric finds its data and kindric-accounts' with these too.
+const MCP_ENV: [&str; 2] = ["XDG_CONFIG_HOME", "XDG_DATA_HOME"];
+
+/// The edit of `config/batchWrite` that declares kindric's MCP server for the Codex account `name`.
+/// Codex names the session in each call, so the server only needs the account. Its tools are allowed
+/// without asking: else every message stops the session on a permission prompt (Codex 0.172.0).
+fn mcp_edits(kindric: &Path, name: &str) -> Value {
+    json!([{
+        "keyPath": format!("mcp_servers.{MESSAGES_SERVER}"),
+        "value": {
+            "command": kindric,
+            "args": ["mcp", "--account", name],
+            "env_vars": MCP_ENV,
+            "default_tools_approval_mode": "approve",
+        },
+        "mergeStrategy": "replace",
+    }])
+}
+
+/// An older `kindric` answers `mcp --account` with its usage and exit code 2: Codex would then fail
+/// to start the server in every session. With no input, a recent one stops at once and exits 0.
+fn answers_mcp(kindric: &Path, name: &str) -> bool {
+    let mut probe = Command::new(kindric);
+    probe.args(["mcp", "--account", name]).stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null());
+    probe.status().is_ok_and(|status| status.success())
+}
+
+/// Declares kindric's MCP server (messages between sessions, artifacts) in the Codex account `name`
+/// in `dir`, through its daemon or an app server: Codex writes its own `config.toml`. Nothing for an
+/// isolated account, whose sessions take no part in messages, nor without a `kindric` that runs it.
+/// Returns what went wrong, as warnings: a session without the server still works.
+pub fn prepare_mcp(codex: &Path, dir: &Path, name: &str, kindric: Option<&Path>, isolated: bool) -> Vec<String> {
+    let Some(kindric) = kindric.filter(|_| !isolated) else {
+        return Vec::new();
+    };
+    let edits = mcp_edits(kindric, name);
+    let wanted = shared::fingerprint(edits.to_string().as_bytes());
+    if fs::read_to_string(mcp_mark(dir)).is_ok_and(|done| done == wanted) || !answers_mcp(kindric, name) {
+        return Vec::new();
+    }
+    let declared = app_server(codex, dir)
+        .and_then(|mut server| server.request("config/batchWrite", json!({ "edits": edits, "reloadUserConfig": true })).map(|_| ()));
+    match declared {
+        Ok(()) => match files::write_atomic(&mcp_mark(dir), &wanted) {
+            Ok(()) => Vec::new(),
+            Err(error) => vec![format!("{}: {error}", mcp_mark(dir).display())],
+        },
+        Err(error) => vec![format!("kindric's messages server not declared to Codex: {error}")],
+    }
 }
 
 #[cfg(test)]
@@ -786,6 +858,34 @@ mod tests {
         assert_eq!(env_of("CODEX_HOME"), Some(Some(OsStr::new("/data/cx"))));
         assert_eq!(env_of("PATH"), None, "the rest is left as it is");
         assert_eq!(env_of("CLAUDE_EFFORT"), None, "not the identity of a session");
+    }
+
+    #[test]
+    fn the_messages_server_runs_for_the_account_and_asks_nothing() {
+        let edits = mcp_edits(Path::new("/usr/bin/kindric"), "cx");
+        assert_eq!(
+            edits,
+            json!([{
+                "keyPath": "mcp_servers.kindric",
+                "value": {
+                    "command": "/usr/bin/kindric",
+                    "args": ["mcp", "--account", "cx"],
+                    "env_vars": ["XDG_CONFIG_HOME", "XDG_DATA_HOME"],
+                    "default_tools_approval_mode": "approve",
+                },
+                "mergeStrategy": "replace",
+            }])
+        );
+    }
+
+    #[test]
+    fn no_messages_server_for_an_isolated_account_or_without_kindric() {
+        let dir = std::env::temp_dir().join(format!("kindric-codex-mcp-{}", std::process::id()));
+        // Neither reaches Codex: a missing program would otherwise come back as a warning.
+        let codex = Path::new("/nonexistent/codex");
+        assert!(prepare_mcp(codex, &dir, "cx", Some(Path::new("/usr/bin/kindric")), true).is_empty());
+        assert!(prepare_mcp(codex, &dir, "cx", None, false).is_empty());
+        assert!(!mcp_mark(&dir).exists());
     }
 
     #[test]
@@ -904,9 +1004,10 @@ mod tests {
         let expected = usage::KindricHooks {
             away: Some("k away-hook".into()),
             start: Some("k overview-start".into()),
+            unread: Some("k unread".into()),
             ..usage::KindricHooks::default()
         };
-        assert_eq!(hooks, expected, "no page question, no messages yet, no check of Claude Code's transcript");
+        assert_eq!(hooks, expected, "no page question, no wait for a message, no check of Claude Code's transcript");
     }
 
     #[test]

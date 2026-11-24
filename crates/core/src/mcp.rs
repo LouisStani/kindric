@@ -29,6 +29,35 @@ pub struct Identity {
     pub account: String,
 }
 
+/// Who calls. Claude Code starts a server per session and names it in the environment; Codex
+/// starts one per session too but names it only in each call, under `_meta.threadId` (seen on
+/// Codex 0.172.0, 2026-11-24): its account then comes from `kindric mcp --account`.
+pub enum Caller {
+    Session(Identity),
+    Account(String),
+}
+
+impl Caller {
+    pub fn account(&self) -> &str {
+        match self {
+            Self::Session(identity) => &identity.account,
+            Self::Account(account) => account,
+        }
+    }
+
+    fn identity(&self, params: &Value) -> Result<Identity, String> {
+        match self {
+            Self::Session(identity) => Ok(Identity { session_id: identity.session_id.clone(), account: identity.account.clone() }),
+            Self::Account(account) => params
+                .pointer("/_meta/threadId")
+                .and_then(Value::as_str)
+                .filter(|thread| !thread.is_empty())
+                .map(|thread| Identity { session_id: thread.to_string(), account: account.clone() })
+                .ok_or_else(|| "this call does not say which session makes it (_meta.threadId): kindric mcp --account is for Codex".to_string()),
+        }
+    }
+}
+
 /// Claude Code gives every MCP server it starts `CLAUDE_CODE_SESSION_ID` and `CLAUDE_CONFIG_DIR`.
 pub fn identity_from_env() -> io::Result<Identity> {
     let session_id = std::env::var("CLAUDE_CODE_SESSION_ID")
@@ -58,7 +87,7 @@ pub struct Place {
 }
 
 pub struct Server<F> {
-    identity: Identity,
+    caller: Caller,
     mailbox: Mailbox,
     sessions: F,
     place: Place,
@@ -192,8 +221,8 @@ pub fn format_messages(messages: &[Message], now: u64) -> String {
 }
 
 impl<F: Fn() -> io::Result<Vec<SessionInfo>>> Server<F> {
-    pub fn new(identity: Identity, mailbox: Mailbox, sessions: F, place: Place) -> Self {
-        Self { identity, mailbox, sessions, place }
+    pub fn new(caller: Caller, mailbox: Mailbox, sessions: F, place: Place) -> Self {
+        Self { caller, mailbox, sessions, place }
     }
 
     /// Answers one JSON-RPC message; notifications get no answer.
@@ -223,14 +252,14 @@ impl<F: Fn() -> io::Result<Vec<SessionInfo>>> Server<F> {
     fn call_tool(&self, params: &Value) -> Value {
         let name = params.get("name").and_then(Value::as_str).unwrap_or_default();
         let arguments = params.get("arguments").cloned().unwrap_or(Value::Null);
-        let result = match name {
-            "list_sessions" => self.list_sessions(),
-            "send_message" => self.send_message(&arguments),
-            "read_messages" => self.read_messages(),
-            "keep_artifact" => self.keep_artifact(&arguments),
+        let result = self.caller.identity(params).and_then(|me| match name {
+            "list_sessions" => self.list_sessions(&me),
+            "send_message" => self.send_message(&me, &arguments),
+            "read_messages" => self.read_messages(&me),
+            "keep_artifact" => self.keep_artifact(&me, &arguments),
             "list_artifacts" => self.list_artifacts(&arguments),
             _ => Err(format!("unknown tool: {name}")),
-        };
+        });
         match result {
             Ok(text) => tool_text(text, false),
             Err(text) => tool_text(text, true),
@@ -241,12 +270,12 @@ impl<F: Fn() -> io::Result<Vec<SessionInfo>>> Server<F> {
         (self.sessions)().map_err(|error| format!("cannot list sessions: {error}"))
     }
 
-    fn list_sessions(&self) -> Result<String, String> {
+    fn list_sessions(&self, me: &Identity) -> Result<String, String> {
         let lines: Vec<String> = self
             .sessions()?
             .iter()
             .map(|session| {
-                let you = if session.session_id == self.identity.session_id { " (you)" } else { "" };
+                let you = if session.session_id == me.session_id { " (you)" } else { "" };
                 format!(
                     "- {}{you} · account {} · {} · id {} · {}",
                     session.title(),
@@ -263,7 +292,7 @@ impl<F: Fn() -> io::Result<Vec<SessionInfo>>> Server<F> {
         Ok(lines.join("\n"))
     }
 
-    fn send_message(&self, arguments: &Value) -> Result<String, String> {
+    fn send_message(&self, me: &Identity, arguments: &Value) -> Result<String, String> {
         let to = arguments.get("to").and_then(Value::as_str).ok_or("missing argument: to")?;
         let text = arguments.get("text").and_then(Value::as_str).ok_or("missing argument: text")?;
         if text.trim().is_empty() {
@@ -274,15 +303,15 @@ impl<F: Fn() -> io::Result<Vec<SessionInfo>>> Server<F> {
             Some(wake) => wake.as_bool().ok_or("wake: true or false")?,
         };
         let sessions = self.sessions()?;
-        let target = resolve(&sessions, to, &self.identity.session_id)?;
+        let target = resolve(&sessions, to, &me.session_id)?;
         let from_title = sessions
             .iter()
-            .find(|session| session.session_id == self.identity.session_id)
+            .find(|session| session.session_id == me.session_id)
             .map_or_else(|| "unknown session".to_string(), SessionInfo::title);
         let message = Message {
-            from_session: self.identity.session_id.clone(),
+            from_session: me.session_id.clone(),
             from_title,
-            from_account: self.identity.account.clone(),
+            from_account: me.account.clone(),
             sent_at: mailbox::now_secs(),
             text: text.to_string(),
             wake,
@@ -292,10 +321,10 @@ impl<F: Fn() -> io::Result<Vec<SessionInfo>>> Server<F> {
         Ok(format!("Message left for {} ({}). {then}", target.title(), target.account))
     }
 
-    fn read_messages(&self) -> Result<String, String> {
+    fn read_messages(&self, me: &Identity) -> Result<String, String> {
         let messages = self
             .mailbox
-            .take_unread(&self.identity.session_id)
+            .take_unread(&me.session_id)
             .map_err(|error| format!("cannot read messages: {error}"))?;
         Ok(format_messages(&messages, mailbox::now_secs()))
     }
@@ -309,7 +338,7 @@ impl<F: Fn() -> io::Result<Vec<SessionInfo>>> Server<F> {
         self.place.cwd.join(path)
     }
 
-    fn keep_artifact(&self, arguments: &Value) -> Result<String, String> {
+    fn keep_artifact(&self, me: &Identity, arguments: &Value) -> Result<String, String> {
         let path = arguments.get("path").and_then(Value::as_str).ok_or("missing argument: path")?;
         let kind = Kind::parse(arguments.get("for").and_then(Value::as_str).ok_or("missing argument: for")?)?;
         let group = arguments.get("group").and_then(Value::as_str).map(str::trim).filter(|group| !group.is_empty());
@@ -320,8 +349,8 @@ impl<F: Fn() -> io::Result<Vec<SessionInfo>>> Server<F> {
             Kind::Claude => "you: list_artifacts gives it back",
         };
         let origin = Origin {
-            session_id: self.identity.session_id.clone(),
-            account: self.identity.account.clone(),
+            session_id: me.session_id.clone(),
+            account: me.account.clone(),
             kept_at: mailbox::now_secs(),
         };
         // The file is kept either way: only kindric's notes of who kept it and that it is new can be missing.
@@ -333,7 +362,7 @@ impl<F: Fn() -> io::Result<Vec<SessionInfo>>> Server<F> {
             return Ok(done);
         }
         let name = kept.file_name().map_or_else(String::new, |name| name.to_string_lossy().into_owned());
-        if let Err(error) = artifacts::note_kept(&root, &self.identity.session_id, group, &name) {
+        if let Err(error) = artifacts::note_kept(&root, &me.session_id, group, &name) {
             done.push_str(&format!("\nkindric will not show it as new: {error}"));
         }
         Ok(done)
@@ -352,12 +381,16 @@ impl<F: Fn() -> io::Result<Vec<SessionInfo>>> Server<F> {
     }
 }
 
-pub fn run() -> io::Result<()> {
-    let identity = identity_from_env()?;
-    ensure_not_isolated(&identity.account, &accounts::isolated_accounts()?)?;
+/// `account`: given by `kindric mcp --account`, for Codex; else Claude Code's environment says.
+pub fn run(account: Option<&str>) -> io::Result<()> {
+    let caller = match account {
+        Some(account) => Caller::Account(account.to_string()),
+        None => Caller::Session(identity_from_env()?),
+    };
+    ensure_not_isolated(caller.account(), &accounts::isolated_accounts()?)?;
     let place = Place { data_dir: mailbox::data_dir()?, cwd: std::env::current_dir()? };
     let server = Server::new(
-        identity,
+        caller,
         Mailbox::new(mailbox::default_root()?),
         || accounts::snapshot().map(|snapshot| accounts::messaging_sessions(snapshot.sessions)),
         place,
@@ -413,7 +446,7 @@ mod tests {
     fn server(me: &str, account: &str, root: &Path) -> Server<impl Fn() -> io::Result<Vec<SessionInfo>> + use<>> {
         let identity = Identity { session_id: me.into(), account: account.into() };
         let place = Place { data_dir: root.join("data"), cwd: root.join("work") };
-        Server::new(identity, Mailbox::new(root.to_path_buf()), || Ok(fleet()), place)
+        Server::new(Caller::Session(identity), Mailbox::new(root.to_path_buf()), || Ok(fleet()), place)
     }
 
     fn call(server: &Server<impl Fn() -> io::Result<Vec<SessionInfo>>>, tool: &str, arguments: Value) -> Value {
@@ -462,6 +495,42 @@ mod tests {
         assert!(text(&read).contains("not from the user"));
         assert_eq!(text(&call(&lystriq, "read_messages", json!({}))), "No new messages.");
         std::fs::remove_dir_all(root).unwrap();
+    }
+
+    /// One server for a Codex account, as `kindric mcp --account pro` runs it.
+    fn codex_server(root: &Path) -> Server<impl Fn() -> io::Result<Vec<SessionInfo>> + use<>> {
+        let place = Place { data_dir: root.join("data"), cwd: root.join("work") };
+        Server::new(Caller::Account("pro".into()), Mailbox::new(root.to_path_buf()), || Ok(fleet()), place)
+    }
+
+    fn call_from(server: &Server<impl Fn() -> io::Result<Vec<SessionInfo>>>, thread: Option<&str>, tool: &str, arguments: Value) -> Value {
+        let mut params = json!({ "name": tool, "arguments": arguments });
+        if let Some(thread) = thread {
+            params["_meta"] = json!({ "callId": "c1", "threadId": thread, "sessionId": thread });
+        }
+        server.handle(&json!({ "jsonrpc": "2.0", "id": 7, "method": "tools/call", "params": params })).unwrap()["result"].clone()
+    }
+
+    #[test]
+    fn a_codex_session_is_named_by_each_call() {
+        let root = temp_root("codex");
+        let codex = codex_server(&root);
+        let sent = call_from(&codex, Some("cccccccc-3333"), "send_message", json!({ "to": "aaaaaaaa", "text": "routes moved" }));
+        assert_eq!(sent["isError"], false, "{}", text(&sent));
+        let read = call(&server("aaaaaaaa-1111", "louis", &root), "read_messages", json!({}));
+        assert!(text(&read).starts_with("From api (pro), just now:\nroutes moved"), "{}", text(&read));
+        let mine = call_from(&codex, Some("cccccccc-3333"), "list_sessions", json!({}));
+        assert!(text(&mine).contains("api (you) · account pro"), "{}", text(&mine));
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn a_codex_call_that_names_no_session_is_refused() {
+        let root = temp_root("codex-anonymous");
+        let refused = call_from(&codex_server(&root), None, "read_messages", json!({}));
+        assert_eq!(refused["isError"], true);
+        assert!(text(&refused).contains("_meta.threadId"), "{}", text(&refused));
+        assert!(!root.exists(), "nothing written");
     }
 
     #[test]

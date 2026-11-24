@@ -25,7 +25,7 @@ use ratatui::layout::Rect;
 use crate::app::{App, Flow};
 use crate::pane::PaneKey;
 
-const USAGE: &str = "usage: kindric [mcp | unread | wait-message | away-hook | permission-hook | artifact-check | question-check | task-check | overview-start | ask <question> <context> | away done <session id> | away blocked <session id> <what you need> | --version]";
+const USAGE: &str = "usage: kindric [mcp [--account <name>] | unread | wait-message | away-hook | permission-hook | artifact-check | question-check | task-check | overview-start | ask <question> <context> | away done <session id> | away blocked <session id> <what you need> | --version]";
 
 pub enum AppEvent {
     Input(Event),
@@ -39,7 +39,9 @@ fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
     let result = match args.iter().map(String::as_str).collect::<Vec<_>>().as_slice() {
         [] => run_ui(),
-        ["mcp"] => mcp::run(),
+        ["mcp"] => mcp::run(None),
+        // As kindric-accounts declares it in a Codex account, which names the session in each call.
+        ["mcp", "--account", account] => mcp::run(Some(account)),
         // The hook of the sessions kindric-accounts starts: tells a session of its unread messages.
         ["unread"] => {
             kindric_core::mailbox::run_unread_hook();

@@ -526,13 +526,17 @@ const KINDRIC_NAMES: [&str; 2] = ["kindric.exe", "kindric"];
 #[cfg(not(windows))]
 const KINDRIC_NAMES: [&str; 1] = ["kindric"];
 
+/// The `kindric` in `PATH`.
+pub fn kindric_program() -> Option<PathBuf> {
+    launch::find_in(&std::env::var_os("PATH").unwrap_or_default(), &KINDRIC_NAMES)
+}
+
 /// kindric's hooks for a session: `"<kindric>" unread`, `away-hook`, `wait-message`,
 /// `permission-hook`, `overview-start`, `question-check`, `artifact-check` and `task-check`, each when
 /// the `kindric` in `PATH` has it. An older one would answer with its usage and exit code 2, which
 /// Claude Code shows to Claude after every tool: each is tried once, with no input, and must exit 0.
 pub fn kindric_hooks() -> KindricHooks {
-    let path = std::env::var_os("PATH").unwrap_or_default();
-    let Some(kindric) = launch::find_in(&path, &KINDRIC_NAMES) else {
+    let Some(kindric) = kindric_program() else {
         return KindricHooks::default();
     };
     let answering = |subcommand: &str| {
