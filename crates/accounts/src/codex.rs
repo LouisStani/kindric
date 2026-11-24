@@ -810,14 +810,6 @@ fn mcp_edits(kindric: &Path, name: &str) -> Value {
     }])
 }
 
-/// An older `kindric` answers `mcp --account` with its usage and exit code 2: Codex would then fail
-/// to start the server in every session. With no input, a recent one stops at once and exits 0.
-fn answers_mcp(kindric: &Path, name: &str) -> bool {
-    let mut probe = Command::new(kindric);
-    probe.args(["mcp", "--account", name]).stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null());
-    probe.status().is_ok_and(|status| status.success())
-}
-
 /// Declares kindric's MCP server (messages between sessions, artifacts) in the Codex account `name`
 /// in `dir`, through its daemon or an app server: Codex writes its own `config.toml`. Nothing for an
 /// isolated account, whose sessions take no part in messages, nor without a `kindric` that runs it.
@@ -828,7 +820,7 @@ pub fn prepare_mcp(codex: &Path, dir: &Path, name: &str, kindric: Option<&Path>,
     };
     let edits = mcp_edits(kindric, name);
     let wanted = shared::fingerprint(edits.to_string().as_bytes());
-    if fs::read_to_string(mcp_mark(dir)).is_ok_and(|done| done == wanted) || !answers_mcp(kindric, name) {
+    if fs::read_to_string(mcp_mark(dir)).is_ok_and(|done| done == wanted) || !usage::runs_mcp_for(kindric, name) {
         return Vec::new();
     }
     let declared = app_server(codex, dir)

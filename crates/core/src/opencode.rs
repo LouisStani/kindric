@@ -368,6 +368,21 @@ pub fn ensure_service(dir: &Path) -> io::Result<Service> {
 /// The sessions of the OpenCode account in `dir`: those running, then, with `include_stopped`,
 /// the most recent of the others. Those at rest live in the service alone: with
 /// `include_stopped`, a service that does not run is started, and left running (decision 440).
+/// The sessions of the account in `dir`, those at rest included, while its service runs; none
+/// else, and the service is not started for that.
+pub fn sessions_if_running(dir: &Path) -> io::Result<Vec<Session>> {
+    match Service::running(dir)? {
+        Some(service) => service.sessions(true),
+        None => Ok(Vec::new()),
+    }
+}
+
+/// Gives the session `id` of the account in `dir` a prompt, queued after the turn it runs: how a
+/// session of OpenCode, which has no hooks, learns of a message.
+pub fn tell(dir: &Path, id: &str, text: &str) -> io::Result<()> {
+    Service::running(dir)?.ok_or_else(|| io::Error::other("its OpenCode service does not run"))?.prompt(id, text)
+}
+
 pub fn sessions(dir: &Path, include_stopped: bool) -> io::Result<Vec<Session>> {
     let service = if include_stopped { Some(ensure_service(dir)?) } else { Service::running(dir)? };
     match service {

@@ -8,8 +8,10 @@ use std::path::{Path, PathBuf};
 use serde_json::{Value, json};
 
 use crate::accounts::{self, SessionInfo};
+use kindric_accounts::agent::Agent;
 use crate::artifacts::{self, Kind};
 use crate::mailbox::{self, Mailbox, Message};
+use crate::opencode;
 use crate::origins::{self, Origin};
 
 const SERVER_NAME: &str = "kindric";
@@ -29,13 +31,17 @@ pub struct Identity {
     pub account: String,
 }
 
-/// Who calls. Claude Code starts a server per session and names it in the environment; Codex
-/// starts one per session too but names it only in each call, under `_meta.threadId` (seen on
-/// Codex 0.172.0, 2026-11-24): its account then comes from `kindric mcp --account`.
+/// Who calls. Claude Code starts a server per session and names it in the environment. Codex
+/// starts one per session and OpenCode one for all of them, and both name the session only in each
+/// call (seen on Codex 0.172.0 and OpenCode 2.4.1, 2026-11-24): the account then comes from
+/// `kindric mcp --account`.
 pub enum Caller {
     Session(Identity),
     Account(String),
 }
+
+/// Where each call names its session, under `_meta`: Codex, then OpenCode.
+const SESSION_KEYS: [&str; 2] = ["threadId", "ai.opencode/sessionID"];
 
 impl Caller {
     pub fn account(&self) -> &str {
@@ -48,12 +54,14 @@ impl Caller {
     fn identity(&self, params: &Value) -> Result<Identity, String> {
         match self {
             Self::Session(identity) => Ok(Identity { session_id: identity.session_id.clone(), account: identity.account.clone() }),
-            Self::Account(account) => params
-                .pointer("/_meta/threadId")
-                .and_then(Value::as_str)
-                .filter(|thread| !thread.is_empty())
-                .map(|thread| Identity { session_id: thread.to_string(), account: account.clone() })
-                .ok_or_else(|| "this call does not say which session makes it (_meta.threadId): kindric mcp --account is for Codex".to_string()),
+            Self::Account(account) => SESSION_KEYS
+                .iter()
+                .find_map(|key| params.get("_meta")?.get(*key)?.as_str().filter(|session| !session.is_empty()))
+                .map(|session| Identity { session_id: session.to_string(), account: account.clone() })
+                .ok_or_else(|| {
+                    let keys: Vec<String> = SESSION_KEYS.iter().map(|key| format!("_meta.{key}")).collect();
+                    format!("this call does not say which session makes it ({}): kindric mcp --account is for Codex and OpenCode", keys.join(" or "))
+                }),
         }
     }
 }
@@ -86,11 +94,15 @@ pub struct Place {
     pub cwd: PathBuf,
 }
 
+/// Gives a session a prompt: how a session without hooks (OpenCode) learns of a message.
+pub type Notify = Box<dyn Fn(&SessionInfo, &str) -> io::Result<()>>;
+
 pub struct Server<F> {
     caller: Caller,
     mailbox: Mailbox,
     sessions: F,
     place: Place,
+    notify: Notify,
 }
 
 fn tool_text(text: impl Into<String>, is_error: bool) -> Value {
@@ -221,8 +233,8 @@ pub fn format_messages(messages: &[Message], now: u64) -> String {
 }
 
 impl<F: Fn() -> io::Result<Vec<SessionInfo>>> Server<F> {
-    pub fn new(caller: Caller, mailbox: Mailbox, sessions: F, place: Place) -> Self {
-        Self { caller, mailbox, sessions, place }
+    pub fn new(caller: Caller, mailbox: Mailbox, sessions: F, place: Place, notify: Notify) -> Self {
+        Self { caller, mailbox, sessions, place, notify }
     }
 
     /// Answers one JSON-RPC message; notifications get no answer.
@@ -317,8 +329,26 @@ impl<F: Fn() -> io::Result<Vec<SessionInfo>>> Server<F> {
             wake,
         };
         self.mailbox.send(&target.session_id, &message).map_err(|error| format!("cannot deliver: {error}"))?;
-        let then = if wake { "It acts on it now: woken up if at rest, else told at its next step." } else { "It will read it when it calls read_messages." };
+        let then = if target.agent == Agent::OpenCode {
+            match self.tell(target) {
+                Ok(()) => "It is told at once, after the turn it runs if any.".to_string(),
+                Err(error) => format!("It will read it when it calls read_messages: kindric could not tell it ({error})."),
+            }
+        } else if wake {
+            "It acts on it now: woken up if at rest, else told at its next step.".to_string()
+        } else {
+            "It will read it when it calls read_messages.".to_string()
+        };
         Ok(format!("Message left for {} ({}). {then}", target.title(), target.account))
+    }
+
+    /// An OpenCode session has no hook that would tell it of its messages: it gets the same notice
+    /// as a prompt, queued after its turn, which also wakes it when at rest.
+    fn tell(&self, target: &SessionInfo) -> io::Result<()> {
+        match self.mailbox.notice(&target.session_id)? {
+            Some(notice) => (self.notify)(target, &notice),
+            None => Ok(()),
+        }
     }
 
     fn read_messages(&self, me: &Identity) -> Result<String, String> {
@@ -389,12 +419,11 @@ pub fn run(account: Option<&str>) -> io::Result<()> {
     };
     ensure_not_isolated(caller.account(), &accounts::isolated_accounts()?)?;
     let place = Place { data_dir: mailbox::data_dir()?, cwd: std::env::current_dir()? };
-    let server = Server::new(
-        caller,
-        Mailbox::new(mailbox::default_root()?),
-        || accounts::snapshot().map(|snapshot| accounts::messaging_sessions(snapshot.sessions)),
-        place,
-    );
+    let notify: Notify = Box::new(|session, notice| {
+        let dir = accounts::paths()?.account_dir(&session.account);
+        opencode::tell(&dir, &session.session_id, notice)
+    });
+    let server = Server::new(caller, Mailbox::new(mailbox::default_root()?), accounts::messaging_snapshot, place, notify);
     let stdin = io::stdin();
     let mut stdout = io::stdout().lock();
     for line in stdin.lock().lines() {
@@ -446,7 +475,7 @@ mod tests {
     fn server(me: &str, account: &str, root: &Path) -> Server<impl Fn() -> io::Result<Vec<SessionInfo>> + use<>> {
         let identity = Identity { session_id: me.into(), account: account.into() };
         let place = Place { data_dir: root.join("data"), cwd: root.join("work") };
-        Server::new(Caller::Session(identity), Mailbox::new(root.to_path_buf()), || Ok(fleet()), place)
+        Server::new(Caller::Session(identity), Mailbox::new(root.to_path_buf()), || Ok(fleet()), place, Box::new(|_, _| Ok(())))
     }
 
     fn call(server: &Server<impl Fn() -> io::Result<Vec<SessionInfo>>>, tool: &str, arguments: Value) -> Value {
@@ -500,7 +529,7 @@ mod tests {
     /// One server for a Codex account, as `kindric mcp --account pro` runs it.
     fn codex_server(root: &Path) -> Server<impl Fn() -> io::Result<Vec<SessionInfo>> + use<>> {
         let place = Place { data_dir: root.join("data"), cwd: root.join("work") };
-        Server::new(Caller::Account("pro".into()), Mailbox::new(root.to_path_buf()), || Ok(fleet()), place)
+        Server::new(Caller::Account("pro".into()), Mailbox::new(root.to_path_buf()), || Ok(fleet()), place, Box::new(|_, _| Ok(())))
     }
 
     fn call_from(server: &Server<impl Fn() -> io::Result<Vec<SessionInfo>>>, thread: Option<&str>, tool: &str, arguments: Value) -> Value {
@@ -522,6 +551,40 @@ mod tests {
         let mine = call_from(&codex, Some("cccccccc-3333"), "list_sessions", json!({}));
         assert!(text(&mine).contains("api (you) · account pro"), "{}", text(&mine));
         std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn an_opencode_session_is_told_of_its_message_by_a_prompt() {
+        let root = temp_root("opencode-told");
+        let told = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+        let notes = told.clone();
+        let notify: Notify = Box::new(move |session, notice| {
+            notes.borrow_mut().push((session.session_id.clone(), notice.to_string()));
+            Ok(())
+        });
+        let mut web = session("oc", "web", "ses_web", Some("ses_web"));
+        web.agent = Agent::OpenCode;
+        let sessions = move || Ok(vec![session("louis", "roblox", "aaaaaaaa-1111", Some("aaaaaaaa")), web.clone()]);
+        let place = Place { data_dir: root.join("data"), cwd: root.join("work") };
+        let me = Identity { session_id: "aaaaaaaa-1111".into(), account: "louis".into() };
+        let server = Server::new(Caller::Session(me), Mailbox::new(root.clone()), sessions, place, notify);
+        let sent = call(&server, "send_message", json!({ "to": "web", "text": "routes moved" }));
+        assert!(text(&sent).ends_with("It is told at once, after the turn it runs if any."), "{}", text(&sent));
+        let told = told.borrow();
+        assert_eq!(told.len(), 1);
+        assert_eq!(told[0].0, "ses_web");
+        assert!(told[0].1.starts_with("1 unread message from another Claude session: roblox (louis)."), "{}", told[0].1);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn an_opencode_session_is_named_by_each_call_too() {
+        let root = temp_root("opencode");
+        let opencode = codex_server(&root);
+        let request = json!({ "jsonrpc": "2.0", "id": 7, "method": "tools/call", "params": {
+            "name": "list_sessions", "arguments": {}, "_meta": { "ai.opencode/sessionID": "cccccccc-3333", "progressToken": 2 } } });
+        let listed = opencode.handle(&request).unwrap()["result"].clone();
+        assert!(text(&listed).contains("api (you) · account pro"), "{}", text(&listed));
     }
 
     #[test]

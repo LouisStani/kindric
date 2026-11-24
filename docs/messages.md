@@ -14,7 +14,7 @@ The server gives every session five tools:
 | `keep_artifact` | Keep a file it made, for you (`for=user`) or for later sessions of the project (`for=claude`), in a group if asked |
 | `list_artifacts` | List the files kept for this project, with their paths |
 
-Sessions of Claude Code get them, and so do sessions of [Codex accounts](desktop.md#codex-accounts): kindric-accounts gives the account the server itself. Sessions of [OpenCode](desktop.md#opencode-accounts) accounts do not have them yet.
+Sessions of Claude Code get them, and so do sessions of [Codex](desktop.md#codex-accounts) and [OpenCode](desktop.md#opencode-accounts) accounts: kindric-accounts gives the account the server itself.
 
 ## How a session learns of a message
 
@@ -23,7 +23,7 @@ A session reads its messages only when it calls `read_messages`. kindric does no
 - Before each prompt and after each tool, `kindric unread` tells the session, once per new message, that a message is waiting and who sent it.
 - A message sent with `wake` also wakes a session at rest: after each turn, and each time the session starts, `kindric wait-message` waits in the background for such a message. A session at rest for more than a day is not woken until its next turn.
 
-A Codex session gets the first hook, not the second: a message sent with `wake` reaches it at its next prompt or tool.
+A Codex session gets the first hook, not the second: a message sent with `wake` reaches it at its next prompt or tool. An OpenCode session has no hooks: the server gives it the notice as a prompt, queued after the turn it runs, as soon as a message is sent. A session at rest wakes up to read it, with or without `wake`.
 
 Details are in [Messages of kindric](../crates/accounts/README.md#messages-of-kindric), in the README of kindric-accounts. Sessions started some other way, or before kindric was installed, only see a message when they call `read_messages`.
 

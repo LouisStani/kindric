@@ -90,7 +90,9 @@ OpenCode keeps all the sessions of an account in its background service, which a
 | The purge | `PATCH /api/session/<id>` with `{"archived": true}`: the session leaves kindric and OpenCode's list, `{"archived": false}` brings it back |
 | Last activity | `time.updated` of the session, from the service |
 
-Not yet for OpenCode: always allowing a permission from the control center (the TUI can), away mode (OpenCode has no hooks, only plugins in JavaScript), messages between sessions and kept files (the MCP server of kindric), its last steps and images, its context and limits, the task list. Not on Windows: an OpenCode account cannot be made there yet.
+The MCP server of kindric is in the account's `opencode.json`: OpenCode runs one for all the sessions of its service and names the session in each call (`_meta["ai.opencode/sessionID"]`), so it starts as `kindric-shell -c "exec kindric mcp --account <name>"`, which gives it your XDG directories back. Without hooks, a session learns of a message from the server itself: it sends the notice as a prompt through the service, queued after the turn running. kindric shows a session at rest as paused, since OpenCode never stops one, but a message reaches it.
+
+Not yet for OpenCode: always allowing a permission from the control center (the TUI can), away mode (OpenCode has no hooks, only plugins in JavaScript), its last steps and images, its context and limits, the task list. Not on Windows: an OpenCode account cannot be made there yet.
 
 ## Limits
 

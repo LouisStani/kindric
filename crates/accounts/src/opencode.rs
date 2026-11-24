@@ -25,6 +25,7 @@ use crate::launch;
 use crate::paths::Paths;
 use crate::registry;
 use crate::shared;
+use crate::usage;
 
 /// Removed before starting OpenCode. A key exported in the shell must never override the login
 /// of the account the user picked, nor bill another one. The variables of a Claude Code or Codex
@@ -166,45 +167,100 @@ pub fn config_dir(dir: &Path) -> PathBuf {
     dir.join("config").join("opencode")
 }
 
-/// Writes the account's `opencode.json`, which names `kindric-shell`, only when it has none: one
-/// that exists is the user's, and a warning says when it does not use that shell.
-fn write_config(dir: &Path) -> Result<Option<String>> {
+/// The name of kindric's MCP server in the account's configuration.
+const MESSAGES_SERVER: &str = "kindric";
+
+/// `text` as one word of `sh`, fish or zsh, between single quotes.
+fn shell_word(text: &str) -> String {
+    format!("'{}'", text.replace('\'', r"'\''"))
+}
+
+/// kindric's MCP server for the account `name` in `dir`. OpenCode runs one for all the sessions of
+/// its service, which names the session in each call, and gives it its own environment, whose XDG
+/// directories are the account's: `kindric-shell` gives the user's back first, so that kindric
+/// finds its data.
+fn mcp_server(dir: &Path, kindric: &Path, name: &str) -> Value {
+    let run = format!("exec {} mcp --account {}", shell_word(&kindric.to_string_lossy()), shell_word(name));
+    serde_json::json!({ "type": "local", "command": [shell_file(dir), "-c", run], "enabled": true })
+}
+
+/// The configuration kindric-accounts writes: `kindric-shell`, and kindric's MCP server when given.
+fn kindric_config(dir: &Path, server: Option<&Value>) -> Value {
+    let mut config = serde_json::json!({ "$schema": "https://opencode.ai/config.json", "shell": shell_file(dir) });
+    if let Some(server) = server {
+        config["mcp"] = serde_json::json!({ MESSAGES_SERVER: server });
+    }
+    config
+}
+
+/// A configuration kindric-accounts wrote, with or without its MCP server, whichever one: nothing
+/// in it comes from the user.
+fn is_kindrics(config: &Value, dir: &Path) -> bool {
+    let Some(entries) = config.as_object() else {
+        return false;
+    };
+    let ours = |key: &str| match key {
+        "$schema" => true,
+        "shell" => config.get("shell").and_then(Value::as_str).is_some_and(|shell| Path::new(shell) == shell_file(dir)),
+        "mcp" => config.get("mcp").and_then(Value::as_object).is_some_and(|servers| servers.keys().all(|server| server == MESSAGES_SERVER)),
+        _ => false,
+    };
+    entries.keys().all(|key| ours(key))
+}
+
+/// Writes the account's `opencode.json`: `kindric-shell`, and kindric's MCP `server` when given.
+/// It is written again only while it is kindric-accounts' own; one the user changed is left alone,
+/// and a warning says what it lacks.
+fn write_config(dir: &Path, server: Option<&Value>) -> Result<Option<String>> {
     let folder = config_dir(dir);
     let (json, jsonc) = (folder.join("opencode.json"), folder.join("opencode.jsonc"));
     let shell = shell_file(dir);
-    let names_shell = |file: &Path| {
-        fs::read_to_string(file)
-            .ok()
-            .and_then(|text| serde_json::from_str::<Value>(&text).ok())
-            .and_then(|config| config.get("shell").and_then(Value::as_str).map(PathBuf::from))
-            .is_some_and(|named| named == shell)
-    };
-    if json.exists() || jsonc.exists() {
-        let file = if json.exists() { json } else { jsonc };
-        if names_shell(&file) {
-            return Ok(None);
-        }
-        return Ok(Some(format!(
-            "{} does not name {} as its shell: the commands of this account's sessions see its own XDG directories, not yours",
-            file.display(),
-            shell.display()
-        )));
+    let wanted = kindric_config(dir, server);
+    let file = if jsonc.exists() && !json.exists() { jsonc } else { json };
+    let existing = fs::read_to_string(&file).ok().map(|text| serde_json::from_str::<Value>(&text).ok());
+    match existing {
+        Some(Some(config)) if config == wanted => return Ok(None),
+        Some(Some(config)) if is_kindrics(&config, dir) => {},
+        Some(config) => {
+            let config = config.unwrap_or(Value::Null);
+            let mut lacks = Vec::new();
+            if config.get("shell").and_then(Value::as_str).map(PathBuf::from) != Some(shell.clone()) {
+                lacks.push(format!("does not name {} as its shell: the commands of this account's sessions see its own XDG directories, not yours", shell.display()));
+            }
+            if let Some(server) = server
+                && config.pointer(&format!("/mcp/{MESSAGES_SERVER}")).is_none()
+            {
+                lacks.push(format!("has no messages server: its sessions get no messages until you add \"mcp\": {{\"{MESSAGES_SERVER}\": {server}}}"));
+            }
+            return Ok((!lacks.is_empty()).then(|| format!("{} {}", file.display(), lacks.join("; it "))));
+        },
+        None => {},
     }
-    let config = serde_json::json!({ "$schema": "https://opencode.ai/config.json", "shell": shell });
-    let text = serde_json::to_string_pretty(&config).map_err(|error| Error(error.to_string()))?;
-    files::write_atomic(&json, &format!("{text}\n")).map_err(|error| Error(format!("cannot write {}: {error}", json.display())))?;
+    let text = serde_json::to_string_pretty(&wanted).map_err(|error| Error(error.to_string()))?;
+    files::write_atomic(&file, &format!("{text}\n")).map_err(|error| Error(format!("cannot write {}: {error}", file.display())))?;
     Ok(None)
 }
 
+/// kindric's MCP server for the account `name` in `dir`: none for an isolated account, whose
+/// sessions take no part in messages, nor without a `kindric` in `PATH` that runs it.
+fn messages_server(paths: &Paths, dir: &Path, name: &str) -> Result<Option<Value>> {
+    if registry::is_isolated(paths, name)? {
+        return Ok(None);
+    }
+    Ok(usage::kindric_program().filter(|kindric| usage::runs_mcp_for(kindric, name)).map(|kindric| mcp_server(dir, &kindric, name)))
+}
+
 /// Makes the account in `dir` ready to run: its XDG folders (700), `kindric-shell`, its
-/// `opencode.json`, and links to what it shares with the user's OpenCode configuration. Returns
-/// the warnings.
+/// `opencode.json` with kindric's MCP server, and links to what it shares with the user's OpenCode
+/// configuration. Returns the warnings.
 pub fn prepare(paths: &Paths, dir: &Path) -> Result<Vec<String>> {
     for (_, folder) in XDG {
         files::create_private_dir(&dir.join(folder))?;
     }
     files::create_private_dir(&config_dir(dir))?;
-    let mut warnings: Vec<String> = [write_shell(dir)?, write_config(dir)?].into_iter().flatten().collect();
+    let name = dir.file_name().map(|name| name.to_string_lossy().into_owned()).unwrap_or_default();
+    let server = messages_server(paths, dir, &name)?;
+    let mut warnings: Vec<String> = [write_shell(dir)?, write_config(dir, server.as_ref())?].into_iter().flatten().collect();
     if let Some(root) = paths.opencode_root() {
         warnings.extend(shared::link_entries(&root, &config_dir(dir), &SHARED_ENTRIES)?);
     }
@@ -389,17 +445,37 @@ mod tests {
     }
 
     #[test]
-    fn the_config_is_written_once_and_never_replaced() {
+    fn the_config_is_kindrics_until_the_user_changes_it() {
         let dir = test_dir::fresh("opencode-config");
+        let file = config_dir(&dir).join("opencode.json");
+        let read = || serde_json::from_str::<Value>(&fs::read_to_string(&file).unwrap()).unwrap();
         files::create_private_dir(&config_dir(&dir)).unwrap();
-        assert_eq!(write_config(&dir).unwrap(), None);
-        let written: Value = serde_json::from_str(&fs::read_to_string(config_dir(&dir).join("opencode.json")).unwrap()).unwrap();
-        assert_eq!(written["shell"], shell_file(&dir).display().to_string());
-        assert_eq!(write_config(&dir).unwrap(), None, "it names our shell");
-        fs::write(config_dir(&dir).join("opencode.json"), r#"{"model": "ollama/qwen"}"#).unwrap();
-        assert!(write_config(&dir).unwrap().is_some_and(|warning| warning.contains("does not name")));
-        assert_eq!(fs::read_to_string(config_dir(&dir).join("opencode.json")).unwrap(), r#"{"model": "ollama/qwen"}"#);
+        assert_eq!(write_config(&dir, None).unwrap(), None);
+        assert_eq!(read()["shell"], shell_file(&dir).display().to_string());
+        assert!(read().get("mcp").is_none());
+
+        // Written by kindric-accounts before the messages server: it gets it.
+        let server = mcp_server(&dir, Path::new("/usr/bin/kindric"), "oc");
+        assert_eq!(write_config(&dir, Some(&server)).unwrap(), None);
+        assert_eq!(read()["mcp"]["kindric"], server);
+        assert_eq!(write_config(&dir, Some(&server)).unwrap(), None, "already there");
+
+        // The user's own: left alone, with what it lacks.
+        fs::write(&file, r#"{"model": "ollama/qwen"}"#).unwrap();
+        let warning = write_config(&dir, Some(&server)).unwrap().unwrap();
+        assert!(warning.contains("does not name") && warning.contains("has no messages server"), "{warning}");
+        assert_eq!(fs::read_to_string(&file).unwrap(), r#"{"model": "ollama/qwen"}"#);
         fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn the_messages_server_starts_through_kindric_shell() {
+        let dir = Path::new("/data/oc");
+        let server = mcp_server(dir, Path::new("/opt/it's/kindric"), "oc");
+        assert_eq!(server["type"], "local");
+        assert_eq!(server["command"][0], shell_file(dir).display().to_string());
+        assert_eq!(server["command"][1], "-c");
+        assert_eq!(server["command"][2], r"exec '/opt/it'\''s/kindric' mcp --account 'oc'");
     }
 
     #[test]

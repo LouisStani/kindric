@@ -267,7 +267,7 @@ kindric-accounts run oc                # start OpenCode on this account
 How it works:
 
 - OpenCode keeps everything under the four XDG base directories. The account's directory holds `config/`, `data/`, `state/` and `cache/`, and `run` starts `opencode` with `XDG_CONFIG_HOME`, `XDG_DATA_HOME`, `XDG_STATE_HOME` and `XDG_CACHE_HOME` pointing at them. `HOME` stays yours. `kindric-agent.json` says the account runs OpenCode.
-- The commands of its sessions would inherit those variables too, and git would no longer read `~/.config/git/config`. So `add` writes `kindric-shell` in the account's directory and names it as the shell in `config/opencode/opencode.json`: OpenCode runs each command with `kindric-shell -c <command>`, which gives the command your own XDG directories back, then runs your `$SHELL`. `opencode.json` is written only when the account has none; if yours names another shell, `run` warns.
+- The commands of its sessions would inherit those variables too, and git would no longer read `~/.config/git/config`. So `add` writes `kindric-shell` in the account's directory and names it as the shell in `config/opencode/opencode.json`: OpenCode runs each command with `kindric-shell -c <command>`, which gives the command your own XDG directories back, then runs your `$SHELL`. The same file declares kindric's MCP server, `mcp.kindric`, started through `kindric-shell` as `kindric mcp --account <name>`, when the `kindric` in `PATH` can run it and the account is not isolated. `opencode.json` is written again only while it holds nothing but what kindric-accounts writes; once you change it, `run` leaves it alone and warns when it names another shell or lacks the server, with the block to add.
 - `AGENTS.md`, `agents/`, `agent/`, `commands/` and `command/` are linked to your own OpenCode configuration (`$XDG_CONFIG_HOME/opencode`, else `~/.config/opencode`), like the shared parts of a Claude account. That folder is never written. Skills are not linked: OpenCode does not read them from there.
 - OpenCode keeps the sessions of an account in a background service on 127.0.0.1, and every service takes the port 49374 unless told otherwise. `add` gives each OpenCode account the first free port from 49375, with `opencode service set port`, so that two accounts and your own OpenCode run at the same time.
 - `run` starts `opencode` without `ANTHROPIC_API_KEY`, `OPENAI_API_KEY` and `OPENCODE_API_KEY`, and without the variables of a Claude Code or Codex session (`CLAUDE_CODE_*`, `CLAUDE_CONFIG_DIR`, `CLAUDE_JOB_DIR`, `CODEX_HOME`, `CODEX_THREAD_ID`): the service keeps the environment it starts with and hands it to every command of every session. OpenCode keeps its keys itself.
@@ -276,7 +276,7 @@ How it works:
 Limits:
 
 - kindric lists, opens and starts the sessions of an OpenCode account through its service, which kindric itself asks: kindric-accounts makes no request to it.
-- `--provider`, `token` and `isolate` do not apply to an OpenCode account: OpenCode keeps its own providers, and the account shares no MCP servers with the other accounts yet.
+- `--provider`, `token` and `isolate` do not apply to an OpenCode account: OpenCode keeps its own providers, and the account shares no MCP servers with the other accounts besides kindric's.
 
 ## Shared MCP servers
 
