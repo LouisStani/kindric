@@ -244,6 +244,7 @@ How it works:
 - The account's directory is its `CODEX_HOME`: Codex keeps its login, sessions and `config.toml` there. `kindric-agent.json` in it says the account runs Codex.
 - `AGENTS.md`, `skills/` and `prompts/` are linked to `~/.codex`, like the shared parts of a Claude account. `~/.codex` is never written, and it is not an account of its own.
 - `run` starts `codex` with `CODEX_HOME` set to the account's directory, without `OPENAI_API_KEY` and `CODEX_API_KEY`, and without the variables of a Claude Code or Codex session (`CLAUDE_CODE_*`, `CLAUDE_CONFIG_DIR`, `CLAUDE_JOB_DIR`, `CODEX_THREAD_ID`): the daemon keeps the environment it starts with and hands it to every command of every session. To use an OpenAI key instead of ChatGPT: `printenv OPENAI_API_KEY | kindric-accounts run cx login --with-api-key`. Codex keeps that key itself.
+- Before a session, kindric-accounts declares kindric's MCP server in the account through Codex (`config/batchWrite`, never by writing `config.toml`): `mcp_servers.kindric` runs `kindric mcp --account <name>`, with `XDG_CONFIG_HOME` and `XDG_DATA_HOME` passed on and its tools allowed without asking. Only when the `kindric` in `PATH` can run it, and never for an isolated account. `.kindric-mcp` in the account's directory remembers what was declared, so that Codex is asked again only when it changes.
 - `status` asks `codex login status` whether the account is signed in. Its sessions are those loaded in the account's Codex daemon, asked over its socket, `<CODEX_HOME>/app-server-control/app-server-control.sock`.
 - [kindric](../../docs/desktop.md#codex-accounts) lists, opens, starts and stops the sessions of a Codex account through the same daemon.
 
@@ -266,7 +267,7 @@ kindric-accounts run oc                # start OpenCode on this account
 How it works:
 
 - OpenCode keeps everything under the four XDG base directories. The account's directory holds `config/`, `data/`, `state/` and `cache/`, and `run` starts `opencode` with `XDG_CONFIG_HOME`, `XDG_DATA_HOME`, `XDG_STATE_HOME` and `XDG_CACHE_HOME` pointing at them. `HOME` stays yours. `kindric-agent.json` says the account runs OpenCode.
-- The commands of its sessions would inherit those variables too, and git would no longer read `~/.config/git/config`. So `add` writes `kindric-shell` in the account's directory and names it as the shell in `config/opencode/opencode.json`: OpenCode runs each command with `kindric-shell -c <command>`, which gives the command your own XDG directories back, then runs your `$SHELL`. `opencode.json` is written only when the account has none; if yours names another shell, `run` warns.
+- The commands of its sessions would inherit those variables too, and git would no longer read `~/.config/git/config`. So `add` writes `kindric-shell` in the account's directory and names it as the shell in `config/opencode/opencode.json`: OpenCode runs each command with `kindric-shell -c <command>`, which gives the command your own XDG directories back, then runs your `$SHELL`. The same file declares kindric's MCP server, `mcp.kindric`, started through `kindric-shell` as `kindric mcp --account <name>`, when the `kindric` in `PATH` can run it and the account is not isolated. `opencode.json` is written again only while it holds nothing but what kindric-accounts writes; once you change it, `run` leaves it alone and warns when it names another shell or lacks the server, with the block to add.
 - `AGENTS.md`, `agents/`, `agent/`, `commands/` and `command/` are linked to your own OpenCode configuration (`$XDG_CONFIG_HOME/opencode`, else `~/.config/opencode`), like the shared parts of a Claude account. That folder is never written. Skills are not linked: OpenCode does not read them from there.
 - OpenCode keeps the sessions of an account in a background service on 127.0.0.1, and every service takes the port 49374 unless told otherwise. `add` gives each OpenCode account the first free port from 49375, with `opencode service set port`, so that two accounts and your own OpenCode run at the same time.
 - `run` starts `opencode` without `ANTHROPIC_API_KEY`, `OPENAI_API_KEY` and `OPENCODE_API_KEY`, and without the variables of a Claude Code or Codex session (`CLAUDE_CODE_*`, `CLAUDE_CONFIG_DIR`, `CLAUDE_JOB_DIR`, `CODEX_HOME`, `CODEX_THREAD_ID`): the service keeps the environment it starts with and hands it to every command of every session. OpenCode keeps its keys itself.
@@ -275,7 +276,7 @@ How it works:
 Limits:
 
 - kindric lists, opens and starts the sessions of an OpenCode account through its service, which kindric itself asks: kindric-accounts makes no request to it.
-- `--provider`, `token` and `isolate` do not apply to an OpenCode account: OpenCode keeps its own providers, and the account shares no MCP servers with the other accounts yet.
+- `--provider`, `token` and `isolate` do not apply to an OpenCode account: OpenCode keeps its own providers, and the account shares no MCP servers with the other accounts besides kindric's.
 
 ## Shared MCP servers
 

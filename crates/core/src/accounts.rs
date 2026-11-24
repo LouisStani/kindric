@@ -258,6 +258,25 @@ pub fn messaging_sessions(sessions: Vec<SessionInfo>) -> Vec<SessionInfo> {
     sessions.into_iter().filter(|session| !session.isolated).collect()
 }
 
+/// The sessions a message can reach: those of the snapshot, and those at rest of OpenCode accounts.
+/// OpenCode never stops a session, so kindric shows them paused, but its service keeps them alive
+/// and a prompt starts them again. An account whose service cannot be asked only gives fewer.
+pub fn messaging_snapshot() -> io::Result<Vec<SessionInfo>> {
+    let paths = paths()?;
+    let snapshot = snapshot()?;
+    let mut sessions = snapshot.sessions;
+    let opencode_accounts =
+        snapshot.accounts.iter().filter(|account| !snapshot.isolated.contains(account) && is_opencode(&paths, account));
+    for account in opencode_accounts {
+        for session in opencode::sessions_if_running(&paths.account_dir(account)).unwrap_or_default() {
+            if !sessions.iter().any(|known| known.session_id == session.id) {
+                sessions.push(opencode_session(account, session));
+            }
+        }
+    }
+    Ok(messaging_sessions(sessions))
+}
+
 /// `default` joins the accounts, first, when Claude Code's own configuration is logged in
 /// and no account of kindric-accounts took the name (older versions allowed it). The flag
 /// says whether it was added.

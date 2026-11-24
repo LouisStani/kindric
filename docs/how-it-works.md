@@ -68,7 +68,7 @@ A Codex account (`kindric-accounts add <name> --agent codex`) has no `claude age
 | The purge | `thread/archive`: the session leaves kindric, `codex unarchive <id>` brings it back |
 | Last activity | When `<account>/sessions/<year>/<month>/<day>/rollout-<time>-<id>.jsonl` was last written |
 
-Not yet for Codex: answering a question of the model in the control center (only approvals of commands and changes are), away mode, messages between sessions and kept files (the MCP server of kindric), its last steps and images, its context and limits, the task list. kindric already writes its hooks for absence and how to ask in the account's `hooks.json` (only when that file is kindric's own), and has Codex trust them, but this is not checked with a real Codex yet. Not the hook that puts questions on the page: Codex waits for it before showing the question in its TUI, which would stay blank meanwhile. Its permissions are answered in its pane. On Windows, the daemon cannot be reached yet: every Codex session shows as paused, and none can be started from kindric.
+Not yet for Codex: answering a question of the model in the control center (only approvals of commands and changes are), away mode, its last steps and images, its context and limits, the task list. kindric already writes its hooks for absence and how to ask in the account's `hooks.json` (only when that file is kindric's own), and has Codex trust them, but this is not checked with a real Codex yet. kindric-accounts also declares the MCP server of kindric in the account through Codex (`config/batchWrite`): `kindric mcp --account <name>`, since Codex names the session only in each call (`_meta.threadId`). Its tools are allowed without asking, and `XDG_CONFIG_HOME` and `XDG_DATA_HOME` are passed on, since Codex gives its MCP servers only a few variables. Not for an isolated account. With it comes the hook that tells a session of its unread messages; not the one that wakes a session at rest, which relies on Claude Code. Not the hook that puts questions on the page: Codex waits for it before showing the question in its TUI, which would stay blank meanwhile. Its permissions are answered in its pane. On Windows, the daemon cannot be reached yet: every Codex session shows as paused, and none can be started from kindric.
 
 ## OpenCode accounts
 
@@ -90,7 +90,9 @@ OpenCode keeps all the sessions of an account in its background service, which a
 | The purge | `PATCH /api/session/<id>` with `{"archived": true}`: the session leaves kindric and OpenCode's list, `{"archived": false}` brings it back |
 | Last activity | `time.updated` of the session, from the service |
 
-Not yet for OpenCode: always allowing a permission from the control center (the TUI can), away mode (OpenCode has no hooks, only plugins in JavaScript), messages between sessions and kept files (the MCP server of kindric), its last steps and images, its context and limits, the task list. Not on Windows: an OpenCode account cannot be made there yet.
+The MCP server of kindric is in the account's `opencode.json`: OpenCode runs one for all the sessions of its service and names the session in each call (`_meta["ai.opencode/sessionID"]`), so it starts as `kindric-shell -c "exec kindric mcp --account <name>"`, which gives it your XDG directories back. Without hooks, a session learns of a message from the server itself: it sends the notice as a prompt through the service, queued after the turn running. kindric shows a session at rest as paused, since OpenCode never stops one, but a message reaches it.
+
+Not yet for OpenCode: always allowing a permission from the control center (the TUI can), away mode (OpenCode has no hooks, only plugins in JavaScript), its last steps and images, its context and limits, the task list. Not on Windows: an OpenCode account cannot be made there yet.
 
 ## Limits
 

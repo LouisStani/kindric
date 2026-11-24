@@ -263,8 +263,9 @@ A Codex account (added in the settings with **model from** set to codex, or with
 - `Ctrl+N` on a Codex account starts a Codex session in the folder.
 - A message typed in the control center reaches the session as yours: Codex starts a turn with it as soon as the session is free.
 - `Ctrl+Shift+K` stops the turn running and hides the session. The purge of the settings archives a Codex session: `codex unarchive <id>` brings it back.
+- Its sessions send and read messages and keep files, like those of Claude Code: kindric-accounts gives the account kindric's MCP server. A message sent with `wake` waits for its next prompt or tool.
 
-Not yet: answering a question of the model in the control center, away mode, messages between sessions and kept files, its last steps, images, context and limits. How it works: [Codex accounts](how-it-works.md#codex-accounts).
+Not yet: answering a question of the model in the control center, away mode, its last steps, images, context and limits. How it works: [Codex accounts](how-it-works.md#codex-accounts).
 
 ## OpenCode accounts
 
@@ -275,7 +276,8 @@ An OpenCode account is added with `kindric-accounts add <name> --agent opencode`
 - `Ctrl+N` on an OpenCode account starts an OpenCode session in the folder.
 - A message typed in the control center reaches the session as yours: OpenCode starts a turn with it, or after the one running.
 - `Ctrl+Shift+K` stops the turn running and hides the session. The purge of the settings archives an OpenCode session: OpenCode keeps it, archived, not deleted.
+- Its sessions send and read messages and keep files: kindric-accounts gives the account kindric's MCP server. A message reaches a session at rest too, and wakes it up to read it.
 
 The sessions of an account live in its OpenCode service. kindric starts it when it does not run, and leaves it running: about 370 MB of memory per OpenCode account. `kindric-accounts run <name> service stop` stops it, until kindric needs it again.
 
-Not yet: away mode, messages between sessions and kept files, its last steps, images, context and limits. How it works: [OpenCode accounts](how-it-works.md#opencode-accounts).
+Not yet: away mode, its last steps, images, context and limits. How it works: [OpenCode accounts](how-it-works.md#opencode-accounts).

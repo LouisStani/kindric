@@ -94,9 +94,10 @@ pub fn now_secs() -> u64 {
     SystemTime::now().duration_since(UNIX_EPOCH).map_or(0, |elapsed| elapsed.as_secs())
 }
 
-/// Session ids become directory names: only UUID-like ids are accepted.
+/// Session ids become directory names: only those of Claude Code and Codex (UUIDs) and of OpenCode
+/// (`ses_…`) are accepted, never a separator or a dot.
 pub(crate) fn is_valid_session_id(id: &str) -> bool {
-    !id.is_empty() && id.len() <= 64 && id.chars().all(|c| c.is_ascii_alphanumeric() || c == '-')
+    !id.is_empty() && id.len() <= 64 && id.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
 }
 
 /// 700 on Unix; Windows keeps the profile's own access rules.
@@ -288,6 +289,16 @@ pub fn unread_hook_answer(mailbox: &Mailbox, input: &str) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn session_ids_of_every_agent_and_nothing_that_leaves_the_folder() {
+        for id in ["bc20c61e-4ea5-4ed9-bb43-c2cc37a85a2e", "01a20deb-e605-7f33-9975-4cc6f4236732", "ses_df1f965b6ffemaYKD7xpDAGwnn"] {
+            assert!(is_valid_session_id(id), "{id}");
+        }
+        for id in ["", "..", "a/b", "a\\b", "a.b", &"a".repeat(65)] {
+            assert!(!is_valid_session_id(id), "{id}");
+        }
+    }
 
     #[test]
     fn a_session_is_told_once_of_each_new_message() {

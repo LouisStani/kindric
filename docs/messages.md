@@ -14,7 +14,7 @@ The server gives every session five tools:
 | `keep_artifact` | Keep a file it made, for you (`for=user`) or for later sessions of the project (`for=claude`), in a group if asked |
 | `list_artifacts` | List the files kept for this project, with their paths |
 
-Sessions of Claude Code get them. Sessions of [Codex](desktop.md#codex-accounts) and [OpenCode](desktop.md#opencode-accounts) accounts do not have them yet.
+Sessions of Claude Code get them, and so do sessions of [Codex](desktop.md#codex-accounts) and [OpenCode](desktop.md#opencode-accounts) accounts: kindric-accounts gives the account the server itself.
 
 ## How a session learns of a message
 
@@ -23,13 +23,15 @@ A session reads its messages only when it calls `read_messages`. kindric does no
 - Before each prompt and after each tool, `kindric unread` tells the session, once per new message, that a message is waiting and who sent it.
 - A message sent with `wake` also wakes a session at rest: after each turn, and each time the session starts, `kindric wait-message` waits in the background for such a message. A session at rest for more than a day is not woken until its next turn.
 
+A Codex session gets the first hook, not the second: a message sent with `wake` reaches it at its next prompt or tool. An OpenCode session has no hooks: the server gives it the notice as a prompt, queued after the turn it runs, as soon as a message is sent. A session at rest wakes up to read it, with or without `wake`.
+
 Details are in [Messages of kindric](../crates/accounts/README.md#messages-of-kindric), in the README of kindric-accounts. Sessions started some other way, or before kindric was installed, only see a message when they call `read_messages`.
 
 ## Information or request
 
 Without `wake`, a message is information. The tools tell Claude to treat it as such, and to ask you before acting on a request it contains. In testing, a session that received "please create this file" did not create it and asked the user first.
 
-With `wake`, the other session must act now: it wakes up and does what the message asks without waiting for you. The tools tell Claude to keep `wake` for that case, and never for answers, acknowledgements or information. Sending a message still asks for your permission, as any tool does; a woken session may read it without asking.
+With `wake`, the other session must act now: it wakes up and does what the message asks without waiting for you. The tools tell Claude to keep `wake` for that case, and never for answers, acknowledgements or information. Sending a message still asks for your permission, as any tool does; a woken session may read it without asking. A Codex session uses the tools of kindric without asking: otherwise every message would stop it on a permission prompt.
 
 ## Artifacts
 
