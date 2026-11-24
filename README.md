@@ -48,7 +48,7 @@ On Linux, the desktop app needs WebKitGTK 4.1 (`webkit2gtk-4.1` on Arch, `libweb
 kindric-desktop
 ```
 
-On first launch, the app lists what is left to set up, with the command to copy for each step. Press `F1` to see that list again.
+On first launch, the app lists what is left to set up, with the command to copy for each step. Press `F1` to see that list again. Once you have sessions, the list no longer covers the control center: a line at its top says how many steps are left and opens it.
 
 To let sessions send messages, add the MCP server once (the app has a button that does it for you):
 

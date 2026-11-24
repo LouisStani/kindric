@@ -73,7 +73,12 @@ export function checkItems(lines, { onStart, onAdd }) {
   });
 }
 
-// A warning alone does not keep the welcome screen up.
-export function hasToDo(lines) {
-  return lines !== null && lines.some((line) => line.state === "to do");
+// A warning alone does not count: only what is left to do.
+export function toDoCount(lines) {
+  return lines === null ? 0 : lines.filter((line) => line.state === "to do").length;
+}
+
+// With sessions already there, the welcome screen gives way to a line on the overview (452).
+export function coversOverview(lines, sessions) {
+  return toDoCount(lines) > 0 && sessions === 0;
 }

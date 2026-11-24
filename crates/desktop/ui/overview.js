@@ -88,8 +88,11 @@ export class Overview {
   // `onDetail(row)` reads the detail of a session (`session_detail`); `onOpenFile(file)` opens a
   // file it kept with the system's app. `onProjectFigures(tab)` reads what a project's head
   // counts (`project_figures`); `onChanges(row)` and `onWorktrees(tab)` open their windows.
-  constructor(section, { onOpen, onAnswer, onType, onPrompt, onDetail, onOpenFile, onProjectFigures, onChanges, onWorktrees, onArtifacts, thumbnailOf, onNewSession, onAddProject, onSetInAll }) {
+  constructor(section, { onOpen, onAnswer, onType, onPrompt, onDetail, onOpenFile, onProjectFigures, onChanges, onWorktrees, onArtifacts, thumbnailOf, onNewSession, onAddProject, onSetInAll, onSetup }) {
     this.section = section;
+    // How many lines of the welcome list are left to do, and the key that shows them (452).
+    this.setup = { count: 0, key: "" };
+    this.onSetup = onSetup;
     this.onProjectFigures = onProjectFigures;
     this.onChanges = onChanges;
     this.onWorktrees = onWorktrees;
@@ -185,6 +188,12 @@ export class Overview {
     }
     for (const key of [...this.others]) if (!kept(key)) this.others.delete(key);
     return true;
+  }
+
+  setSetup(count, key) {
+    if (count === this.setup.count && key === this.setup.key) return;
+    this.setup = { count, key };
+    this.redraw();
   }
 
   // `rows` are the sessions not hidden, paused ones included; `tabs` `[{ id, name, directory }]` in
@@ -311,7 +320,8 @@ export class Overview {
       this.allBody(body, rows, tabs);
     }
     const hint = element("footer", "overview-hint", "↑ ↓ picks a session · ⏎ types in its field · o opens it in a pane · a allows · d denies · n next request in any project · esc back");
-    this.main.replaceChildren(head, body, hint);
+    const setup = this.setup.count > 0 ? [button("control-setup", `${figureText(this.setup.count, "thing", "things")} left to set up · ${this.setup.key} shows them`, () => this.onSetup())] : [];
+    this.main.replaceChildren(...setup, head, body, hint);
   }
 
   // What a project's head counts is read on entering it, then every 30 s while it shows; leaving

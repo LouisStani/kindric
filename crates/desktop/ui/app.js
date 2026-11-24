@@ -3,7 +3,7 @@ import { imageType, Panes, sameSession } from "./panes.js";
 import { applyTheme, nextProjectTheme, nextTheme, THEMES } from "./themes.js";
 import { mark, note, startTrace, traced } from "./trace.js";
 import { askTrust } from "./helper.js";
-import { checkItems, hasToDo } from "./welcome.js";
+import { checkItems, coversOverview, toDoCount } from "./welcome.js";
 import { ArtifactsWindow } from "./artifacts.js";
 import { AccountList } from "./launcher.js";
 import { ChangesWindow } from "./changes.js";
@@ -399,13 +399,16 @@ function openArtifactsOf(session, project) {
   return artifactsWindow.open(project, panes.projectName(session.tab) ?? "other");
 }
 
-// The welcome screen covers the panes, or the overview, while something is left to do and no
-// pane of the visible tab shows a session.
+// The welcome screen covers the panes while something is left to do and no pane of the visible
+// tab shows a session; it covers the overview only while there is no session at all, else the
+// overview says on one line how many things are left (452).
 function placeWelcome() {
   const tab = panes.state === null ? null : panes.activeTab();
   const onOverview = panes.state?.overview ?? false;
   const empty = tab !== null && panes.tabEmpty(tab);
-  const welcoming = hasToDo(welcome.lines) && (empty || onOverview);
+  const sessions = lastView?.sessions.length ?? 0;
+  const welcoming = onOverview ? coversOverview(welcome.lines, sessions) : toDoCount(welcome.lines) > 0 && empty;
+  overview.setSetup(sessions === 0 ? 0 : toDoCount(welcome.lines), keyText("help"));
   document.getElementById("welcome").hidden = !welcoming;
   placeTabLaunch(tab, empty && !welcoming && !onOverview);
 }
@@ -1271,6 +1274,7 @@ const overview = new Overview(document.getElementById("overview"), {
     invoke("set_in_all", { tab: tab.id, inAll: shown })
       .then((state) => panes.render(state))
       .catch(setStatus),
+  onSetup: openHelp,
 });
 
 const panes = new Panes(document.getElementById("panes"), document.getElementById("tabs"), document.getElementById("overview"), {
