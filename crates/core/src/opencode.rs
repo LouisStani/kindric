@@ -308,6 +308,16 @@ impl Service {
     pub fn prompt(&self, id: &str, text: &str) -> io::Result<()> {
         self.request("POST", &format!("/api/session/{id}/prompt"), Some(&json!({ "text": text, "delivery": "queue" }))).map(|_| ())
     }
+
+    /// The messages of the session `id`, newest first: `user` ones with their `text`, `assistant`
+    /// ones with their `content` (`text` and `tool` parts), `idle` ones at the end of each turn.
+    pub fn messages(&self, id: &str) -> io::Result<Vec<Value>> {
+        let answer = self.request("GET", &format!("/api/session/{id}/message"), None)?;
+        Ok(match answer {
+            Value::Array(items) => items,
+            other => data_items(&other).collect(),
+        })
+    }
 }
 
 fn create_body(directory: &Path, title: &str) -> Value {
@@ -380,7 +390,16 @@ pub fn sessions_if_running(dir: &Path) -> io::Result<Vec<Session>> {
 /// Gives the session `id` of the account in `dir` a prompt, queued after the turn it runs: how a
 /// session of OpenCode, which has no hooks, learns of a message.
 pub fn tell(dir: &Path, id: &str, text: &str) -> io::Result<()> {
-    Service::running(dir)?.ok_or_else(|| io::Error::other("its OpenCode service does not run"))?.prompt(id, text)
+    running_service(dir)?.prompt(id, text)
+}
+
+/// The messages of the session `id` of the account in `dir`, newest first (see `Service::messages`).
+pub fn session_messages(dir: &Path, id: &str) -> io::Result<Vec<Value>> {
+    running_service(dir)?.messages(id)
+}
+
+fn running_service(dir: &Path) -> io::Result<Service> {
+    Service::running(dir)?.ok_or_else(|| io::Error::other("its OpenCode service does not run"))
 }
 
 pub fn sessions(dir: &Path, include_stopped: bool) -> io::Result<Vec<Session>> {

@@ -29,7 +29,7 @@ use kindric_core::launcher::{self, Request, resolve_directory};
 use kindric_core::mailbox::Mailbox;
 use kindric_core::accounts::SessionInfo;
 use kindric_core::artifacts::{self, Kind};
-use kindric_core::{accounts, activity, attach, atlas, codex_approval, opencode_request, away, changes, checks, claude_theme, images, mailbox, origins, overview, refresher, steps, worktrees};
+use kindric_core::{accounts, activity, attach, atlas, codex_approval, opencode, opencode_request, away, changes, checks, claude_theme, images, mailbox, origins, overview, refresher, steps, worktrees};
 use serde::Serialize;
 use serde::de::DeserializeOwned;
 use tauri::ipc::{Channel, InvokeResponseBody, Response};
@@ -1273,9 +1273,10 @@ fn publish(app: &AppHandle, update: refresher::Update) -> bool {
     }
     let tabs = shared.workspace().tabs.clone();
     let prefs = shared.prefs();
-    let (view, to_count) = {
+    let (view, to_count, resting) = {
         let mut current = shared.view.lock().unwrap_or_else(PoisonError::into_inner);
         let mut next = view::apply(&current, update, tabs.watched());
+        let resting = came_to_rest(&current, &next);
         view::propose_images(&mut next, &current, |session| proposed_images(session, implicit_default));
         let to_count = view::to_count(&next, &current);
         view::carry_changed(&mut next, &current, &HashMap::new());
@@ -1286,12 +1287,15 @@ fn publish(app: &AppHandle, update: refresher::Update) -> bool {
         next.errors.splice(0..0, shared.startup_errors.iter().cloned());
         // The same list again (the 30-second refresh, mostly): the page has nothing to draw.
         if next == *current {
-            (None, to_count)
+            (None, to_count, resting)
         } else {
             *current = next.clone();
-            (Some(next), to_count)
+            (Some(next), to_count, resting)
         }
     };
+    for session in resting {
+        std::thread::spawn(move || relaunch_away_opencode(&session));
+    }
     let emitted = match view {
         Some(view) => {
             let emitted = app.emit("sessions", &view).is_ok();
@@ -1305,6 +1309,40 @@ fn publish(app: &AppHandle, update: refresher::Update) -> bool {
     };
     count_changes(app, &to_count, implicit_default);
     emitted
+}
+
+/// The OpenCode sessions that came to rest between `before` and `after`: OpenCode has no Stop hook,
+/// so kindric itself keeps them working while the user is away.
+fn came_to_rest(before: &view::ListView, after: &view::ListView) -> Vec<SessionInfo> {
+    after
+        .sessions
+        .iter()
+        .filter(|row| row.info.agent == Agent::OpenCode && row.info.state == accounts::SessionState::Paused)
+        .filter(|row| before.sessions.iter().any(|old| old.info.session_id == row.info.session_id && old.info.state != accounts::SessionState::Paused))
+        .map(|row| row.info.clone())
+        .collect()
+}
+
+/// What the away hook does for Claude Code and Codex, done by kindric for an OpenCode session that
+/// came to rest: relaunched while the user is away (see `away::opencode_relaunch`).
+fn relaunch_away_opencode(session: &SessionInfo) {
+    let (Ok(root), Ok(overview_root), Ok(paths)) = (away::default_root(), overview::default_root(), accounts::paths()) else {
+        return;
+    };
+    let now = away::now();
+    if away::until(&root, &session.session_id).is_none_or(|until| until <= now) {
+        return;
+    }
+    let dir = paths.account_dir(&session.account);
+    let relaunched = opencode::session_messages(&dir, &session.session_id).and_then(|messages| {
+        match away::opencode_relaunch(&root, &overview_root, &session.session_id, &session.cwd, &messages, now) {
+            Some(text) => opencode::tell(&dir, &session.session_id, &text),
+            None => Ok(()),
+        }
+    });
+    if let Err(error) = relaunched {
+        eprintln!("kindric: {} came to rest while you are away and could not be relaunched: {error}", session.title());
+    }
 }
 
 /// Until when each session of `view` keeps working while the user is away; none when kindric's

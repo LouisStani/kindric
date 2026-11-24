@@ -92,7 +92,9 @@ OpenCode keeps all the sessions of an account in its background service, which a
 
 The MCP server of kindric is in the account's `opencode.json`: OpenCode runs one for all the sessions of its service and names the session in each call (`_meta["ai.opencode/sessionID"]`), so it starts as `kindric-shell -c "exec kindric mcp --account <name>"`, which gives it your XDG directories back. Without hooks, a session learns of a message from the server itself: it sends the notice as a prompt through the service, queued after the turn running. kindric shows a session at rest as paused, since OpenCode never stops one, but a message reaches it.
 
-Not yet for OpenCode: always allowing a permission from the control center (the TUI can), away mode (OpenCode has no hooks, only plugins in JavaScript), its last steps and images, its context and limits, the task list. Not on Windows: an OpenCode account cannot be made there yet.
+Away mode for OpenCode, which has no hooks, only plugins in JavaScript: when kindric sees a session come to rest while the user is away from it, it reads the session's messages through the service and sends the same relaunch as the hook, as a prompt. A relaunched turn that ran no tool goes to the overview instead, as with the hook. This works only while kindric is open, and commands are not checked as the hook checks them.
+
+Not yet for OpenCode: always allowing a permission from the control center (the TUI can), its last steps and images, its context and limits, the task list. Not on Windows: an OpenCode account cannot be made there yet.
 
 ## Limits
 

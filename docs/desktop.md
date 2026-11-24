@@ -278,7 +278,8 @@ An OpenCode account is added with `kindric-accounts add <name> --agent opencode`
 - A message typed in the control center reaches the session as yours: OpenCode starts a turn with it, or after the one running.
 - `Ctrl+Shift+K` stops the turn running and hides the session. The purge of the settings archives an OpenCode session: OpenCode keeps it, archived, not deleted.
 - Its sessions send and read messages and keep files: kindric-accounts gives the account kindric's MCP server. A message reaches a session at rest too, and wakes it up to read it.
+- Away mode (`Ctrl+Shift+Y`): a session that comes to rest is told to keep working, as with Claude Code, but only while kindric is open, since kindric does it and not a hook. Its commands are not checked meanwhile: it asks for them as usual, and the control center answers.
 
 The sessions of an account live in its OpenCode service. kindric starts it when it does not run, and leaves it running: about 370 MB of memory per OpenCode account. `kindric-accounts run <name> service stop` stops it, until kindric needs it again.
 
-Not yet: away mode, its last steps, images, context and limits. How it works: [OpenCode accounts](how-it-works.md#opencode-accounts).
+Not yet: its last steps, images, context and limits. How it works: [OpenCode accounts](how-it-works.md#opencode-accounts).
