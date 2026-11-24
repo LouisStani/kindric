@@ -1356,6 +1356,37 @@ class QuietOldMessages(Journey):
         self.assertEqual(len(os.listdir(os.path.join(MAILBOX, session_id_of("quiet-old")))), 1, "the old message is kept")
 
 
+class PausedLongAgoOnALine(Journey):
+    """In the control center, a session paused long ago takes one line under "paused · N", with
+    how long ago and its account (decision 460); one paused not long ago keeps its full row, and
+    the line picked shows the full row, with resume."""
+
+    started = [("napping", "nap work:0"), ("dormant", "old work:0"), ("awake", "awake work:0")]
+
+    @classmethod
+    def before_app(cls) -> None:
+        pause(["napping", "dormant"])
+        age_transcript("dormant", 5)
+
+    def test_old_pause_on_a_line(self) -> None:
+        driver = self.driver
+        carry_messages(driver)
+        driver.press(CONTROL, SHIFT, "0")
+        wait_until("the control center", lambda: not overview_hidden(driver))
+        wait_until("dormant on a line", lambda: texts(driver, "article.control-row.is-line .row-name") == ["dormant"] or None)
+        self.assertEqual(texts(driver, "article.control-row.is-line .row-doing-text"), ["paused 5 d ago"])
+        self.assertEqual(texts(driver, "article.control-row.is-line .row-account"), [ACCOUNT])
+        self.assertEqual(texts(driver, "h2.control-group.is-paused"), ["paused · 1"])
+        self.assertEqual(texts(driver, "article.control-row .row-name"), ["napping", "awake", "dormant"], "the line last")
+        self.assertEqual(texts(driver, "article.control-row:not(.is-line) button.row-resume"), ["resume"], "napping keeps its full row")
+        driver.screenshot(os.path.join(OUT, "PausedLongAgoOnALine-line.png"))
+
+        click_text(driver, "article.control-row .row-name", "dormant")
+        wait_until("dormant in full", lambda: texts(driver, "article.control-row.selected:not(.is-line) .row-name") == ["dormant"] or None)
+        self.assertEqual(texts(driver, "article.control-row.selected button.row-resume"), ["resume"])
+        self.assertEqual(texts(driver, "article.control-row.is-line"), [], "no line while it is picked")
+
+
 def picker_entries(driver: Driver) -> list[tuple[str, str]]:
     """Ctrl+P from top to bottom: ("head", day) for a head, (name, when) for a session."""
     found: list[list[str]] = driver.script("""return [...document.querySelectorAll('#picker-results li')].map((item) =>

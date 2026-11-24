@@ -87,23 +87,38 @@ export function projectsOf(rows, tabs, requests = new Map()) {
   ];
 }
 
+// `rows` most urgent first, split: those paused long ago apart, at the bottom, shown on a line each
+// (decision 460); one paused not long ago stays with the others, right after what needs you.
+function splitPaused(rows, requests, now) {
+  const ordered = urgentFirst(rows, requests, now);
+  const pausedLongAgo = (row) => standing(row, requests) === "paused" && !recentlyPaused(row, requests, now);
+  return { active: ordered.filter((row) => !pausedLongAgo(row)), paused: ordered.filter(pausedLongAgo) };
+}
+
 // The view of every project: the sessions that need you first, whatever their project, then a
-// group per tab in "all" with its other sessions; a tab with none is left out.
+// group per tab in "all" with its other sessions, split as `splitPaused` does; a tab with none
+// is left out.
 export function allView(rows, tabs, requests = new Map(), now = nowSeconds()) {
   const needing = (row) => standing(row, requests) === "need";
   const groups = tabs
     .filter(inAll)
-    .map((tab) => ({ tab, rows: urgentFirst(rows.filter((row) => row.tab === tab.id && !needing(row)), requests, now) }))
-    .filter((group) => group.rows.length > 0);
+    .map((tab) => {
+      const { active, paused } = splitPaused(rows.filter((row) => row.tab === tab.id && !needing(row)), requests, now);
+      return { tab, rows: active, paused };
+    })
+    .filter((group) => group.rows.length + group.paused.length > 0);
   return { needs: urgentFirst(rows.filter(needing), requests, now), groups };
 }
 
-// The view of one tab: its sessions most urgent first, those paused long ago apart, at the
-// bottom; one paused not long ago stays with the others, right after what needs you.
+// The view of one tab: its sessions, split as `splitPaused` does.
 export function projectView(rows, tabId, requests = new Map(), now = nowSeconds()) {
-  const mine = urgentFirst(rows.filter((row) => row.tab === tabId), requests, now);
-  const pausedLongAgo = (row) => standing(row, requests) === "paused" && !recentlyPaused(row, requests, now);
-  return { active: mine.filter((row) => !pausedLongAgo(row)), paused: mine.filter(pausedLongAgo) };
+  return splitPaused(rows.filter((row) => row.tab === tabId), requests, now);
+}
+
+// What the line of a session paused long ago says of its pause: "paused 3 d ago", or "paused"
+// without a transcript to date it.
+export function pausedText(row, now = nowSeconds()) {
+  return row.last_active == null ? "paused" : `paused ${ageText(row.last_active, now)}`;
 }
 
 // What a row says of the files its session kept for the user: `kept` in all, `fresh` of them not

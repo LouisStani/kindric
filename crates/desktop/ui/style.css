@@ -2334,6 +2334,32 @@ input:focus, select:focus {
   background: transparent;
 }
 
+/* A session paused long ago, on one line whatever the width (decision 460): name, since when,
+   account. The placements of the full row's narrow layouts do not apply to it. */
+.control-row.is-line {
+  padding: 5px 14px;
+}
+
+.control-row.is-line .row-line {
+  grid-template-columns: 10px minmax(0, 190px) minmax(0, 1fr) auto;
+  grid-template-areas: none;
+  row-gap: 0;
+}
+
+.control-row.is-line .row-line > * {
+  grid-area: auto;
+  margin-top: 0;
+}
+
+/* The lines of a list sit closer than the rows: the list stays short. */
+.control-row.is-line + .control-row.is-line {
+  margin-top: -6px;
+}
+
+.control-group.is-paused {
+  font-size: 12px;
+}
+
 .control-row.selected, .control-row.selected:hover {
   border-color: var(--active);
   box-shadow: 0 0 0 1px var(--active);
