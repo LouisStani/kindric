@@ -216,6 +216,66 @@ fn idle_request(input: &Value, session: &str, now: i64) -> Option<Request> {
     Some(ask_request(session, cwd, now_millis, IDLE_QUESTION, &context))
 }
 
+/// Whether an OpenCode session ran no tool since kindric last relaunched it, from its `messages`
+/// newest first, as OpenCode's API gives them: a relaunch is a user message with kindric's words.
+fn opencode_idle_since_relaunch(messages: &[Value]) -> bool {
+    let mut idle = false;
+    for message in messages.iter().rev() {
+        match message.get("type").and_then(Value::as_str) {
+            Some("user") => {
+                if message.get("text").and_then(Value::as_str).is_some_and(|text| text.starts_with(RELAUNCH)) {
+                    idle = true;
+                }
+            },
+            Some("assistant") => {
+                let parts = message.get("content").and_then(Value::as_array).into_iter().flatten();
+                if parts.into_iter().any(|part| part.get("type").and_then(Value::as_str) == Some("tool")) {
+                    idle = false;
+                }
+            },
+            _ => {},
+        }
+    }
+    idle
+}
+
+/// The last words of an OpenCode session, from its `messages` newest first.
+fn opencode_last_words(messages: &[Value]) -> String {
+    messages
+        .iter()
+        .find(|message| message.get("type").and_then(Value::as_str) == Some("assistant"))
+        .and_then(|message| message.get("content")?.as_array())
+        .map(|parts| parts.iter().filter_map(|part| (part.get("type")?.as_str()? == "text").then(|| part.get("text")?.as_str()).flatten()).collect::<Vec<_>>().join("\n"))
+        .unwrap_or_default()
+}
+
+/// What kindric gives an OpenCode session that came to rest while the user is away: OpenCode has
+/// no Stop hook, so kindric does its part, from the session's `messages` (newest first). The
+/// relaunch to give it as a prompt; nothing when the user is back, when it waits on a request of
+/// `kindric away blocked`, or when it ran no tool since the last relaunch: that turn goes to the
+/// overview and the session stays at rest, as with the hook.
+pub fn opencode_relaunch(root: &Path, overview_root: &Path, session: &str, cwd: &str, messages: &[Value], now: i64) -> Option<String> {
+    let until = until(root, session)?;
+    if until <= now {
+        let _ = clear(root, session);
+        return None;
+    }
+    if waits_on_the_user(root, overview_root, session) {
+        return None;
+    }
+    if opencode_idle_since_relaunch(messages) {
+        let context = context_of(&opencode_last_words(messages), "");
+        let context = if context.is_empty() { "It wrote nothing.".to_string() } else { context };
+        let now_millis = u128::try_from(now).unwrap_or_default() * 1000;
+        let request = ask_request(session, cwd, now_millis, IDLE_QUESTION, &context);
+        if let Err(error) = wait_on(root, overview_root, &request) {
+            eprintln!("kindric: the idle turn of {session} was not put in the overview ({}): {error}", overview_root.display());
+        }
+        return None;
+    }
+    Some(instruction(session, (until - now + 59) / 60))
+}
+
 /// Until when `session` keeps working, if the user said they are away.
 pub fn until(root: &Path, session: &str) -> Option<i64> {
     fs::read_to_string(file(root, session).ok()?).ok()?.trim().parse().ok()
@@ -843,6 +903,48 @@ mod tests {
         assert_eq!(hook_answer(&root, &overview_root, &input, 1_001), None, "still waiting on it");
         assert_eq!(overview::pending(&overview_root).len(), 1, "asked once");
         assert_eq!(until(&root, "aaaa-1111"), Some(9_999), "still away: its commands are still checked");
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    /// Messages of an OpenCode session as its API gives them, newest first.
+    fn opencode_messages(oldest_first: &[serde_json::Value]) -> Vec<serde_json::Value> {
+        oldest_first.iter().rev().cloned().collect()
+    }
+
+    fn opencode_user(text: &str) -> serde_json::Value {
+        serde_json::json!({ "type": "user", "text": text })
+    }
+
+    fn opencode_said(text: &str) -> serde_json::Value {
+        serde_json::json!({ "type": "assistant", "content": [{ "type": "text", "text": text }] })
+    }
+
+    fn opencode_tool() -> serde_json::Value {
+        serde_json::json!({ "type": "assistant", "content": [{ "type": "tool", "name": "shell", "state": { "status": "completed" } }] })
+    }
+
+    #[test]
+    fn an_opencode_session_at_rest_is_relaunched_until_it_runs_nothing() {
+        let root = temp_root("opencode");
+        let overview_root = root.join("overview");
+        let relaunch = |messages: &[serde_json::Value], now| opencode_relaunch(&root, &overview_root, "ses_x", "/work", &opencode_messages(messages), now);
+        assert_eq!(relaunch(&[opencode_user("go"), opencode_said("done")], 1_000), None, "the user is not away");
+
+        set(&root, "ses_x", 1_000 + 600).unwrap();
+        let first = relaunch(&[opencode_user("go"), opencode_tool(), opencode_said("done")], 1_000).unwrap();
+        assert!(first.starts_with("The user is away for 10 more minutes"), "{first}");
+        assert!(first.contains("kindric away done ses_x"), "{first}");
+        assert!(relaunch(&[opencode_user(&first), opencode_tool(), opencode_said("more done")], 1_060).is_some(), "it ran a tool: kept working");
+        assert!(overview::pending(&overview_root).is_empty());
+
+        assert_eq!(relaunch(&[opencode_user(&first), opencode_tool(), opencode_user(&first), opencode_said("I need the user.")], 1_120), None);
+        let pending = overview::pending(&overview_root);
+        assert_eq!(pending.len(), 1, "{pending:?}");
+        assert_eq!(pending[0].body, Body::Ask { question: IDLE_QUESTION.into(), context: "I need the user.".into(), from_reply: false });
+        assert_eq!(relaunch(&[opencode_user("go"), opencode_said("done")], 1_200), None, "it waits on that request");
+
+        assert_eq!(relaunch(&[opencode_user("go"), opencode_said("done")], 1_700), None, "the absence ended");
+        assert_eq!(until(&root, "ses_x"), None);
         fs::remove_dir_all(root).unwrap();
     }
 
