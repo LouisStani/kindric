@@ -22,6 +22,7 @@ import {
   leftText,
   lineOf,
   nextAsking,
+  pausedText,
   permissionText,
   projectView,
   projectsOf,
@@ -412,14 +413,38 @@ export class Overview {
       const fresh = mine.reduce((sum, row) => sum + this.artifactsOf(row.session_id).length, 0);
       const note = groupNote(changedOf(mine).total, fresh);
       if (note) heading.append(element("span", "control-group-note", note));
-      body.append(heading, ...group.rows.map((row) => this.row(row, group.tab, false)));
+      body.append(heading, ...group.rows.map((row) => this.row(row, group.tab, false)), ...this.pausedLongAgo(group.paused, group.tab));
     }
   }
 
   projectBody(body, rows, tab) {
     const { active, paused } = projectView(rows, tab.id, this.requests);
-    body.append(...active.map((row) => this.row(row, tab, false)));
-    if (paused.length > 0) body.append(element("h2", "control-group", "paused"), ...paused.map((row) => this.row(row, tab, false)));
+    body.append(...active.map((row) => this.row(row, tab, false)), ...this.pausedLongAgo(paused, tab));
+  }
+
+  // The sessions of a project paused long ago, under "paused · N", a line each; the one picked
+  // shows in full (decision 460).
+  pausedLongAgo(rows, tab) {
+    if (rows.length === 0) return [];
+    const heading = element("h2", "control-group is-paused", `paused · ${rows.length}`);
+    return [heading, ...rows.map((row) => (row.session_id === this.selected ? this.row(row, tab, false) : this.pausedLine(row)))];
+  }
+
+  // A session paused long ago on one line: its name, since when, its account. A click picks it.
+  pausedLine(row) {
+    const article = element("article", "control-row is-paused is-line");
+    article.dataset.session = row.session_id;
+    article.dataset.key = `row/${row.session_id}`;
+    article.tabIndex = -1;
+    article.title = `${row.title}\n${row.directory}`;
+    const line = element("div", "row-line");
+    const since = element("span", "row-doing");
+    since.append(element("span", "row-doing-text", pausedText(row)));
+    if (row.unread > 0) since.append(element("span", "row-badge", `${row.unread} msg`));
+    line.append(element("span", "dot"), element("span", "row-name", row.label), since, element("span", "row-account", row.account));
+    article.append(line);
+    article.onclick = () => this.pick(row.session_id, false);
+    return article;
   }
 
   // The rows in the order shown, by session id.

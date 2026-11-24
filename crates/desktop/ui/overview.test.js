@@ -23,6 +23,7 @@ import {
   leftText,
   lineOf,
   nextAsking,
+  pausedText,
   permissionText,
   projectView,
   projectsOf,
@@ -86,7 +87,8 @@ test("all projects: what needs you first, from any project, then a group per pro
   const { needs, groups } = allView(rows, tabs);
   assert.deepEqual(labels(needs), ["api", "merge"], "the list's order among those that need you");
   assert.deepEqual(groups.map((group) => group.tab.name), ["kindric", "merkio"], "a project left with nothing is not shown");
-  assert.deepEqual(labels(groups[0].rows), ["rest", "stopped"]);
+  assert.deepEqual(labels(groups[0].rows), ["rest"]);
+  assert.deepEqual(labels(groups[0].paused), ["stopped"], "paused long ago, apart");
   assert.deepEqual(labels(groups[1].rows), ["pricing"]);
 });
 
@@ -137,7 +139,17 @@ test("a pause of less than two hours comes right after what needs you, an older 
   assert.deepEqual(labels(active), ["asks", "pause", "working now", "working an hour ago", "done", "rest"]);
   assert.deepEqual(labels(stopped), ["old pause"]);
   const { groups } = allView(rows, tabs, new Map(), NOW);
-  assert.deepEqual(labels(groups[0].rows), ["pause", "working now", "working an hour ago", "done", "rest", "old pause"]);
+  assert.deepEqual(labels(groups[0].rows), ["pause", "working now", "working an hour ago", "done", "rest"]);
+  assert.deepEqual(labels(groups[0].paused), ["old pause"], "all puts those paused long ago apart too");
+});
+
+// Decision 460: a project with nothing but sessions paused long ago is still shown in all.
+test("all keeps a project whose sessions are all paused long ago, and dates each pause", () => {
+  const rows = [row("old pause", 2, { ...paused, ...ago(6000) }), row("undated", 2, paused)];
+  const { groups } = allView(rows, tabs, new Map(), NOW);
+  assert.deepEqual(groups.map((group) => [group.tab.name, labels(group.rows), labels(group.paused)]), [["kindric", [], ["old pause", "undated"]]]);
+  assert.equal(pausedText(rows[0], NOW), "paused 4 d ago");
+  assert.equal(pausedText(rows[1], NOW), "paused");
 });
 
 test("within a group, the last active first; a session without a transcript last", () => {
