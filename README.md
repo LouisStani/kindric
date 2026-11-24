@@ -17,8 +17,8 @@ It comes with [kindric-accounts](crates/accounts/README.md), which runs each acc
 - **Messages between sessions.** A small MCP server lets sessions list each other, leave messages and wake each other up.
 - **Files kept for you.** Sessions keep the pages, images and reports they made for you, by project. kindric also shows the files each session changed and the worktrees of a project.
 - **Away mode.** Tell a session you are away for an hour: it keeps working without waiting for your approval, and its commands that push, merge, delete or install are refused.
-- **Any model, and Codex.** An account can take its model from an Anthropic API key, OpenRouter, a local Ollama or another gateway, or run OpenAI's Codex instead of Claude Code. See [Accounts without a Claude login](crates/accounts/README.md#accounts-without-a-claude-login) and [Codex accounts](docs/desktop.md#codex-accounts).
-- **Nothing to lose.** Sessions are Claude Code background sessions, or sessions of the Codex daemon. Close kindric, they keep running.
+- **Any model, Codex and OpenCode.** An account can take its model from an Anthropic API key, OpenRouter, a local Ollama or another gateway, or run OpenAI's Codex or OpenCode instead of Claude Code. See [Accounts without a Claude login](crates/accounts/README.md#accounts-without-a-claude-login), [Codex accounts](docs/desktop.md#codex-accounts) and [OpenCode accounts](docs/desktop.md#opencode-accounts).
+- **Nothing to lose.** Sessions are Claude Code background sessions, sessions of the Codex daemon, or sessions of an OpenCode service. Close kindric, they keep running.
 
 Two interfaces share the same core:
 
@@ -29,7 +29,7 @@ Two interfaces share the same core:
 
 ## Install
 
-You need Rust, and Claude Code with background sessions (tested with 2.1.312). Codex is needed only for Codex accounts (tested with 0.171.0). kindric is used daily on Linux; CI builds and tests it on Linux, macOS and Windows.
+You need Rust, and Claude Code with background sessions (tested with 2.1.312). Codex and OpenCode are needed only for their own accounts (tested with Codex 0.171.0 and OpenCode 2.3.2). kindric is used daily on Linux; CI builds and tests it on Linux, macOS and Windows.
 
 ```sh
 git clone https://github.com/LouisStani/kindric.git

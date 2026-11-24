@@ -14,6 +14,8 @@ The server gives every session five tools:
 | `keep_artifact` | Keep a file it made, for you (`for=user`) or for later sessions of the project (`for=claude`), in a group if asked |
 | `list_artifacts` | List the files kept for this project, with their paths |
 
+Sessions of Claude Code get them. Sessions of [Codex](desktop.md#codex-accounts) and [OpenCode](desktop.md#opencode-accounts) accounts do not have them yet.
+
 ## How a session learns of a message
 
 A session reads its messages only when it calls `read_messages`. kindric does not type anything into it, but the sessions kindric-accounts starts get hooks that tell them:
