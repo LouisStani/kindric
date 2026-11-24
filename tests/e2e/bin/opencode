@@ -1,0 +1,40 @@
+#!/usr/bin/env python3
+"""A fake OpenCode for kindric's end-to-end tests: what kindric-accounts asks of an OpenCode account
+when it adds one and signs it in, without any service or model. Its files go where the account's XDG
+directories say, as OpenCode's do.
+
+    opencode --version                 2.4.1
+    opencode service set port <port>   writes {"port": <port>} in $XDG_CONFIG_HOME/opencode/service.json
+    opencode service status            stopped
+    opencode auth login                a new login, noted in $XDG_DATA_HOME/fake-logins.log
+    anything else                      exit code 2
+"""
+
+import json
+import os
+import sys
+
+
+def main(args: list[str]) -> int:
+    if args == ["--version"]:
+        print("2.4.1")
+        return 0
+    if args[:3] == ["service", "set", "port"] and len(args) == 4:
+        folder = os.path.join(os.environ["XDG_CONFIG_HOME"], "opencode")
+        os.makedirs(folder, exist_ok=True)
+        with open(os.path.join(folder, "service.json"), "w", encoding="utf-8") as file:
+            json.dump({"port": int(args[3])}, file)
+        return 0
+    if args == ["service", "status"]:
+        print("stopped")
+        return 0
+    if args == ["auth", "login"]:
+        with open(os.path.join(os.environ["XDG_DATA_HOME"], "fake-logins.log"), "a", encoding="utf-8") as log:
+            log.write("login\n")
+        print("Logged in.")
+        return 0
+    return 2
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))

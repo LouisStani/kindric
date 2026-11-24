@@ -109,7 +109,7 @@
     <section class="settings-section" data-category="accounts">
       <h2>accounts</h2>
       <ul class="accounts-list"></ul>
-      <form class="accounts-add" data-search="new account add create api key openrouter ollama local gateway model provider codex openai chatgpt">
+      <form class="accounts-add" data-search="new account add create api key openrouter ollama local gateway model provider codex openai chatgpt opencode">
         <label>new account <input name="name" placeholder="e.g. work" spellcheck="false" autocomplete="off"></label>
         <label class="provider-kind">model from
           <select name="kind">
@@ -119,6 +119,7 @@
             <option value="ollama">ollama, on this computer</option>
             <option value="gateway">other gateway</option>
             <option value="codex">codex, openai login</option>
+            <option value="opencode">opencode, its own providers</option>
           </select>
         </label>
         <label class="provider-url" hidden>address <input name="url" spellcheck="false" autocomplete="off"></label>
