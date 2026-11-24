@@ -243,7 +243,7 @@ How it works:
 
 - The account's directory is its `CODEX_HOME`: Codex keeps its login, sessions and `config.toml` there. `kindric-agent.json` in it says the account runs Codex.
 - `AGENTS.md`, `skills/` and `prompts/` are linked to `~/.codex`, like the shared parts of a Claude account. `~/.codex` is never written, and it is not an account of its own.
-- `run` starts `codex` with `CODEX_HOME` set to the account's directory, without `OPENAI_API_KEY` and `CODEX_API_KEY`. To use an OpenAI key instead of ChatGPT: `printenv OPENAI_API_KEY | kindric-accounts run cx login --with-api-key`. Codex keeps that key itself.
+- `run` starts `codex` with `CODEX_HOME` set to the account's directory, without `OPENAI_API_KEY` and `CODEX_API_KEY`, and without the variables of a Claude Code or Codex session (`CLAUDE_CODE_*`, `CLAUDE_CONFIG_DIR`, `CLAUDE_JOB_DIR`, `CODEX_THREAD_ID`): the daemon keeps the environment it starts with and hands it to every command of every session. To use an OpenAI key instead of ChatGPT: `printenv OPENAI_API_KEY | kindric-accounts run cx login --with-api-key`. Codex keeps that key itself.
 - `status` asks `codex login status` whether the account is signed in. Its sessions are those loaded in the account's Codex daemon, asked over its socket, `<CODEX_HOME>/app-server-control/app-server-control.sock`.
 - [kindric](../../docs/desktop.md#codex-accounts) lists, opens, starts and stops the sessions of a Codex account through the same daemon.
 

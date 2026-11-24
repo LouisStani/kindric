@@ -25,6 +25,14 @@ use crate::usage;
 /// the account the user picked, nor bill another one.
 pub const STRIPPED_ENV: [&str; 2] = ["OPENAI_API_KEY", "CODEX_API_KEY"];
 
+/// The variables of a Claude Code or Codex session that runs kindric-accounts: the daemon keeps
+/// the environment it starts with and hands it to every command of every session, where
+/// `kindric ask` would then speak for the wrong session (seen on the bench, 2026-11-24).
+const SESSION_ENV: [&str; 3] = ["CLAUDE_CONFIG_DIR", "CLAUDE_JOB_DIR", "CODEX_THREAD_ID"];
+
+/// Every variable of Claude Code's own (`CLAUDE_CODE_SESSION_ID`…) goes too.
+const SESSION_PREFIX: &str = "CLAUDE_CODE_";
+
 #[cfg(windows)]
 const CODEX_NAMES: [&str; 3] = ["codex.exe", "codex.cmd", "codex"];
 #[cfg(not(windows))]
@@ -46,11 +54,22 @@ pub fn require_codex() -> Result<PathBuf> {
     }
 }
 
-/// `codex` for the account whose `CODEX_HOME` is `dir`, without the keys of the shell.
+/// `codex` for the account whose `CODEX_HOME` is `dir`, without the keys and the session
+/// variables of this process.
 pub fn command(codex: &Path, dir: &Path) -> Command {
+    command_from(codex, dir, std::env::vars_os().map(|(name, _)| name))
+}
+
+/// `codex` for the account in `dir`, given the names of the variables of the environment.
+fn command_from(codex: &Path, dir: &Path, names: impl Iterator<Item = OsString>) -> Command {
     let mut command = Command::new(codex);
     for variable in STRIPPED_ENV {
         command.env_remove(variable);
+    }
+    for name in names {
+        if name.to_str().is_some_and(|text| SESSION_ENV.contains(&text) || text.starts_with(SESSION_PREFIX)) {
+            command.env_remove(&name);
+        }
     }
     command.env("CODEX_HOME", dir);
     command
@@ -754,6 +773,20 @@ pub fn prepare_hooks(codex: &Path, dir: &Path, hooks: &usage::KindricHooks) -> V
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::ffi::OsStr;
+
+    #[test]
+    fn codex_runs_without_the_keys_and_the_session_variables_of_the_shell() {
+        let names = ["PATH", "CLAUDE_CODE_SESSION_ID", "CLAUDE_CODE_ENTRYPOINT", "CLAUDE_CONFIG_DIR", "CLAUDE_JOB_DIR", "CODEX_THREAD_ID", "CLAUDE_EFFORT"];
+        let command = command_from(Path::new("/usr/bin/codex"), Path::new("/data/cx"), names.iter().map(OsString::from));
+        let env_of = |name: &str| command.get_envs().find(|(key, _)| *key == OsStr::new(name)).map(|(_, value)| value);
+        for gone in ["CLAUDE_CODE_SESSION_ID", "CLAUDE_CODE_ENTRYPOINT", "CLAUDE_CONFIG_DIR", "CLAUDE_JOB_DIR", "CODEX_THREAD_ID", "OPENAI_API_KEY", "CODEX_API_KEY"] {
+            assert_eq!(env_of(gone), Some(None), "{gone}");
+        }
+        assert_eq!(env_of("CODEX_HOME"), Some(Some(OsStr::new("/data/cx"))));
+        assert_eq!(env_of("PATH"), None, "the rest is left as it is");
+        assert_eq!(env_of("CLAUDE_EFFORT"), None, "not the identity of a session");
+    }
 
     #[test]
     fn a_new_session_is_named_after_its_folder_when_no_name_is_given() {
