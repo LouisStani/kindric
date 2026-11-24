@@ -193,7 +193,7 @@ mod tests {
         let (sender, chunks) = mpsc::channel();
         let writer = thread::spawn(move || {
             sender.send(b"first".to_vec()).unwrap();
-            thread::sleep(GATHER * 20);
+            thread::sleep(GATHER * 50);
             sender.send(b"second".to_vec()).unwrap();
         });
         let mut seen = Vec::new();
