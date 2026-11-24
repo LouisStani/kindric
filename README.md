@@ -85,6 +85,10 @@ On macOS, `Cmd` replaces `Ctrl`.
 | [Development](docs/development.md) | Workspace layout, tests, tracing, icon |
 | [kindric-accounts](crates/accounts/README.md) | The account manager |
 
+## Who builds it
+
+kindric is built by [lystriq](https://github.com/LouisStani). He owns the architecture, the major decisions, the interface and the users, and guides the work in the code. The code itself is written with Claude Code.
+
 ## Contributing
 
 Read [CONTRIBUTING.md](CONTRIBUTING.md) before contributing and [SECURITY.md](SECURITY.md) to report a vulnerability.
