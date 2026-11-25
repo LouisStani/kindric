@@ -284,7 +284,7 @@ pub fn ask_from_session(
     now_millis: u128,
 ) -> Result<Request, String> {
     let session = session.filter(|id| !id.is_empty()).ok_or_else(|| {
-        "kindric ask is run by a Claude Code session: CLAUDE_CODE_SESSION_ID is not set".to_string()
+        format!("kindric ask is run by a session of Claude Code, Codex or OpenCode: none of {} is set", SESSION_VARIABLES.join(", "))
     })?;
     let (question, context) = (question.trim(), context.trim());
     if question.is_empty() || context.is_empty() {
@@ -325,20 +325,23 @@ pub fn typed_answer(root: &Path, session: &str, id: &str, answer: &str) -> Resul
     }
 }
 
-/// The session that runs `kindric ask`: Claude Code names it in `CLAUDE_CODE_SESSION_ID`, Codex in
-/// `CODEX_THREAD_ID` (a name read in the binary of codex 0.171.0, not yet seen in a session). An
-/// empty value names none.
-fn session_of_caller(claude: Option<String>, codex: Option<String>) -> Option<String> {
-    claude.filter(|id| !id.is_empty()).or_else(|| codex.filter(|id| !id.is_empty()))
+/// What names the session that runs a command, first found first: Claude Code sets
+/// `CLAUDE_CODE_SESSION_ID`, Codex `CODEX_THREAD_ID`, OpenCode `OPENCODE_SESSION_ID`.
+const SESSION_VARIABLES: [&str; 3] = ["CLAUDE_CODE_SESSION_ID", "CODEX_THREAD_ID", "OPENCODE_SESSION_ID"];
+
+/// The session that runs `kindric ask`: the first of `ids` (the values of `SESSION_VARIABLES`) set.
+/// An empty value names none.
+fn session_of_caller(ids: impl IntoIterator<Item = Option<String>>) -> Option<String> {
+    ids.into_iter().flatten().find(|id| !id.is_empty())
 }
 
-/// `kindric ask <question> <context>` from the environment Claude Code or Codex gives a shell
-/// command.
+/// `kindric ask <question> <context>` from the environment Claude Code, Codex or OpenCode gives a
+/// shell command.
 pub fn run_ask(question: &str, context: &str) -> Result<(), String> {
     let root = default_root().map_err(|error| format!("cannot find kindric's data: {error}"))?;
     let away_root = away::default_root().map_err(|error| format!("cannot find kindric's data: {error}"))?;
     let cwd = std::env::current_dir().map_err(|error| format!("cannot read the current folder: {error}"))?;
-    let session = session_of_caller(std::env::var("CLAUDE_CODE_SESSION_ID").ok(), std::env::var("CODEX_THREAD_ID").ok());
+    let session = session_of_caller(SESSION_VARIABLES.map(|name| std::env::var(name).ok()));
     let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default();
     ask_from_session(&root, &away_root, session.as_deref(), &cwd, question, context, now.as_millis())?;
     println!("{SENT}");
@@ -356,13 +359,14 @@ mod tests {
     }
 
     #[test]
-    fn ask_knows_a_session_of_claude_code_or_of_codex() {
+    fn ask_knows_a_session_of_claude_code_codex_or_opencode() {
         let some = |id: &str| Some(id.to_string());
-        assert_eq!(session_of_caller(some("aaaa"), some("01a1")), some("aaaa"), "Claude Code first");
-        assert_eq!(session_of_caller(None, some("01a1")), some("01a1"));
-        assert_eq!(session_of_caller(some(""), some("01a1")), some("01a1"));
-        assert_eq!(session_of_caller(None, some("")), None);
-        assert_eq!(session_of_caller(None, None), None);
+        assert_eq!(session_of_caller([some("aaaa"), some("01a1"), None]), some("aaaa"), "Claude Code first");
+        assert_eq!(session_of_caller([None, some("01a1"), None]), some("01a1"));
+        assert_eq!(session_of_caller([some(""), some("01a1"), None]), some("01a1"));
+        assert_eq!(session_of_caller([None, None, some("ses_dfd5")]), some("ses_dfd5"), "OpenCode");
+        assert_eq!(session_of_caller([None, some(""), None]), None);
+        assert_eq!(session_of_caller([None, None, None]), None);
     }
 
     fn request(session: &str, id: &str, asked_at: i64, body: Body) -> Request {

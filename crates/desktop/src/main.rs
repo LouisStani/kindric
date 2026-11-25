@@ -285,8 +285,9 @@ const DETAIL_STEPS: usize = 8;
 fn session_detail(shared: State<'_, Shared>, account: String, session_id: String) -> Result<SessionDetail, String> {
     let _span = shared.trace.span("session_detail");
     let paths = accounts::paths().map_err(|error| error.to_string())?;
-    let account_dir = accounts::dir_of(&paths, &account, implicit_default(&account)?);
-    let (steps, written_at) = steps::of_session(&account_dir, &session_id, DETAIL_STEPS);
+    let implicit = implicit_default(&account)?;
+    let account_dir = accounts::dir_of(&paths, &account, implicit);
+    let (steps, written_at) = steps::of_agent(attach::agent_of(&account, implicit), &account_dir, &session_id, DETAIL_STEPS);
     let data = mailbox::data_dir().map_err(|error| error.to_string())?;
     let projects = artifacts::read_projects(&data)?;
     let roots: Vec<(Option<String>, PathBuf)> = projects
@@ -1302,7 +1303,7 @@ fn proposed_images(session: &SessionInfo, implicit_default: bool) -> Vec<String>
         return Vec::new();
     };
     let account_dir = accounts::dir_of(&paths, &session.account, implicit_default);
-    images::proposed(&account_dir, &session.session_id, Path::new(&session.cwd), std::env::home_dir().as_deref())
+    images::proposed_by(session.agent, &account_dir, &session.session_id, Path::new(&session.cwd), std::env::home_dir().as_deref())
 }
 
 fn publish(app: &AppHandle, update: refresher::Update) -> bool {

@@ -295,7 +295,10 @@ A Codex account (added in the settings with **model from** set to codex, or with
 - Its sessions send and read messages and keep files, like those of Claude Code: kindric-accounts gives the account kindric's MCP server. A message sent with `wake` waits for its next prompt or tool.
 - Away mode (`Ctrl+Shift+Y`) works as for Claude Code: the session keeps working until then.
 
-Not yet: answering a question of the model in the control center, its last steps, images and context. How it works: [Codex accounts](how-it-works.md#codex-accounts).
+- The control center shows its last steps, how full its context is and the images its last turn names, and its pane head says what it does now, as for Claude Code.
+- `kindric ask` works from its sandbox: kindric-accounts lets Codex write in kindric's overview folder.
+
+Not yet: answering a question of the model in the control center, and its task list. How it works: [Codex accounts](how-it-works.md#codex-accounts).
 
 ## OpenCode accounts
 
@@ -311,4 +314,6 @@ An OpenCode account is added in the settings with **model from** set to opencode
 
 The sessions of an account live in its OpenCode service. kindric starts it when it does not run, and leaves it running: about 370 MB of memory per OpenCode account. `kindric-accounts run <name> service stop` stops it, until kindric needs it again.
 
-Not yet: its last steps, images and context, and the limits of an OpenCode subscription (its card says `no limits`). How it works: [OpenCode accounts](how-it-works.md#opencode-accounts).
+- The control center shows its last steps, how full its context is and the images its last turn names, and its pane head says what it does now, as for Claude Code. They are read from its service, so only while it runs.
+
+Not yet: the limits of an OpenCode subscription (its card says `no limits`), and its task list. How it works: [OpenCode accounts](how-it-works.md#opencode-accounts).

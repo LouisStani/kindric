@@ -8,14 +8,16 @@ use std::time::UNIX_EPOCH;
 use serde::Serialize;
 use serde_json::Value;
 
+use crate::attach::Agent;
 use crate::images::{is_prompt, tail, transcript_of};
+use crate::{codex_history, opencode_history};
 
 /// A step longer than this is cut.
 const LONGEST: usize = 160;
 
 /// The fields that say what a tool works on, first found first: the page names permissions with
 /// the same list.
-const SUBJECTS: [&str; 8] = ["command", "file_path", "path", "pattern", "url", "query", "prompt", "description"];
+pub(crate) const SUBJECTS: [&str; 8] = ["command", "file_path", "path", "pattern", "url", "query", "prompt", "description"];
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "lowercase")]
@@ -39,7 +41,7 @@ pub struct Step {
 }
 
 /// The first line of `text` that is not blank, cut at `LONGEST` characters.
-fn first_line(text: &str) -> Option<String> {
+pub(crate) fn first_line(text: &str) -> Option<String> {
     let line = text.lines().map(str::trim).find(|line| !line.is_empty())?;
     if line.chars().count() <= LONGEST {
         return Some(line.to_string());
@@ -129,6 +131,16 @@ pub fn of_session(account_dir: &Path, session_id: &str, most: usize) -> (Vec<Ste
         .and_then(|time| time.duration_since(UNIX_EPOCH).ok())
         .map(|since| since.as_secs());
     (tail(&transcript).map(|text| recent(&text, most)).unwrap_or_default(), written)
+}
+
+/// The last steps of a session of any agent: Claude Code's transcript, Codex's rollout (the
+/// account's directory is its `CODEX_HOME`), OpenCode's messages in the account's service.
+pub fn of_agent(agent: Agent, account_dir: &Path, session_id: &str, most: usize) -> (Vec<Step>, Option<u64>) {
+    match agent {
+        Agent::ClaudeCode => of_session(account_dir, session_id, most),
+        Agent::Codex => codex_history::of_session(account_dir, session_id, most),
+        Agent::OpenCode => opencode_history::of_session(account_dir, session_id, most),
+    }
 }
 
 #[cfg(test)]
