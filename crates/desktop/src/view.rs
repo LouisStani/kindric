@@ -5,6 +5,7 @@ use std::collections::{HashMap, HashSet};
 use std::path::Path;
 
 use kindric_core::accounts::{SessionInfo, SessionState};
+use kindric_core::attach::Agent;
 use kindric_core::launcher::tilde;
 use kindric_core::refresher::Update;
 use kindric_core::search::matches_with;
@@ -173,6 +174,35 @@ pub fn assign(view: &mut ListView, tabs: &Tabs, prefs: &Prefs) {
     order(&mut view.sessions);
 }
 
+/// OpenCode keeps every session in its service, with no process to tell those in use, so one at
+/// rest counts as paused. One that was not paused at the last refresh stays at rest instead, in
+/// the bar, until kindric restarts: its finished turn then shows like those of Claude Code and
+/// Codex, rather than the session leaving the bar.
+fn kept_at_rest(previous: &ListView, session: &SessionInfo) -> SessionInfo {
+    let was_active = || previous.sessions.iter().any(|row| row.info.session_id == session.session_id && row.info.state != SessionState::Paused);
+    if session.agent == Agent::OpenCode && session.state == SessionState::Paused && was_active() {
+        return SessionInfo { state: SessionState::Waiting, ..session.clone() };
+    }
+    session.clone()
+}
+
+/// The OpenCode sessions whose turn ended between `before` and `after`: working, or waiting for an
+/// answer, then at rest. OpenCode has no Stop hook, so kindric itself keeps them working while the
+/// user is away.
+pub fn came_to_rest(before: &ListView, after: &ListView) -> Vec<SessionInfo> {
+    after
+        .sessions
+        .iter()
+        .filter(|row| row.info.agent == Agent::OpenCode && row.info.state != SessionState::Working && row.info.waiting_for.is_none())
+        .filter(|row| {
+            before.sessions.iter().any(|old| {
+                old.info.session_id == row.info.session_id && (old.info.state == SessionState::Working || old.info.waiting_for.is_some())
+            })
+        })
+        .map(|row| row.info.clone())
+        .collect()
+}
+
 /// A failed refresh keeps the previous list on screen and says why it is stale.
 /// `watched` is the session in the active pane of the visible tab.
 pub fn apply(previous: &ListView, update: Update, watched: Option<&SessionKey>) -> ListView {
@@ -183,6 +213,7 @@ pub fn apply(previous: &ListView, update: Update, watched: Option<&SessionKey>) 
                 .iter()
                 .enumerate()
                 .map(|(position, session)| {
+                    let session = &kept_at_rest(previous, session);
                     let unread = unread.get(&session.session_id).copied().unwrap_or(0);
                     row(position, session, unread, finished(previous, session, watched))
                 })
@@ -541,6 +572,48 @@ mod tests {
         assert_eq!(marks(&still), [true]);
         let again = refresh(&still, vec![in_state("louis", "a", SessionState::Working)], None);
         assert_eq!(marks(&again), [false]);
+    }
+
+    fn opencode(name: &str, state: SessionState) -> SessionInfo {
+        SessionInfo { agent: Agent::OpenCode, ..in_state("oc", name, state) }
+    }
+
+    fn states(view: &ListView) -> Vec<&str> {
+        view.sessions.iter().map(|row| row.state).collect()
+    }
+
+    #[test]
+    fn an_opencode_session_that_worked_stays_at_rest_with_its_turn_marked() {
+        let working = refresh(&ListView::default(), vec![opencode("a", SessionState::Working)], None);
+        let done = refresh(&working, vec![opencode("a", SessionState::Paused)], None);
+        assert_eq!((states(&done), marks(&done)), (vec!["waiting"], vec![true]));
+        let seen = refresh(&done, vec![opencode("a", SessionState::Paused)], Some(&key("oc", "a")));
+        assert_eq!((states(&seen), marks(&seen)), (vec!["waiting"], vec![false]), "seen, it stays at rest in the bar");
+        let later = refresh(&seen, vec![opencode("a", SessionState::Paused)], None);
+        assert_eq!(states(&later), ["waiting"]);
+    }
+
+    #[test]
+    fn an_opencode_turn_that_ends_comes_to_rest_once() {
+        let working = refresh(&ListView::default(), vec![opencode("a", SessionState::Working), in_state("louis", "c", SessionState::Working)], None);
+        let done = refresh(&working, vec![opencode("a", SessionState::Paused), in_state("louis", "c", SessionState::Waiting)], None);
+        let ids: Vec<_> = came_to_rest(&working, &done).into_iter().map(|session| session.session_id).collect();
+        assert_eq!(ids, ["oc-a"], "only OpenCode: Claude Code has its Stop hook");
+        let still = refresh(&done, vec![opencode("a", SessionState::Paused)], None);
+        assert!(came_to_rest(&done, &still).is_empty(), "once");
+        let asking = refresh(&ListView::default(), vec![SessionInfo { waiting_for: Some("permission prompt".into()), ..opencode("b", SessionState::Waiting) }], None);
+        let answered = refresh(&asking, vec![opencode("b", SessionState::Paused)], None);
+        assert_eq!(came_to_rest(&asking, &answered).len(), 1, "answered, then done before the next refresh");
+    }
+
+    #[test]
+    fn an_opencode_session_never_seen_active_and_other_agents_stay_paused() {
+        let first = refresh(&ListView::default(), vec![opencode("old", SessionState::Paused)], None);
+        let again = refresh(&first, vec![opencode("old", SessionState::Paused)], None);
+        assert_eq!(states(&again), ["paused"]);
+        let claude = refresh(&ListView::default(), vec![in_state("louis", "a", SessionState::Working)], None);
+        let stopped = refresh(&claude, vec![in_state("louis", "a", SessionState::Paused)], None);
+        assert_eq!(states(&stopped), ["paused"], "a Claude Code session that stops is gone");
     }
 
     #[test]
