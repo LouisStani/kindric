@@ -22,7 +22,7 @@ cargo run -p kindric-desktop
 
 On Linux the desktop interface needs WebKitGTK 4.1 (`webkit2gtk-4.1` on Arch, `libwebkit2gtk-4.1-dev` on Debian and Ubuntu).
 
-The tests never start Claude Code and never touch your accounts. The JavaScript tests cover the parts of the page that need no browser (the bar's dots, the launcher, the session finder, the control center, the welcome line, the usage and stats windows, the atlas, the screen photos, the purge); they need only Node.
+The tests never start Claude Code and never touch your accounts. The JavaScript tests cover the parts of the page that need no browser (the bar's dots, the launcher, the session finder, the control center, the welcome line, the usage and stats windows, the recap image, the atlas, the screen photos, the purge); they need only Node.
 
 ### End-to-end journeys
 

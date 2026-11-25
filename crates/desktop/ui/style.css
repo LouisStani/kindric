@@ -1391,6 +1391,31 @@ input:focus, select:focus {
   outline: none;
 }
 
+.stats-actions {
+  display: flex;
+  gap: 6px;
+}
+
+.recap {
+  display: block;
+  width: auto;
+  max-width: 100%;
+  max-height: calc(90vh - 160px);
+  margin: 10px auto 0;
+  border-radius: var(--radius);
+}
+
+.recap-note {
+  margin: 10px 0 0;
+  overflow-wrap: anywhere;
+  text-align: center;
+  color: var(--muted);
+}
+
+.recap-note.error {
+  color: var(--error);
+}
+
 .stats-numbers {
   margin-top: 16px;
 }
