@@ -2711,6 +2711,67 @@ class StatsWindow(Journey):
         wait_until("the stats window, the settings closed", lambda: dialog_open(driver, "stats") and not dialog_open(driver, "settings"))
 
 
+class RecapImage(Journey):
+    """`r` in the stats window draws the recap of the last 30 days, `s` writes it in the home (there is
+    no pictures folder here) as a PNG, a second time beside the first one."""
+
+    started = [("alpha", "first task work:0")]
+
+    @classmethod
+    def before_app(cls) -> None:
+        folder = os.path.join(ACCOUNT_DIR, "projects", "-recap")
+        os.makedirs(folder, exist_ok=True)
+        now = time.time()
+        with open(os.path.join(folder, "bbbbbbbb-0000-4000-8000-000000000001.jsonl"), "w", encoding="utf-8") as file:
+            for hour in range(1, 29 * 24):
+                if hour % 24 > 14 or hour % 7 == 0:
+                    continue
+                at = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(now - hour * 3600))
+                usage = {"input_tokens": 0, "output_tokens": 2000 + hour * 37 % 9000, "cache_read_input_tokens": 400000, "cache_creation_input_tokens": 0}
+                line = {"type": "assistant", "timestamp": at, "cwd": "/work/shop", "message": {"id": f"m{hour}", "model": "claude-opus-5-5", "content": [], "usage": usage}}
+                file.write(json.dumps(line) + "\n")
+
+    def note(self) -> str:
+        return "".join(texts(self.driver, "#stats .recap-note"))
+
+    def saved(self, name: str) -> tuple[int, int]:
+        with open(os.path.join(HOME, name), "rb") as file:
+            head = file.read(24)
+        self.assertEqual(head[:8], b"\x89PNG\r\n\x1a\n")
+        return int.from_bytes(head[16:20], "big"), int.from_bytes(head[20:24], "big")
+
+    def test_draw_and_save(self) -> None:
+        driver = self.driver
+        driver.press(F4)
+        wait_until("the stats window", lambda: dialog_open(driver, "stats") and texts(driver, "#stats .stats-hero .stats-value") or None)
+        driver.press("r")
+        wait_until("the note", lambda: "no name of an account" in self.note() or None)
+        self.assertEqual(texts(driver, "#stats .usage-periods button"), [])
+        pixel = """const canvas = document.querySelector('#stats canvas');
+            const [red, green, blue] = canvas.getContext('2d').getImageData(arguments[0], arguments[1], 1, 1).data;
+            return red + green + blue;"""
+        wait_until("the band at the foot, bright", lambda: driver.script(pixel, 80, 1300) > 300 or None)
+        self.assertLess(driver.script(pixel, 4, 700), 120, "the night around")
+        label = driver.script("return document.querySelector('#stats canvas').getAttribute('aria-label')")
+        self.assertIn("tokens in 30 days", label)
+        self.assertNotIn("shop", label)
+        driver.screenshot(os.path.join(OUT, "RecapImage-shown.png"))
+
+        driver.press("s")
+        wait_until("the first image", lambda: self.note().endswith("kindric-recap.png") or None)
+        self.assertEqual(self.saved("kindric-recap.png"), (1080, 1350))
+        driver.press("s")
+        wait_until("the second beside it", lambda: self.note().endswith("kindric-recap-2.png") or None)
+        shutil.copyfile(os.path.join(HOME, "kindric-recap.png"), os.path.join(OUT, "RecapImage-saved.png"))
+
+        driver.press("r")
+        wait_until("the stats again", lambda: texts(driver, "#stats .stats-hero .stats-value") or None)
+        click_text(driver, "#stats .stats-actions button", "recap image")
+        wait_until("the image again", lambda: driver.find_all("#stats canvas") or None)
+        driver.press(ESCAPE)
+        wait_until("closed", lambda: not dialog_open(driver, "stats"))
+
+
 class ControlCenterFigures(Journey):
     """What the status line wrote down shows in the control center: the account's 5 h and 7 day
     limits, framed past 80 %, with when the 5 h window starts again, and how full each session's

@@ -9,6 +9,7 @@ mod page;
 mod prefs;
 mod projects;
 mod purge;
+mod recap;
 mod settings;
 mod signal;
 mod statistics;
@@ -1039,6 +1040,19 @@ fn read_statistics(shared: &Shared) -> Result<serde_json::Value, String> {
     }))
 }
 
+/// Writes the recap image the page drew in the user's pictures, else in their home. Returns where.
+#[tauri::command(async)]
+fn save_recap(app: AppHandle, png: Vec<u8>) -> Result<String, String> {
+    let dir = app
+        .path()
+        .picture_dir()
+        .ok()
+        .filter(|dir| dir.is_dir())
+        .or_else(std::env::home_dir)
+        .ok_or("neither your pictures folder nor your home was found to save the recap in")?;
+    recap::save(&dir, &png).map(|path| path.display().to_string())
+}
+
 /// The colors of `theme.json`, read again each time it is chosen; None without the file.
 #[tauri::command(async)]
 fn custom_theme() -> Result<Option<std::collections::BTreeMap<String, String>>, String> {
@@ -1965,6 +1979,7 @@ fn main() -> ExitCode {
             set_key,
             set_stats_isolated,
             stats,
+            save_recap,
             helper_input,
             helper_resize,
             close_helper

@@ -1,12 +1,16 @@
 // The stats window (F4): big numbers, the tokens of each account day by day, when the work happens,
 // records and habits. Rust reads the transcripts (`stats`); stats-board.js works out what to show.
+// `r` shows the recap: an image to post, that Rust writes on this machine (`save_recap`).
 
 import { activity, counters, durationText, novelsText, perDay, periodText, periodsOf, profile, records, strength } from "./stats-board.js";
+import { drawRecap, pngOf } from "./recap-image.js";
+import { recapOf } from "./recap-board.js";
 import { newTokens, tokensText } from "./usage-board.js";
 
 const { invoke } = window.__TAURI__.core;
 
-const HINT = "← → period · esc close";
+const HINT = "← → period · r recap image · esc close";
+const RECAP_HINT = "s save the image · r back to the stats · esc close";
 
 function element(tag, className, text) {
   const node = document.createElement(tag);
@@ -46,14 +50,19 @@ export class StatsWindow {
     this.labelOf = labelOf;
     this.periods = dialog.querySelector(".usage-periods");
     this.body = dialog.querySelector(".usage-body");
-    dialog.querySelector(".usage-hint").textContent = HINT;
+    this.actions = dialog.querySelector(".stats-actions");
+    this.hint = dialog.querySelector(".usage-hint");
+    this.hint.textContent = HINT;
     this.days = 30;
+    // The image shown, null while the figures are.
+    this.recap = null;
     this.data = null;
     this.request = 0;
     dialog.addEventListener("keydown", (event) => this.onKey(event));
   }
 
   async open() {
+    this.recap = null;
     this.dialog.showModal();
     this.dialog.focus({ preventScroll: true });
     if (this.data) this.render();
@@ -71,6 +80,15 @@ export class StatsWindow {
   }
 
   onKey(event) {
+    const plain = !event.ctrlKey && !event.altKey && !event.metaKey && !event.shiftKey;
+    const run = plain && this.data && { r: () => this.toggleRecap(), s: () => this.saveRecap() }[event.key];
+    if (run) {
+      event.preventDefault();
+      event.stopPropagation();
+      run();
+      return;
+    }
+    if (this.recap) return;
     if ((event.key !== "ArrowLeft" && event.key !== "ArrowRight") || !this.data) return;
     event.preventDefault();
     event.stopPropagation();
@@ -84,9 +102,72 @@ export class StatsWindow {
     this.render();
   }
 
+  toggleRecap() {
+    this.recap = this.recap ? null : { canvas: element("canvas", "recap"), note: element("p", "recap-note", "") };
+    this.render();
+    this.dialog.focus({ preventScroll: true });
+  }
+
+  async saveRecap() {
+    const { recap } = this;
+    // One at a time, of an image that is drawn.
+    if (!recap?.drawn || recap.saving) return;
+    recap.saving = true;
+    recap.note.className = "recap-note";
+    recap.note.textContent = "saving…";
+    try {
+      recap.note.textContent = `saved: ${await invoke("save_recap", { png: await pngOf(recap.canvas) })}`;
+    } catch (error) {
+      recap.note.className = "recap-note error";
+      recap.note.textContent = `${error}`;
+    }
+    recap.saving = false;
+  }
+
+  async renderRecap(summary, now) {
+    const { recap } = this;
+    const told = recapOf(summary, now);
+    if (!told) {
+      this.body.replaceChildren(element("p", "muted", "no tokens in the last 30 days"));
+      return;
+    }
+    recap.canvas.setAttribute("role", "img");
+    recap.canvas.setAttribute("aria-label", `${told.tokens} tokens in 30 days, ${told.numbers.map(({ value, label }) => `${value} ${label}`).join(", ")}`);
+    this.body.replaceChildren(recap.canvas, recap.note);
+    recap.note.textContent = "no name of an account, a project or a session is in the image; it shows the hours you work";
+    try {
+      await drawRecap(recap.canvas, told);
+      recap.drawn = true;
+    } catch (error) {
+      recap.note.className = "recap-note error";
+      recap.note.textContent = `the image was not drawn: ${error}`;
+    }
+  }
+
+  renderActions() {
+    const action = (words, run) => {
+      const button = element("button", "", words);
+      button.type = "button";
+      button.onclick = run;
+      return button;
+    };
+    const save = () => {
+      this.saveRecap();
+      this.dialog.focus({ preventScroll: true });
+    };
+    this.actions.replaceChildren(...(this.recap ? [action("save the image", save)] : []), action(this.recap ? "back to the stats" : "recap image", () => this.toggleRecap()));
+    this.hint.textContent = this.recap ? RECAP_HINT : HINT;
+  }
+
   render() {
     const now = Math.floor(Date.now() / 1000);
     const { summary, problems } = this.data;
+    this.renderActions();
+    if (this.recap) {
+      this.periods.replaceChildren();
+      this.renderRecap(summary, now);
+      return;
+    }
     this.renderPeriods(periodsOf(summary, now));
     if (summary.hours.length === 0) {
       this.body.replaceChildren(element("p", "muted", "no session yet"));

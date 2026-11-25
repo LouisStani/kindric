@@ -62,6 +62,11 @@ function spansOf(summary, days, now) {
   );
 }
 
+// How long the sessions were active, added up: two at once count twice. In milliseconds.
+export function timeAtWork(summary, days, now) {
+  return spansOf(summary, days, now).reduce((sum, span) => sum + span.end - span.start, 0);
+}
+
 function sumOf(hours, read) {
   return hours.reduce((sum, row) => sum + read(row.tokens), 0);
 }
