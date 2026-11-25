@@ -7,7 +7,7 @@ use std::collections::BTreeMap;
 use serde::{Deserialize, Serialize};
 
 /// The colors a theme may set: the color variables of `style.css`, without `--`.
-pub const COLORS: [&str; 19] = [
+pub const COLORS: [&str; 20] = [
     "background",
     "surface",
     "raised",
@@ -17,6 +17,7 @@ pub const COLORS: [&str; 19] = [
     "text-strong",
     "muted",
     "faint",
+    "faint-text",
     "terminal",
     "terminal-text",
     "selection",

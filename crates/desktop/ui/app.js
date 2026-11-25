@@ -1,6 +1,6 @@
 import { DirectoryField } from "./directories.js";
 import { imageType, Panes, sameSession } from "./panes.js";
-import { applyTheme, nextProjectTheme, nextTheme, THEMES } from "./themes.js";
+import { applyTheme, customColorsOf, nextProjectTheme, nextTheme, THEMES } from "./themes.js";
 import { mark, note, startTrace, traced } from "./trace.js";
 import { askTrust } from "./helper.js";
 import { checkItems, coversOverview, toDoCount } from "./welcome.js";
@@ -632,14 +632,14 @@ async function themeColors(name) {
   const colors = await invoke("custom_theme");
   customColors = colors;
   if (!colors) throw new Error("no theme.json");
-  return { ...THEMES.ember, ...colors };
+  return customColorsOf(colors);
 }
 
 // The colors of theme `name` as last read, for a project; null for none, or for "custom" when
 // theme.json did not load.
 function colorsNow(name) {
   if (name === null) return null;
-  if (name === "custom") return customColors ? { ...THEMES.ember, ...customColors } : null;
+  if (name === "custom") return customColors ? customColorsOf(customColors) : null;
   return THEMES[name] ?? null;
 }
 
