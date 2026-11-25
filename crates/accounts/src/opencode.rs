@@ -42,6 +42,17 @@ const STRIPPED_PREFIX: &str = "CLAUDE_CODE_";
 pub const XDG: [(&str, &str); 4] =
     [("XDG_CONFIG_HOME", "config"), ("XDG_DATA_HOME", "data"), ("XDG_STATE_HOME", "state"), ("XDG_CACHE_HOME", "cache")];
 
+/// The folders of mise, when the `opencode` found is one of its shims: each from the user's XDG
+/// variable, else from the default under `HOME`. With the account's XDG folders instead, mise
+/// would no longer find the configurations the user trusted and refuse to start ("config files
+/// are not trusted"), nor the tools already installed. Checked on mise 2026.11.12.
+const MISE_DIRS: [(&str, &str, &[&str]); 4] = [
+    ("MISE_CONFIG_DIR", "XDG_CONFIG_HOME", &[".config"]),
+    ("MISE_DATA_DIR", "XDG_DATA_HOME", &[".local", "share"]),
+    ("MISE_STATE_DIR", "XDG_STATE_HOME", &[".local", "state"]),
+    ("MISE_CACHE_DIR", "XDG_CACHE_HOME", &[".cache"]),
+];
+
 /// Where the user's own value of an XDG variable travels to `kindric-shell`.
 const USER_PREFIX: &str = "KINDRIC_USER_";
 
@@ -93,7 +104,11 @@ pub fn command(opencode: &Path, dir: &Path) -> Command {
 /// `opencode` for the account in `dir`, from the environment `env`: the account's XDG
 /// directories, the user's own kept for `kindric-shell`, the keys and session variables removed.
 fn command_from(opencode: &Path, dir: &Path, env: impl Iterator<Item = (OsString, OsString)>) -> Command {
+    let env: Vec<(OsString, OsString)> = env.collect();
     let mut command = Command::new(opencode);
+    for (variable, folder) in mise_dirs(&env) {
+        command.env(variable, folder);
+    }
     for (name, value) in env {
         let Some(text) = name.to_str() else {
             continue;
@@ -109,6 +124,19 @@ fn command_from(opencode: &Path, dir: &Path, env: impl Iterator<Item = (OsString
         command.env(variable, dir.join(folder));
     }
     command
+}
+
+/// The folders `MISE_DIRS` gives mise, for those the user did not set themselves.
+fn mise_dirs(env: &[(OsString, OsString)]) -> Vec<(&'static str, PathBuf)> {
+    let value = |name: &str| env.iter().find(|(key, value)| key == name && !value.is_empty()).map(|(_, value)| PathBuf::from(value));
+    MISE_DIRS
+        .iter()
+        .filter(|(variable, _, _)| value(variable).is_none())
+        .filter_map(|(variable, xdg, under_home)| {
+            let base = value(xdg).or_else(|| value("HOME").map(|home| under_home.iter().fold(home, |path, part| path.join(part))))?;
+            Some((*variable, base.join("mise")))
+        })
+        .collect()
 }
 
 /// The text of `kindric-shell`: each XDG variable back to the user's value, or unset when they had
@@ -401,6 +429,25 @@ mod tests {
             assert_eq!(env_of(&command, gone), Some(None), "{gone}");
         }
         assert_eq!(env_of(&command, "PATH"), None, "the rest is left as it is");
+    }
+
+    #[test]
+    fn mise_keeps_the_folders_of_the_user() {
+        let dir = Path::new("/data/kindric-accounts/oc");
+        let shell = env(&[("HOME", "/home/u"), ("XDG_STATE_HOME", "/home/u/state"), ("MISE_CACHE_DIR", "/mine")]);
+        let command = command_from(Path::new("/home/u/.local/share/mise/shims/opencode"), dir, shell);
+        let home = Path::new("/home/u");
+        assert_eq!(env_of(&command, "MISE_STATE_DIR"), Some(Some(Path::new("/home/u/state").join("mise").as_os_str())));
+        assert_eq!(env_of(&command, "MISE_CONFIG_DIR"), Some(Some(home.join(".config").join("mise").as_os_str())));
+        assert_eq!(env_of(&command, "MISE_DATA_DIR"), Some(Some(home.join(".local").join("share").join("mise").as_os_str())));
+        assert_eq!(env_of(&command, "MISE_CACHE_DIR"), None, "a folder the user chose for mise stays theirs");
+    }
+
+    #[test]
+    fn without_home_mise_gets_only_the_folders_the_user_named() {
+        let command = command_from(Path::new("/usr/bin/opencode"), Path::new("/oc"), env(&[("XDG_DATA_HOME", "/d")]));
+        assert_eq!(env_of(&command, "MISE_DATA_DIR"), Some(Some(Path::new("/d").join("mise").as_os_str())));
+        assert_eq!(env_of(&command, "MISE_STATE_DIR"), None);
     }
 
     #[test]
