@@ -50,9 +50,10 @@ fn last_line(text: &str) -> String {
     text.lines().rev().find(|line| !line.trim().is_empty()).unwrap_or(text).trim().to_string()
 }
 
-/// The end of `text` without the question it ends with, line by line as the page shows it: no
-/// Markdown marks, no code block. Whole lines, at most `CONTEXT` characters in all; only when they
-/// say little, the line before them too, cut at a word.
+/// The end of `text` without the question it ends with, line by line as the page shows it: no code
+/// block, and without the marks of Markdown that hide words the most (bold, code, titles, tables,
+/// links). Whole lines, at most `CONTEXT` characters in all; only when they say little, the line
+/// before them too, cut at a word.
 pub(crate) fn context_of(text: &str, question: &str) -> String {
     let mut lines = readable_lines(text);
     if let Some(last) = lines.last_mut()
@@ -70,7 +71,8 @@ pub(crate) fn context_of(text: &str, question: &str) -> String {
         }
         let length = line.chars().count();
         if length <= left {
-            left -= length;
+            // With the end of its line.
+            left = left.saturating_sub(length + 1);
             kept.push(line);
             continue;
         }
@@ -338,6 +340,8 @@ mod tests {
         let context = context_of(&list.join("\n"), "");
         assert_eq!(context.lines().count(), CONTEXT_LINES + 1);
         assert!(context.starts_with("…\n- 188") && context.ends_with("- 199"), "{context}");
+        let lines: Vec<String> = (0..11).map(|number| format!("- {}{number}", "mot ".repeat(13))).collect();
+        assert!(context_of(&lines.join("\n"), "").chars().count() <= CONTEXT + 2, "the ends of the lines count");
     }
 
     #[test]

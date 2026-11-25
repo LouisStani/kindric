@@ -17,8 +17,9 @@ pub fn sources(accounts: &[String], isolated: &[String], shown_isolated: &[Strin
         .collect()
 }
 
-/// The implicit `default` while it is not in `accounts`: it cannot be removed, and a `claude auth
-/// status` that failed once looks the same as a logout.
+/// The implicit `default` while it is not in `accounts`: a `claude auth status` that failed once
+/// looks the same as a logout, and kindric has no way to remove it. Its figures stay even when the
+/// user logged out for good.
 pub fn unseen(accounts: &[String]) -> &'static [&'static str] {
     if accounts.iter().any(|account| account == DEFAULT_ACCOUNT) { &[] } else { &[DEFAULT_ACCOUNT] }
 }

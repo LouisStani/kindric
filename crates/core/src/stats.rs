@@ -1056,6 +1056,10 @@ mod tests {
         assert_eq!(read(sources, &[]), [10, 5]);
         assert_eq!(read(&[], &[&account]), [10, 5], "not asked to read: as it was");
         assert_eq!(read(sources, &[]), [10, 5], "back, counted once");
+        read(&[], &[&account]);
+        fs::remove_file(setup.source.dir.join("projects/p/s2.jsonl")).expect("remove");
+        assert_eq!(read(&[], &[&account]), [10, 5]);
+        assert_eq!(read(sources, &[]), [10, 5], "gone while unseen, counted once");
         assert!(read(&[], &[]).is_empty(), "removed");
     }
 

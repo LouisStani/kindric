@@ -182,7 +182,7 @@ kindric reads the transcripts of Claude Code and of Codex, formats they do not d
 - When it happens: a column per day, a row per hour.
 - Records (best day, longest run of a session, heaviest session, days in a row, sessions at once) and habits (busiest hour, favorite project and model).
 
-The figures are those of [Usage](#usage). Claude Code removes its transcripts after about a month (`cleanupPeriodDays` of its settings): kindric keeps their figures (tokens by hour, account and project, when a session was active, never what was said) in `stats-gone.json`, and reads them once a day while it is open. Those of an account removed, or of an isolated one whose **show in stats** is not ticked, are dropped. Those of `default` stay while it is logged out.
+The figures are those of [Usage](#usage). Claude Code removes its transcripts after about a month (`cleanupPeriodDays` of its settings): kindric keeps their figures (tokens by hour, account and project, when a session was active, never what was said) in `stats-gone.json`, and reads them once a day while it is open. Those of an account removed, or of an isolated one whose **show in stats** is not ticked, are dropped. Those of `default` (`~/.claude`) stay, even once it is logged out: a logout cannot be told from a failure to read its login.
 
 ## Shortcuts
 
