@@ -17,6 +17,7 @@ use crate::launch;
 use crate::paths::Paths;
 use crate::provider;
 use crate::registry;
+use crate::status;
 
 /// The subcommand Claude Code runs for the status line.
 pub const SUBCOMMAND: &str = "statusline";
@@ -245,11 +246,45 @@ fn cost_of(input: &[u8], now: i64) -> Option<Cost> {
     Some(Cost { session_id, total_usd, updated_at: now })
 }
 
+/// Whether an account without a provider pays by use, and when Claude Code was asked.
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+struct Billing {
+    by_use: bool,
+    /// Unix seconds.
+    asked_at: i64,
+}
+
+/// A login may change: Claude Code is asked again after this long, in seconds.
+const BILLING_KEPT_SECONDS: i64 = 10 * 60;
+
+fn billing_file(paths: &Paths, name: &str) -> PathBuf {
+    paths.data_root.join(".usage").join("billing").join(format!("{name}.json"))
+}
+
 /// Whether what Claude Code says the sessions of `name` cost is what they cost: with a key of
-/// Anthropic. A subscription is not paid by use, and Claude Code gives the models it does not know
-/// (Ollama, OpenRouter, gateways) the price of another.
-fn paid_by_use(paths: &Paths, name: &str) -> bool {
-    provider::read(&paths.account_dir(name)).is_ok_and(|provider| provider.is_some_and(|provider| provider.provider == provider::Kind::Api))
+/// Anthropic, of the account's provider or of its login. A subscription is not paid by use, and
+/// Claude Code gives the models it does not know (Ollama, OpenRouter, gateways) the price of
+/// another. `ask` asks Claude Code how the account in a directory is billed.
+fn paid_by_use(paths: &Paths, name: &str, now: i64, ask: impl Fn(&Path) -> Option<bool>) -> io::Result<bool> {
+    let dir = paths.account_dir(name);
+    match provider::read(&dir) {
+        Ok(Some(provider)) => return Ok(provider.provider == provider::Kind::Api),
+        Ok(None) => {},
+        Err(_) => return Ok(false),
+    }
+    let file = billing_file(paths, name);
+    let known = std::fs::read_to_string(&file).ok().and_then(|text| serde_json::from_str::<Billing>(&text).ok());
+    if let Some(known) = known.filter(|known| (0..BILLING_KEPT_SECONDS).contains(&(now - known.asked_at))) {
+        return Ok(known.by_use);
+    }
+    let by_use = ask(&dir).unwrap_or(false);
+    write_json(&file, &Billing { by_use, asked_at: now })?;
+    Ok(by_use)
+}
+
+/// Asks the `claude` of `PATH`.
+fn ask_claude(dir: &Path) -> Option<bool> {
+    status::billed_by_use(&launch::require_claude().ok()?, dir)
 }
 
 /// `costs` without those before `oldest_kept`, except the last one of a session that has some
@@ -359,21 +394,27 @@ fn account_of(paths: &Paths, config_dir: Option<&OsStr>) -> Option<String> {
 /// Writes down the figures of `input` for the account of `config_dir`, how full the context of its
 /// session is, and what it cost when the account is paid by use. Nothing to write is not an error.
 pub fn record(paths: &Paths, config_dir: Option<&OsStr>, input: &[u8], now: i64) -> io::Result<()> {
+    record_asking(paths, config_dir, input, now, ask_claude)
+}
+
+fn record_asking(paths: &Paths, config_dir: Option<&OsStr>, input: &[u8], now: i64, ask: impl Fn(&Path) -> Option<bool>) -> io::Result<()> {
     let Some(name) = account_of(paths, config_dir) else {
         return Ok(());
     };
     // A history that cannot be written leaves the context to note all the same.
     let mut history = Ok(());
-    if let Some(usage) = usage_of(input, now) {
+    let usage = usage_of(input, now);
+    // Claude Code gives limits to subscriptions only: asking about those is needless.
+    let subscription = usage.is_some();
+    if let Some(usage) = usage {
         write_json(&usage_file(paths, &name), &usage)?;
         history = note_history(&history_file(paths, &name), &usage)
             .map_err(|error| io::Error::new(error.kind(), format!("history of {name}: {error}")));
     }
     let mut cost_noted = Ok(());
-    if let Some(cost) = cost_of(input, now)
-        && paid_by_use(paths, &name)
-    {
-        cost_noted = note_cost(&cost_file(paths, &name), &cost)
+    if let Some(cost) = cost_of(input, now).filter(|_| !subscription) {
+        cost_noted = paid_by_use(paths, &name, now, ask)
+            .and_then(|by_use| if by_use { note_cost(&cost_file(paths, &name), &cost) } else { Ok(()) })
             .map_err(|error| io::Error::new(error.kind(), format!("costs of {name}: {error}")));
     }
     if let Some((session, context)) = context_of(input, now)
@@ -1055,12 +1096,39 @@ mod tests {
         for name in ["key", "login", "router"] {
             let dir = paths.account_dir(name).into_os_string();
             for (at, session, total) in [(1, "s1", "0.01"), (2, "s1", "0.01"), (3, "s2", "0.5"), (4, "s1", "0.01"), (5, "s1", "0.02")] {
-                record(&paths, Some(&dir), costing(session, total).as_bytes(), at).unwrap();
+                record_asking(&paths, Some(&dir), costing(session, total).as_bytes(), at, |_| Some(false)).unwrap();
             }
         }
         assert_eq!(costs_noted(&paths, "key"), [("s1".into(), 0.01), ("s2".into(), 0.5), ("s1".into(), 0.02)]);
         assert_eq!(costs_noted(&paths, "login"), []);
         assert_eq!(costs_noted(&paths, "router"), [], "Claude Code does not know its prices");
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn a_login_is_asked_how_it_is_billed_once_in_a_while() {
+        let (root, paths) = setup("billing", &["console", "unknown", "plan"]);
+        let asked = std::cell::Cell::new(0);
+        let noted = |name: &str, input: &str, at: i64, answer: Option<bool>| {
+            let dir = paths.account_dir(name).into_os_string();
+            record_asking(&paths, Some(&dir), input.as_bytes(), at, |_| {
+                asked.set(asked.get() + 1);
+                answer
+            })
+            .unwrap();
+        };
+        noted("console", &costing("s1", "0.01"), 1_000, Some(true));
+        noted("console", &costing("s1", "0.02"), 1_000 + BILLING_KEPT_SECONDS - 1, Some(false));
+        assert_eq!((costs_noted(&paths, "console").len(), asked.get()), (2, 1));
+        noted("console", &costing("s1", "0.03"), 1_000 + BILLING_KEPT_SECONDS, Some(false));
+        assert_eq!((costs_noted(&paths, "console").len(), asked.get()), (2, 2), "a subscription since");
+        noted("unknown", &costing("s1", "0.01"), 1, None);
+        assert_eq!((costs_noted(&paths, "unknown").len(), asked.get()), (0, 3));
+        let plan = r#"{"session_id":"s1","cost":{"total_cost_usd":1.0},"rate_limits":{"five_hour":{"used_percentage":1,"resets_at":9}}}"#;
+        noted("plan", plan, 1, Some(true));
+        assert_eq!((costs_noted(&paths, "plan").len(), asked.get()), (0, 3), "limits: a subscription, not asked");
+        noted("plan", &costing("s1", "0"), 2, Some(true));
+        assert_eq!(asked.get(), 3, "nothing paid yet, not asked");
         fs::remove_dir_all(root).unwrap();
     }
 
