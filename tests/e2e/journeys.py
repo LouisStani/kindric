@@ -15,7 +15,7 @@ import time
 import unittest
 from typing import Any
 
-from driver import ALT, ARROW_DOWN, CONTROL, DELETE, ELEMENT_KEY, ENTER, ESCAPE, F2, SHIFT, TAB, Driver, wait_until
+from driver import ALT, ARROW_DOWN, ARROW_RIGHT, CONTROL, DELETE, ELEMENT_KEY, ENTER, ESCAPE, F2, F3, SHIFT, TAB, Driver, wait_until
 
 HOME = os.path.expanduser("~")
 ACCOUNT = "work"
@@ -2579,6 +2579,56 @@ def status_line(session_id: str, context: float, five_hour: float, seven_day: fl
                           cwd=PROJECT, env=dict(os.environ, CLAUDE_CONFIG_DIR=ACCOUNT_DIR))
     if done.returncode != 0:
         raise AssertionError(f"the status line exited {done.returncode}: {done.stderr.strip()}")
+
+
+class UsageWindow(Journey):
+    """F3 opens the usage window: the week of the account, its tokens by project, a worktree counted
+    for its checkout, then 30 days with the arrow; the settings open it too."""
+
+    started = [("alpha", "first task work:0")]
+
+    @classmethod
+    def before_app(cls) -> None:
+        folder = os.path.join(ACCOUNT_DIR, "projects", "-usage")
+        os.makedirs(folder, exist_ok=True)
+
+        def reply(days: float, cwd: str, name: str, output: int) -> str:
+            at = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(time.time() - days * 86400))
+            usage = {"input_tokens": 0, "output_tokens": output, "cache_read_input_tokens": 900000, "cache_creation_input_tokens": 1000}
+            return json.dumps({"type": "assistant", "timestamp": at, "cwd": cwd, "message": {"id": name, "model": "claude-opus-5-5", "content": [], "usage": usage}})
+
+        with open(os.path.join(folder, "aaaaaaaa-0000-4000-8000-000000000001.jsonl"), "w", encoding="utf-8") as file:
+            file.write(reply(2, "/work/shop", "m1", 4000) + "\n")
+        with open(os.path.join(folder, "bbbbbbbb-0000-4000-8000-000000000002.jsonl"), "w", encoding="utf-8") as file:
+            file.write(reply(2, "/work/shop/.claude/worktrees/cart", "m2", 4000) + "\n")
+        with open(os.path.join(folder, "cccccccc-0000-4000-8000-000000000003.jsonl"), "w", encoding="utf-8") as file:
+            file.write(reply(20, "/work/old", "m3", 49000) + "\n")
+
+    def figures(self, name: str) -> list[str]:
+        found = self.driver.script("""const row = [...document.querySelectorAll('#usage .usage-section:nth-of-type(2) .usage-row')].find((row) => row.querySelector('.usage-name')?.textContent === arguments[0]);
+          return row ? [...row.querySelectorAll('.usage-figure')].map((cell) => cell.textContent) : [];""", name)
+        return [str(text) for text in found]
+
+    def test_open_and_change_period(self) -> None:
+        driver = self.driver
+        # A week that starts again in a day: six days of it gone, past the first one.
+        status_line(session_id_of("alpha"), 10, 20, 60)
+        driver.press(F3)
+        wait_until("the usage window", lambda: dialog_open(driver, "usage"))
+        wait_until("the week of the account", lambda: texts(driver, "#usage .usage-week .usage-figure") == ["60%"] or None)
+        self.assertTrue(texts(driver, "#usage .usage-week-text")[0].startswith("at this pace, 70% when it starts again "))
+        wait_until("shop, its worktree included", lambda: self.figures("shop") == ["10k", "1.8M"] or None)
+        self.assertEqual(self.figures("old"), [], "20 days ago, not in the last 7")
+        driver.press(ARROW_RIGHT)
+        wait_until("30 days", lambda: self.figures("old") == ["50k", "900k"] or None)
+        driver.press(ESCAPE)
+        wait_until("closed", lambda: not dialog_open(driver, "usage"))
+
+        driver.press(CONTROL, ",")
+        wait_until("the settings", lambda: dialog_open(driver, "settings"))
+        click_text(driver, "#settings .settings-categories li", "accounts")
+        driver.click(driver.find("#settings .usage-open"))
+        wait_until("the usage window, the settings closed", lambda: dialog_open(driver, "usage") and not dialog_open(driver, "settings"))
 
 
 class ControlCenterFigures(Journey):
