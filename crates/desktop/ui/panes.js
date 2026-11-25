@@ -323,6 +323,8 @@ export class Panes {
     this.tabDropped = -Infinity;
     // Terminals moved in the page since the last render: moving one loses what it drew.
     this.moved = [];
+    // The tab on screen at the last render, null for the overview.
+    this.showing = null;
     // Where the mouse was last seen in the window, or null once it left: a split puts the new
     // pane under it.
     this.pointer = null;
@@ -474,7 +476,12 @@ export class Panes {
     // xterm measures its cells when opened, so only panes on screen are opened; every pane
     // is created in the active tab.
     if (!state.overview) for (const leaf of leaves(this.layout().root)) this.view(leaf.id).openOnce();
-    for (const view of this.moved) {
+    // Back on screen, a terminal can come back blank, and a session at rest (Codex, OpenCode) sends
+    // nothing that would draw it again: those that show again are drawn from what they hold.
+    const showing = state.overview ? null : state.active;
+    if (showing !== null && showing !== this.showing) this.moved.push(...leaves(this.layout().root).map((leaf) => this.view(leaf.id)));
+    this.showing = showing;
+    for (const view of new Set(this.moved)) {
       if (view.opened) view.terminal.refresh(0, view.terminal.rows - 1);
     }
     this.moved = [];
