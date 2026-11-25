@@ -999,6 +999,25 @@ fn set_stats_isolated(shared: State<'_, Shared>, account: String, shown: bool) -
 /// read of the transcripts takes seconds.
 #[tauri::command(async)]
 fn stats(shared: State<'_, Shared>) -> Result<serde_json::Value, String> {
+    read_statistics(&shared)
+}
+
+/// How long after the launch, then how often, the statistics are read without being asked: Claude
+/// Code removes its transcripts after about a month, and only figures read before are kept.
+const FIRST_STATISTICS: Duration = Duration::from_secs(60);
+const STATISTICS_EVERY: Duration = Duration::from_secs(24 * 3600);
+
+fn keep_statistics(app: &AppHandle) {
+    std::thread::sleep(FIRST_STATISTICS);
+    loop {
+        if let Err(error) = read_statistics(&app.state::<Shared>()) {
+            eprintln!("kindric-desktop: {error}");
+        }
+        std::thread::sleep(STATISTICS_EVERY);
+    }
+}
+
+fn read_statistics(shared: &Shared) -> Result<serde_json::Value, String> {
     let _span = shared.trace.span("stats");
     let _reading = shared.stats_reading.lock().unwrap_or_else(PoisonError::into_inner);
     let shown_isolated = shared.settings.lock().unwrap_or_else(PoisonError::into_inner).stats_isolated.clone();
@@ -1954,6 +1973,8 @@ fn main() -> ExitCode {
             let handle = app.handle().clone();
             // Stopped sessions too: Ctrl+P finds them and opening one starts it again.
             refresher::spawn(true, move |update| publish(&handle, update));
+            let handle = app.handle().clone();
+            std::thread::spawn(move || keep_statistics(&handle));
             Ok(())
         })
         .build(tauri::generate_context!());

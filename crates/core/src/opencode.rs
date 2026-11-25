@@ -503,6 +503,10 @@ pub(crate) mod fake {
     use std::sync::mpsc::{self, Receiver};
     use std::thread;
 
+    /// A port nothing listens on: below 1024, no program of the user's takes it. A port just freed
+    /// will not do: a process another test starts may hold it open a moment longer.
+    pub const NO_SERVICE: u16 = 1;
+
     /// A fake service on a free port: answers each request with the body its path maps to, as the
     /// real one does (content-length, connection closed), 404 for any other path. Returns the port
     /// and each request seen, whole.
@@ -534,7 +538,6 @@ pub(crate) mod fake {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::net::TcpListener;
 
     #[test]
     fn base64_matches_rfc_4648() {
@@ -667,10 +670,7 @@ mod tests {
 
     #[test]
     fn a_service_that_does_not_run_is_none_and_one_that_answers_is_found() {
-        let free = TcpListener::bind("127.0.0.1:0").unwrap();
-        let port = free.local_addr().unwrap().port();
-        drop(free);
-        let stopped = account_with("stopped", Some(&format!(r#"{{"port": {port}, "password": "p"}}"#)));
+        let stopped = account_with("stopped", Some(&format!(r#"{{"port": {}, "password": "p"}}"#, fake::NO_SERVICE)));
         assert!(Service::running(&stopped).unwrap().is_none());
         let (port, requests) = fake_service(vec![("/api/session/active", r#"{"data":{}}"#)]);
         let running = account_with("running", Some(&format!(r#"{{"port": {port}, "password": "p"}}"#)));

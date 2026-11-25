@@ -132,6 +132,10 @@
         <button type="button" class="usage-open">open usage</button>
         <span class="muted">weekly limits and where they lead, tokens by project and session</span>
       </p>
+      <p class="memory-atlas" data-search="stats statistics graph records activity recap tokens">
+        <button type="button" class="stats-open">open stats</button>
+        <span class="muted">big numbers, the tokens day by day, records and habits</span>
+      </p>
     </section>
     <section class="settings-section" data-category="memory">
       <h2>memory</h2>
@@ -193,6 +197,14 @@
   <dialog id="usage" tabindex="-1">
     <div class="usage-head">
       <h1>usage</h1>
+      <div class="usage-periods"></div>
+    </div>
+    <div class="usage-body"></div>
+    <p class="usage-hint muted"></p>
+  </dialog>
+  <dialog id="stats" tabindex="-1">
+    <div class="usage-head">
+      <h1>stats</h1>
       <div class="usage-periods"></div>
     </div>
     <div class="usage-body"></div>

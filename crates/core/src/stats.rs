@@ -3,11 +3,12 @@
 //! (decisions 347, 384, 387, 470). There can be gigabytes of transcripts: a file is read once, then
 //! only what was appended since, and what each file said is kept in a cache. The transcripts are
 //! not documented: a line that cannot be read counts for nothing. OpenCode keeps a database: its
-//! service is asked, when it runs, for the sessions that changed.
+//! service is asked, when it runs, for the sessions that changed. Claude Code removes its transcripts
+//! after about a month: the figures of those gone are kept in a file of their own (decision 472).
 //!
 //! Figures are added up per hour in UTC; the page turns hours into its own local days.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 use std::fs::{self, File};
 use std::io::{self, Read, Seek, SeekFrom};
@@ -24,6 +25,9 @@ use crate::opencode;
 /// Bumped when what the cache holds changes: an older cache is then read again from scratch.
 const VERSION: u32 = 2;
 const CACHE_FILE: &str = "stats.json";
+/// The figures of the sessions whose transcript is gone, next to the cache. Never read again from
+/// anywhere: `VERSION` does not apply to it.
+const GONE_FILE: &str = "stats-gone.json";
 /// A pause longer than this ends a span of activity.
 const IDLE_GAP_MS: i64 = 30 * 60 * 1000;
 const MS_PER_HOUR: i64 = 3_600_000;
@@ -31,6 +35,7 @@ const MS_PER_HOUR: i64 = 3_600_000;
 const SYNTHETIC_MODEL: &str = "<synthetic>";
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
 pub struct Tokens {
     pub input: u64,
     pub output: u64,
@@ -58,6 +63,7 @@ impl Tokens {
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
 pub struct Figures {
     pub tokens: Tokens,
     /// Model → replies.
@@ -85,6 +91,7 @@ pub struct Span {
 
 /// What one transcript said, up to `read`.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
 struct Transcript {
     account: String,
     session: String,
@@ -108,6 +115,34 @@ struct Transcript {
 pub struct Cache {
     version: u32,
     files: BTreeMap<String, Transcript>,
+    /// What the transcripts now gone said, in `GONE_FILE`.
+    #[serde(skip)]
+    gone: BTreeMap<String, Transcript>,
+    /// Why `GONE_FILE` could not be read: it is then left as it is.
+    #[serde(skip)]
+    gone_unread: Option<String>,
+    #[serde(skip)]
+    gone_changed: bool,
+}
+
+/// What tells a transcript from another, wherever its file is: Codex moves those it archives.
+type Identity = (String, String, bool, String);
+
+fn identity(key: &str, transcript: &Transcript) -> Identity {
+    let name = key.rsplit(['/', '\\']).next().unwrap_or(key);
+    (transcript.account.clone(), transcript.session.clone(), transcript.agent, name.to_string())
+}
+
+fn gone_file(cache: &Path) -> PathBuf {
+    cache.with_file_name(GONE_FILE)
+}
+
+fn read_gone(path: &Path) -> Result<BTreeMap<String, Transcript>, String> {
+    match fs::read(path) {
+        Ok(bytes) => serde_json::from_slice(&bytes).map_err(|error| format!("{} is not valid, the figures of the transcripts gone are left out: {error}", path.display())),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(BTreeMap::new()),
+        Err(error) => Err(format!("cannot read {}, the figures of the transcripts gone are left out: {error}", path.display())),
+    }
 }
 
 /// An account whose sessions count, where its files are, and the program it runs.
@@ -163,28 +198,40 @@ pub fn cache_file(paths: &Paths) -> io::Result<PathBuf> {
 }
 
 impl Cache {
-    /// The cache in `path`. A missing, broken or older one is empty: everything is read again.
+    /// The cache in `path`. A missing, broken or older one is empty: everything is read again,
+    /// except the transcripts gone, whose figures are in a file of their own.
     pub fn load(path: &Path) -> Self {
-        fs::read(path)
+        let mut cache = fs::read(path)
             .ok()
             .and_then(|bytes| serde_json::from_slice::<Cache>(&bytes).ok())
             .filter(|cache| cache.version == VERSION)
-            .unwrap_or_default()
+            .unwrap_or_default();
+        match read_gone(&gone_file(path)) {
+            Ok(gone) => cache.gone = gone,
+            Err(error) => cache.gone_unread = Some(error),
+        }
+        cache
     }
 
+    /// The figures of the transcripts gone first: until they are written, the cache still has them.
     pub fn save(&self, path: &Path) -> io::Result<()> {
         if let Some(dir) = path.parent() {
             fs::create_dir_all(dir)?;
         }
-        let text = serde_json::to_string(self).map_err(io::Error::other)?;
-        kindric_accounts::files::write_atomic(path, &text)
-            .map_err(|error| io::Error::new(error.kind(), format!("cannot write {}: {error}", path.display())))
+        let write = |path: &Path, text: &str| {
+            kindric_accounts::files::write_atomic(path, text)
+                .map_err(|error| io::Error::new(error.kind(), format!("cannot write {}: {error}", path.display())))
+        };
+        if self.gone_changed && self.gone_unread.is_none() {
+            write(&gone_file(path), &serde_json::to_string(&self.gone).map_err(io::Error::other)?)?;
+        }
+        write(path, &serde_json::to_string(self).map_err(io::Error::other)?)
     }
 
-    /// Reads what the transcripts of `sources` gained since the last time. Transcripts of other
-    /// accounts, and those gone, are forgotten. Returns what could not be read.
+    /// Reads what the transcripts of `sources` gained since the last time. The figures of those gone
+    /// stay; other accounts are forgotten. Returns what could not be read.
     pub fn refresh(&mut self, sources: &[Source]) -> Vec<String> {
-        let mut problems = Vec::new();
+        let mut problems: Vec<String> = self.gone_unread.iter().cloned().collect();
         let mut kept = BTreeMap::new();
         for source in sources {
             let (listed, read_lines): (_, LineReader) = match source.agent {
@@ -198,17 +245,43 @@ impl Cache {
             for found in listed {
                 let key = found.path.to_string_lossy().into_owned();
                 let previous = self.files.remove(&key).filter(|old| old.account == source.account);
-                match update(previous, &source.account, &found, read_lines) {
+                match update(previous.clone(), &source.account, &found, read_lines) {
                     Ok(transcript) => {
                         kept.insert(key, transcript);
-                    }
-                    Err(error) => problems.push(format!("cannot read {}: {error}", found.path.display())),
+                    },
+                    Err(error) => {
+                        problems.push(format!("cannot read {}: {error}", found.path.display()));
+                        kept.extend(previous.map(|previous| (key, previous)));
+                    },
                 }
             }
         }
+        let left = std::mem::take(&mut self.files);
         self.version = VERSION;
         self.files = kept;
+        self.keep_gone(left, sources);
         problems
+    }
+
+    /// Adds `left`, the transcripts known that were not found, to those gone; a transcript found
+    /// again, and the accounts that do not count any more, leave them.
+    fn keep_gone(&mut self, left: BTreeMap<String, Transcript>, sources: &[Source]) {
+        if self.gone_unread.is_some() {
+            // Not to be written over: they stay in the cache until it can be read again.
+            self.files.extend(left.into_iter().filter(|(_, transcript)| sources.iter().any(|source| source.account == transcript.account)));
+            return;
+        }
+        let before = self.gone.clone();
+        self.gone.extend(left.into_iter().filter(|(_, transcript)| !transcript.hours.is_empty() || !transcript.spans.is_empty()));
+        let found: BTreeSet<Identity> = self.files.iter().map(|(key, transcript)| identity(key, transcript)).collect();
+        self.gone.retain(|key, transcript| {
+            sources.iter().any(|source| source.account == transcript.account) && !found.contains(&identity(key, transcript))
+        });
+        self.gone_changed |= self.gone != before;
+    }
+
+    fn all(&self) -> impl Iterator<Item = &Transcript> {
+        self.files.values().chain(self.gone.values())
     }
 
     /// Reads the sessions of an OpenCode account that changed. What was read stays while its
@@ -223,7 +296,10 @@ impl Cache {
             !ours
         });
         match read_opencode(source, &known, problems) {
-            Ok(Some(read)) => kept.extend(read),
+            Ok(Some(read)) => {
+                self.files.extend(known.into_iter().filter(|(key, _)| !read.contains_key(key)));
+                kept.extend(read);
+            },
             Ok(None) => kept.extend(known),
             Err(error) => {
                 problems.push(format!("cannot read the OpenCode sessions of {}: {error}", source.account));
@@ -237,7 +313,7 @@ impl Cache {
     pub fn summary(&self, costs: &BTreeMap<String, Vec<Cost>>) -> Summary {
         let mut hours: BTreeMap<(i64, &str, &str), Figures> = BTreeMap::new();
         let mut sessions: BTreeMap<(&str, &str), SessionRow> = BTreeMap::new();
-        for transcript in self.files.values() {
+        for transcript in self.all() {
             let project = transcript.project.as_deref().unwrap_or("");
             let session = sessions.entry((&transcript.account, &transcript.session)).or_insert_with(|| SessionRow {
                 account: transcript.account.clone(),
@@ -283,8 +359,7 @@ impl Cache {
     }
 
     fn project_of(&self, account: &str, session: &str) -> &str {
-        self.files
-            .values()
+        self.all()
             .find(|transcript| transcript.account == account && transcript.session == session && !transcript.agent)
             .and_then(|transcript| transcript.project.as_deref())
             .unwrap_or("")
@@ -938,19 +1013,92 @@ mod tests {
     }
 
     #[test]
-    fn accounts_left_out_and_files_gone_are_forgotten() {
+    fn accounts_left_out_are_forgotten() {
         let setup = setup("stats-forgotten");
         let session = setup.source.dir.join("projects/p/s1.jsonl");
         write(&session, &lines(&[reply("m1", T0, 10)]));
         let mut cache = Cache::default();
         cache.refresh(std::slice::from_ref(&setup.source));
         assert_eq!(cache.files.len(), 1);
-        cache.refresh(&[]);
-        assert!(cache.files.is_empty());
-        cache.refresh(std::slice::from_ref(&setup.source));
         fs::remove_file(&session).expect("remove");
         cache.refresh(std::slice::from_ref(&setup.source));
-        assert!(cache.files.is_empty());
+        assert_eq!((cache.files.len(), cache.gone.len()), (0, 1));
+        cache.refresh(&[]);
+        assert!(cache.files.is_empty() && cache.gone.is_empty());
+    }
+
+    fn output_of(cache: &Cache) -> Vec<u64> {
+        cache.summary(&BTreeMap::new()).sessions.iter().map(|row| row.tokens.output).collect()
+    }
+
+    #[test]
+    fn a_transcript_removed_keeps_its_figures_until_it_comes_back() {
+        let setup = setup("stats-gone");
+        let session = setup.source.dir.join("projects/p/s1.jsonl");
+        let text = lines(&[reply("m1", T0, 10)]);
+        write(&session, &text);
+        let file = setup.root.join("kindric").join(CACHE_FILE);
+        let refreshed = || {
+            let mut cache = Cache::load(&file);
+            assert_eq!(cache.refresh(std::slice::from_ref(&setup.source)), Vec::<String>::new());
+            cache.save(&file).expect("save");
+            cache
+        };
+        assert_eq!(output_of(&refreshed()), [10]);
+        assert!(!gone_file(&file).exists(), "nothing gone, nothing written");
+        fs::remove_file(&session).expect("remove");
+        assert_eq!(output_of(&refreshed()), [10]);
+        fs::write(&file, "{broken").expect("write");
+        assert_eq!(output_of(&refreshed()), [10], "a cache read again from scratch keeps them");
+        write(&session, &text);
+        assert_eq!(output_of(&refreshed()), [10], "found again, counted once");
+        assert!(Cache::load(&file).gone.is_empty());
+    }
+
+    #[test]
+    fn a_codex_session_archived_is_counted_once() {
+        let setup = setup("stats-codex-moved");
+        let source = codex_source(&setup);
+        let name = "rollout-2026-11-01T10-00-00-01a20533-7ccd-7873-8297-750f72a13e8b.jsonl";
+        let before = source.dir.join("sessions/2026/11/01").join(name);
+        write(&before, &lines(&[codex_start(), vec![codex_tokens(T0, 10, 0, 7)]].concat()));
+        let mut cache = Cache::default();
+        cache.refresh(std::slice::from_ref(&source));
+        fs::create_dir_all(source.dir.join("archived_sessions")).expect("create dir");
+        fs::rename(&before, source.dir.join("archived_sessions").join(name)).expect("move");
+        cache.refresh(std::slice::from_ref(&source));
+        assert_eq!(output_of(&cache), [7]);
+    }
+
+    #[test]
+    fn a_file_of_those_gone_that_cannot_be_read_is_left_as_it_is() {
+        let setup = setup("stats-gone-broken");
+        let session = setup.source.dir.join("projects/p/s1.jsonl");
+        write(&session, &lines(&[reply("m1", T0, 10)]));
+        let file = setup.root.join("kindric").join(CACHE_FILE);
+        write(&gone_file(&file), b"{broken");
+        let mut cache = Cache::load(&file);
+        cache.refresh(std::slice::from_ref(&setup.source));
+        fs::remove_file(&session).expect("remove");
+        let problems = cache.refresh(std::slice::from_ref(&setup.source));
+        assert!(problems.len() == 1 && problems[0].contains(GONE_FILE), "{problems:?}");
+        cache.save(&file).expect("save");
+        assert_eq!(fs::read(gone_file(&file)).expect("read"), b"{broken");
+        assert_eq!(output_of(&Cache::load(&file)), [10], "kept in the cache meanwhile");
+    }
+
+    #[test]
+    fn figures_kept_by_an_older_kindric_are_still_read() {
+        let setup = setup("stats-gone-older");
+        let file = setup.root.join("kindric").join(CACHE_FILE);
+        let hour = T0_MS / MS_PER_HOUR;
+        write(
+            &gone_file(&file),
+            format!(r#"{{"/x/s9.jsonl":{{"account":"louis","session":"s9","hours":{{"{hour}":{{"tokens":{{"output":4}}}}}}}}}}"#).as_bytes(),
+        );
+        let mut cache = Cache::load(&file);
+        assert_eq!(cache.refresh(std::slice::from_ref(&setup.source)), Vec::<String>::new());
+        assert_eq!(output_of(&cache), [4]);
     }
 
     #[test]
@@ -1063,12 +1211,11 @@ mod tests {
         let messages = requests.try_iter().filter(|request| request.contains("/message")).count();
         assert_eq!(messages, 2, "sessions that did not change are not read again");
 
-        let stopped = std::net::TcpListener::bind("127.0.0.1:0").unwrap().local_addr().unwrap().port();
-        let source = opencode_source(&setup, stopped);
+        let source = opencode_source(&setup, opencode::fake::NO_SERVICE);
         assert_eq!(cache.refresh(&[source]), Vec::<String>::new());
         assert_eq!(cache.summary(&BTreeMap::new()).sessions[0].cost, 16_800);
         cache.refresh(&[]);
-        assert!(cache.summary(&BTreeMap::new()).sessions.is_empty(), "an account gone is forgotten");
+        assert!(cache.summary(&BTreeMap::new()).sessions.is_empty(), "an account left out is forgotten");
     }
 
     fn noted(session: &str, total_usd: f64, updated_at: i64) -> Cost {

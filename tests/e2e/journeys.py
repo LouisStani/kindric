@@ -15,7 +15,7 @@ import time
 import unittest
 from typing import Any
 
-from driver import ALT, ARROW_DOWN, ARROW_RIGHT, CONTROL, DELETE, ELEMENT_KEY, ENTER, ESCAPE, F2, F3, SHIFT, TAB, Driver, wait_until
+from driver import ALT, ARROW_DOWN, ARROW_LEFT, ARROW_RIGHT, CONTROL, DELETE, ELEMENT_KEY, ENTER, ESCAPE, F2, F3, F4, SHIFT, TAB, Driver, wait_until
 
 HOME = os.path.expanduser("~")
 ACCOUNT = "work"
@@ -2642,6 +2642,48 @@ class UsageWindow(Journey):
         click_text(driver, "#settings .settings-categories li", "accounts")
         driver.click(driver.find("#settings .usage-open"))
         wait_until("the usage window, the settings closed", lambda: dialog_open(driver, "usage") and not dialog_open(driver, "settings"))
+
+
+class StatsWindow(Journey):
+    """F4 opens the stats window: the tokens of the period, a graph per account, the activity map and
+    the records; the arrow changes the period; the settings open it too."""
+
+    started = [("alpha", "first task work:0")]
+
+    @classmethod
+    def before_app(cls) -> None:
+        folder = os.path.join(ACCOUNT_DIR, "projects", "-stats")
+        os.makedirs(folder, exist_ok=True)
+        for days, output in ((1, 4000), (20, 60000)):
+            at = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(time.time() - days * 86400))
+            usage = {"input_tokens": 0, "output_tokens": output, "cache_read_input_tokens": 6000, "cache_creation_input_tokens": 0}
+            line = {"type": "assistant", "timestamp": at, "cwd": "/work/shop", "message": {"id": f"m{days}", "model": "claude-opus-5-5", "content": [], "usage": usage}}
+            with open(os.path.join(folder, f"aaaaaaaa-0000-4000-8000-0000000000{days:02}.jsonl"), "w", encoding="utf-8") as file:
+                file.write(json.dumps(line) + "\n")
+
+    def hero(self) -> list[str]:
+        return texts(self.driver, "#stats .stats-hero .stats-value")
+
+    def test_open_and_change_period(self) -> None:
+        driver = self.driver
+        driver.press(F4)
+        wait_until("the stats window", lambda: dialog_open(driver, "stats"))
+        wait_until("the tokens of 30 days", lambda: self.hero() == ["76k"] or None)
+        self.assertEqual(texts(driver, "#stats .stats-account .usage-name"), ["work"])
+        self.assertEqual(len(driver.find_all("#stats .stats-account .usage-column")), 30)
+        self.assertEqual(len(driver.find_all("#stats .stats-cell")), 30 * 24)
+        self.assertIn("shop", texts(driver, "#stats .stats-value"), "the favorite project")
+        driver.press(ARROW_LEFT)
+        wait_until("the tokens of 7 days", lambda: self.hero() == ["10k"] or None)
+        self.assertEqual(len(driver.find_all("#stats .stats-account .usage-column")), 7)
+        driver.press(ESCAPE)
+        wait_until("closed", lambda: not dialog_open(driver, "stats"))
+
+        driver.press(CONTROL, ",")
+        wait_until("the settings", lambda: dialog_open(driver, "settings"))
+        click_text(driver, "#settings .settings-categories li", "accounts")
+        driver.click(driver.find("#settings .stats-open"))
+        wait_until("the stats window, the settings closed", lambda: dialog_open(driver, "stats") and not dialog_open(driver, "settings"))
 
 
 class ControlCenterFigures(Journey):

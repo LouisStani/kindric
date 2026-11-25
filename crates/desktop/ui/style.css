@@ -1335,6 +1335,118 @@ input:focus, select:focus {
   color: var(--error);
 }
 
+#stats {
+  width: min(980px, 94vw);
+  max-height: 92vh;
+  outline: none;
+}
+
+.stats-numbers {
+  margin-top: 16px;
+}
+
+.stats-hero, .stats-tile {
+  display: grid;
+  align-content: start;
+  gap: 2px;
+  min-width: 0;
+}
+
+.stats-hero .stats-value {
+  font-size: 56px;
+  line-height: 1.1;
+  color: var(--waiting);
+}
+
+.stats-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
+  gap: 16px;
+  margin-top: 16px;
+}
+
+.stats-section-grid {
+  margin-top: 0;
+}
+
+.stats-value {
+  overflow-wrap: anywhere;
+  font-size: 24px;
+  line-height: 1.2;
+  color: var(--text-strong);
+}
+
+.stats-name {
+  color: var(--text);
+}
+
+.stats-note {
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.stats-account {
+  display: grid;
+  grid-template-columns: 12ch minmax(0, 1fr) 24ch;
+  align-items: end;
+  gap: var(--gap);
+  padding: 6px 0;
+}
+
+.stats-account .usage-columns {
+  height: 48px;
+}
+
+.stats-account-sum {
+  text-align: right;
+  font-size: 12px;
+  color: var(--muted);
+}
+
+/* A column per day, an hour a row. */
+.stats-map {
+  display: grid;
+  grid-template-columns: repeat(var(--days), minmax(0, 1fr));
+  gap: 2px;
+}
+
+.stats-cell {
+  height: 8px;
+  border-radius: 2px;
+  background: var(--line);
+}
+
+.stats-cell.is-1 {
+  background: color-mix(in srgb, var(--waiting) 30%, var(--line));
+}
+
+.stats-cell.is-2 {
+  background: color-mix(in srgb, var(--waiting) 55%, var(--line));
+}
+
+.stats-cell.is-3 {
+  background: color-mix(in srgb, var(--waiting) 78%, var(--line));
+}
+
+.stats-cell.is-4 {
+  background: var(--waiting);
+}
+
+.stats-cell:hover {
+  outline: 1px solid var(--text-strong);
+}
+
+@media (max-width: 700px) {
+  .stats-account {
+    grid-template-columns: 1fr auto;
+  }
+
+  .stats-account .usage-columns {
+    grid-row: 2;
+    grid-column: 1 / -1;
+  }
+}
+
 .worktree-branch {
   font-size: 11px;
   color: var(--faint);
