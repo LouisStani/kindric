@@ -271,6 +271,31 @@ class RenamedWithF2(Journey):
         wait_until("the new name after a restart", lambda: chip_state(self.driver, "router"))
 
 
+class NoticeUnderTheBar(Journey):
+    """A notice shows under the bar, at its right, without taking room from the sessions, then goes."""
+
+    started = [("in-the-bar", "first task work:0")]
+
+    def box(self, css: str) -> list[float]:
+        found: list[float] = self.driver.script("const box = document.querySelector(arguments[0]).getBoundingClientRect(); return [box.left, box.top, box.width, box.right];", css)
+        return found
+
+    def test_notice_shows_then_goes(self) -> None:
+        driver = self.driver
+        wait_until("the session in the bar", lambda: chip_state(driver, "in-the-bar"))
+        before = self.box("#chips")
+        driver.press(CONTROL, SHIFT, "e")
+        wait_until("the notice", lambda: "theme:" in driver.text(driver.find("#status")) or None)
+        left, top, width, right = self.box("#status")
+        self.assertGreaterEqual(top, 50, "under the bar")
+        self.assertGreater(width, 40)
+        self.assertLessEqual(right, driver.script("return window.innerWidth"))
+        self.assertEqual(self.box("#chips"), before, "the sessions keep their room")
+        self.assertEqual(driver.text(driver.find("#brand")), "kindric")
+        driver.screenshot(os.path.join(OUT, "NoticeUnderTheBar-shown.png"))
+        wait_until("the notice gone", lambda: driver.script("return document.getElementById('status').hidden"))
+
+
 class ThemeWithCtrlShiftE(Journey):
     """Ctrl+Shift+E moves to the next theme (ember, then paper): the page and Claude Code's theme
     follow, and the next start keeps it."""
@@ -723,7 +748,7 @@ class SetupLeftWithSessions(Journey):
         driver.press(CONTROL, SHIFT, "0")
         wait_until("the control center", lambda: not overview_hidden(driver))
         line = wait_until("the line of what is left", lambda: texts(driver, ".control-setup") or None)
-        self.assertEqual(line, ["1 thing left to set up · F1 shows them"])
+        self.assertEqual(line, ["1 thing left to set up · F1 shows it"])
         self.assertTrue(driver.script("return document.getElementById('welcome').hidden"))
         wait_until("the session's row", lambda: texts(driver, "article.control-row .row-name") == ["already-here"])
 
@@ -951,7 +976,7 @@ class AwayOnAnIsolatedAccount(Journey):
         wait_until("the away form", lambda: dialog_open(driver, "away"))
         driver.click(driver.find("#away-form button[type=submit]"))
         wait_until("the form closed", lambda: not dialog_open(driver, "away"))
-        wait_until("away until, in the bar's end", lambda: "away until" in driver.text(driver.find("#status")))
+        wait_until("away until, in the notice", lambda: "away until" in driver.text(driver.find("#status")))
         wait_until("the session told in the user's name", lambda: next((str(s.get("detail", "")) for s in sessions_of(ISOLATED) if s.get("name") == "alone"), "").startswith("working on: I am away for the next 60 minutes"))
 
         session_id = str(session["sessionId"])

@@ -86,7 +86,7 @@ export function byProject(summary, days, now) {
     sum.cost += row.cost;
   }
   const rows = [...projects].map(([project, sum]) => ({ name: projectName(project), title: project, ...sum, rest: false }));
-  return most(rows, (count) => `${count} other projects`);
+  return most(rows, (count) => `${count} other ${count === 1 ? "project" : "projects"}`);
 }
 
 // The sessions active in the last `days` days, with all the tokens of their lives. `labelOf` gives
@@ -103,7 +103,7 @@ export function bySession(summary, days, now, labelOf) {
       cost: session.cost,
       rest: false,
     }));
-  return most(rows, (count) => `${count} other sessions`);
+  return most(rows, (count) => `${count} other ${count === 1 ? "session" : "sessions"}`);
 }
 
 export function total(summary, days, now) {

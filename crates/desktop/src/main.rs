@@ -1027,7 +1027,7 @@ fn read_statistics(shared: &Shared) -> Result<serde_json::Value, String> {
     let sources = statistics::sources(&names, &isolated, &shown_isolated, |account| accounts::dir_of(&paths, account, implicit));
     let cache_path = kindric_core::stats::cache_file(&paths).map_err(|error| format!("statistics unavailable: {error}"))?;
     let mut cache = kindric_core::stats::Cache::load(&cache_path);
-    let mut problems = cache.refresh(&sources);
+    let mut problems = cache.refresh(&sources, statistics::unseen(&names));
     if let Err(error) = cache.save(&cache_path) {
         problems.push(format!("the statistics cache was not saved, the next read will be slower: {error}"));
     }

@@ -92,13 +92,10 @@ export class StatsWindow {
       this.body.replaceChildren(element("p", "muted", "no session yet"));
       return;
     }
-    this.body.replaceChildren(
-      this.numbers(summary, now),
-      this.accounts(summary, now),
-      this.map(summary, now),
-      this.bests(summary, now),
-      ...problems.map((problem) => element("p", "usage-problem", problem)),
-    );
+    const drawn = counters(summary, this.days, now).tokens > 0
+      ? [this.accounts(summary, now), this.map(summary, now), this.bests(summary, now)]
+      : [element("p", "muted", "no tokens in this period")];
+    this.body.replaceChildren(this.numbers(summary, now), ...drawn, ...problems.map((problem) => element("p", "usage-problem", problem)));
   }
 
   renderPeriods(periods) {
@@ -120,7 +117,8 @@ export class StatsWindow {
     const told = counters(summary, this.days, now);
     const box = element("section", "stats-numbers");
     const compared = told.change === null ? "" : `, ${told.change >= 0 ? "+" : ""}${told.change}% new ones`;
-    const hero = tile(tokensText(told.tokens), "tokens", `${tokensText(told.fresh)} new, the rest read again from the cache${compared}`, "stats-hero");
+    const note = told.tokens > 0 ? `${tokensText(told.fresh)} new, the rest read again from the cache${compared}` : "";
+    const hero = tile(tokensText(told.tokens), "tokens", note, "stats-hero");
     const grid = element("div", "stats-grid");
     grid.append(
       tile(tokensText(told.written), "tokens written", novelsText(told.novels)),

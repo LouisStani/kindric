@@ -3,6 +3,7 @@
 
 use std::path::PathBuf;
 
+use kindric_core::accounts::DEFAULT_ACCOUNT;
 use kindric_core::stats::Source;
 
 /// The accounts whose transcripts count: every ordinary account (the implicit `default` included
@@ -14,6 +15,13 @@ pub fn sources(accounts: &[String], isolated: &[String], shown_isolated: &[Strin
         .filter(|account| !isolated.contains(account) || shown_isolated.contains(account))
         .map(|account| Source::of(account.clone(), dir_of(account)))
         .collect()
+}
+
+/// The implicit `default` while it is not in `accounts`: a `claude auth status` that failed once
+/// looks the same as a logout, and kindric has no way to remove it. Its figures stay even when the
+/// user logged out for good.
+pub fn unseen(accounts: &[String]) -> &'static [&'static str] {
+    if accounts.iter().any(|account| account == DEFAULT_ACCOUNT) { &[] } else { &[DEFAULT_ACCOUNT] }
 }
 
 #[cfg(test)]
@@ -50,6 +58,12 @@ mod tests {
         assert_eq!(found[2].dir, Path::new("/data").join("pro"));
     }
 
+    #[test]
+    fn the_implicit_default_is_unseen_while_it_is_not_listed() {
+        assert_eq!(unseen(&names(&["work"])), ["default"]);
+        assert!(unseen(&names(&["default", "work"])).is_empty());
+    }
+
     fn write_reply(root: &Path, account: &str) {
         let dir = root.join(account).join("projects").join("p");
         fs::create_dir_all(&dir).unwrap();
@@ -67,12 +81,12 @@ mod tests {
         let isolated = names(&["pro"]);
         let mut cache = Cache::default();
 
-        let problems = cache.refresh(&sources(&accounts, &isolated, &names(&["pro"]), under(&root)));
+        let problems = cache.refresh(&sources(&accounts, &isolated, &names(&["pro"]), under(&root)), &[]);
         assert!(problems.is_empty(), "{problems:?}");
         let shown: Vec<String> = cache.summary(&std::collections::BTreeMap::new()).sessions.into_iter().map(|row| row.account).collect();
         assert_eq!(shown, ["pro", "work"]);
 
-        cache.refresh(&sources(&accounts, &isolated, &[], under(&root)));
+        cache.refresh(&sources(&accounts, &isolated, &[], under(&root)), &[]);
         let shown: Vec<String> = cache.summary(&std::collections::BTreeMap::new()).sessions.into_iter().map(|row| row.account).collect();
         assert_eq!(shown, ["work"]);
         assert!(cache.summary(&std::collections::BTreeMap::new()).hours.iter().all(|row| row.account == "work"));

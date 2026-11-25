@@ -328,7 +328,7 @@ export class Overview {
       this.allBody(body, rows, tabs);
     }
     const hint = element("footer", "overview-hint", "↑ ↓ picks a session · ⏎ types in its field · o opens it in a pane · a allows · d denies · n next request in any project · esc back");
-    const setup = this.setup.count > 0 ? [button("control-setup", `${figureText(this.setup.count, "thing", "things")} left to set up · ${this.setup.key} shows them`, () => this.onSetup())] : [];
+    const setup = this.setup.count > 0 ? [button("control-setup", `${figureText(this.setup.count, "thing", "things")} left to set up · ${this.setup.key} shows ${this.setup.count === 1 ? "it" : "them"}`, () => this.onSetup())] : [];
     this.main.replaceChildren(...setup, head, body, hint);
   }
 

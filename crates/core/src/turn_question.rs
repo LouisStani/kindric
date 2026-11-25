@@ -18,6 +18,8 @@ use crate::progress::{one_line, timeline_tail};
 
 /// How much of the reply is kept as the question's context, in characters: the page shows it whole.
 const CONTEXT: usize = 600;
+/// And in lines: a long list of short ones would push the other sessions off the page.
+const CONTEXT_LINES: usize = 12;
 
 #[derive(Deserialize)]
 struct Entry {
@@ -48,22 +50,29 @@ fn last_line(text: &str) -> String {
     text.lines().rev().find(|line| !line.trim().is_empty()).unwrap_or(text).trim().to_string()
 }
 
-/// The end of `text` without the question it ends with, line by line as the page shows it: no
-/// Markdown marks, no code block. Whole lines, at most `CONTEXT` characters in all; only when they
-/// say little, the line before them too, cut at a word.
+/// The end of `text` without the question it ends with, line by line as the page shows it: no code
+/// block, and without the marks of Markdown that hide words the most (bold, code, titles, tables,
+/// links). Whole lines, at most `CONTEXT` characters in all; only when they say little, the line
+/// before them too, cut at a word.
 pub(crate) fn context_of(text: &str, question: &str) -> String {
     let mut lines = readable_lines(text);
     if let Some(last) = lines.last_mut()
         && let Some(before) = last.strip_suffix(&plain(question))
     {
-        *last = before.trim_end().to_string();
+        let before = before.trim_end();
+        *last = if is_list_mark(before) { String::new() } else { before.to_string() };
     }
     let mut kept: Vec<String> = Vec::new();
     let mut left = CONTEXT;
     for line in lines.into_iter().rev().filter(|line| !line.is_empty()) {
+        if kept.len() == CONTEXT_LINES {
+            kept.push("…".to_string());
+            break;
+        }
         let length = line.chars().count();
         if length <= left {
-            left -= length;
+            // With the end of its line.
+            left = left.saturating_sub(length + 1);
             kept.push(line);
             continue;
         }
@@ -84,19 +93,33 @@ fn end_of(line: &str, most: usize) -> String {
 /// The lines of a reply written in Markdown, without its code blocks, its empty lines, its rules
 /// nor its marks; the cells of a table's row are separated by a dot.
 fn readable_lines(text: &str) -> Vec<String> {
-    let mut fence: Option<&str> = None;
+    let mut open: Option<(char, usize)> = None;
     let mut lines = Vec::new();
     for line in text.lines().map(str::trim) {
-        let mark = ["```", "~~~"].into_iter().find(|mark| line.starts_with(mark));
-        match (fence, mark) {
-            (None, Some(mark)) => fence = Some(mark),
-            (Some(open), Some(mark)) if open == mark => fence = None,
+        match (open, fence(line)) {
+            (None, Some((mark, length, _))) => open = Some((mark, length)),
+            (Some((mark, length)), Some((closing, longer, true))) if closing == mark && longer >= length => open = None,
             (Some(_), _) => {},
             (None, None) if line.is_empty() || is_rule(line) => {},
             (None, None) => lines.push(plain(line)),
         }
     }
     lines
+}
+
+/// The mark of a line that opens or closes a code block, its length, and whether it is alone on
+/// the line, as one that closes a block is.
+fn fence(line: &str) -> Option<(char, usize, bool)> {
+    let mark = line.chars().next().filter(|mark| matches!(mark, '`' | '~'))?;
+    let length = line.chars().take_while(|character| *character == mark).count();
+    let rest = &line[length..];
+    (length >= 3 && !(mark == '`' && rest.contains('`'))).then_some((mark, length, rest.trim().is_empty()))
+}
+
+/// The mark of an item of a list without its text: `-`, `*`, `+`, `1.` or `1)`.
+fn is_list_mark(text: &str) -> bool {
+    let number = text.strip_suffix(['.', ')']).unwrap_or("");
+    matches!(text, "-" | "*" | "+") || (!number.is_empty() && number.chars().all(|character| character.is_ascii_digit()))
 }
 
 /// A horizontal rule, or the line under the head of a table.
@@ -119,19 +142,20 @@ fn plain(line: &str) -> String {
     without_links(&words.split_whitespace().collect::<Vec<_>>().join(" "))
 }
 
-/// `[text](target)` as its text.
+/// `[text](target)` as its text, `![text](target)` too.
 fn without_links(line: &str) -> String {
     let mut out = String::new();
     let mut rest = line;
     while let Some((before, after)) = rest.split_once('[') {
-        out.push_str(before);
-        let link = after.split_once("](").and_then(|(text, target)| Some((text, target.split_once(')')?.1)));
+        let link = after.split_once("](").and_then(|(text, target)| Some((text, after_target(target)?)));
         match link {
             Some((text, after)) if !text.contains(['[', ']']) => {
+                out.push_str(before.strip_suffix('!').unwrap_or(before));
                 out.push_str(text);
                 rest = after;
             },
             _ => {
+                out.push_str(before);
                 out.push('[');
                 rest = after;
             },
@@ -139,6 +163,22 @@ fn without_links(line: &str) -> String {
     }
     out.push_str(rest);
     out
+}
+
+/// What follows the parenthesis that closes the target of a link; the target may hold pairs.
+fn after_target(target: &str) -> Option<&str> {
+    let mut depth = 1;
+    for (at, character) in target.char_indices() {
+        match character {
+            '(' => depth += 1,
+            ')' => depth -= 1,
+            _ => {},
+        }
+        if depth == 0 {
+            return target.get(at + 1..);
+        }
+    }
+    None
 }
 
 /// The request for the overview, for `input` (the JSON Claude Code gives a Stop hook) and the end
@@ -271,6 +311,37 @@ mod tests {
         let context = context_of(&short_end, "");
         assert!(context.starts_with("…mot mot") && context.ends_with("mot\nVoilà."), "{context}");
         assert!(context.chars().count() <= CONTEXT + 2, "{}", context.chars().count());
+    }
+
+    #[test]
+    fn a_question_that_is_an_item_of_a_list_leaves_no_mark_behind() {
+        assert_eq!(context_of("Options:\n- A\n- Je continue ?", "Je continue ?"), "Options:\n- A");
+        assert_eq!(context_of("Étapes\n1. Je continue ?", "Je continue ?"), "Étapes");
+        assert_eq!(context_of("Reste 3. Je continue ?", "Je continue ?"), "Reste 3.");
+    }
+
+    #[test]
+    fn a_code_block_is_closed_only_by_a_mark_as_long_as_its_own() {
+        assert_eq!(context_of("a\n````md\n```\ncode\n```\n````\nb", ""), "a\nb");
+        assert_eq!(context_of("a\n~~~\n```\ncode\n~~~\nb", ""), "a\nb");
+        assert_eq!(context_of("a\n```\ncode\n```sh\nmore\n```\nb", ""), "a\nb");
+        assert_eq!(context_of("a\n```one line```\nb", ""), "a\none line\nb");
+    }
+
+    #[test]
+    fn images_and_targets_with_parentheses_leave_their_text() {
+        assert_eq!(context_of("voir ![image](u.png) et [a](http://x/(b)) fin", ""), "voir image et a fin");
+        assert_eq!(context_of("[a](http://x/ jamais fermé", ""), "[a](http://x/ jamais fermé");
+    }
+
+    #[test]
+    fn a_long_list_keeps_its_last_lines_only() {
+        let list: Vec<String> = (0..200).map(|number| format!("- {number}")).collect();
+        let context = context_of(&list.join("\n"), "");
+        assert_eq!(context.lines().count(), CONTEXT_LINES + 1);
+        assert!(context.starts_with("…\n- 188") && context.ends_with("- 199"), "{context}");
+        let lines: Vec<String> = (0..11).map(|number| format!("- {}{number}", "mot ".repeat(13))).collect();
+        assert!(context_of(&lines.join("\n"), "").chars().count() <= CONTEXT + 2, "the ends of the lines count");
     }
 
     #[test]
