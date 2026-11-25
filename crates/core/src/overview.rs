@@ -258,8 +258,10 @@ pub fn settle_session(root: &Path, session: &str) -> io::Result<()> {
 pub const START: &str = "kindric shows the user an overview of their sessions, where they answer \
 questions without opening the session. When you need the user to decide something, prefer the shell \
 command `kindric ask \"<question>\" \"<context>\"` to AskUserQuestion: it does not stop you. Write a \
-single question that stands alone, and the context for someone who has not seen this session: what \
-you are doing, what you found, why you need them. Their answer comes later as a message from them.";
+single question that stands alone, and the context in 2 or 3 sentences for someone who has not seen \
+this session: what you are doing, what you found, why you need them. Their answer comes later as a \
+message from them. A question you write in a reply instead goes at its end, with those sentences just \
+before it: the overview shows the last lines of the reply.";
 
 /// What `kindric ask` tells the session once the question is sent.
 pub const SENT: &str = "Question sent to the user through kindric's overview. Their answer will come \
@@ -533,6 +535,7 @@ mod tests {
         assert!(SENT.contains("do only the work that does not depend on it"));
         assert!(SENT.contains("end your turn now") && SENT.contains("Do not guess"));
         assert!(START.contains(r#"kindric ask "<question>" "<context>""#) && START.contains("AskUserQuestion"));
+        assert!(START.contains("in 2 or 3 sentences") && START.contains("the last lines of the reply"), "{START}");
     }
 
     #[test]
