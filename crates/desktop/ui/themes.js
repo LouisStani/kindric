@@ -12,11 +12,12 @@ export const THEMES = {
     "text-strong": "#fff6ea",
     muted: "#d9bfa0",
     faint: "#8a5a30",
+    "faint-text": "#a88060",
     terminal: "#1f120a",
     "terminal-text": "#f6e7d4",
     selection: "#5c300f",
     active: "#aa601f",
-    "on-active": "#f6e7d4",
+    "on-active": "#ffffff",
     waiting: "#f2b544",
     working: "#f6e7d4",
     done: "#a8c66c",
@@ -33,6 +34,7 @@ export const THEMES = {
     "text-strong": "#1a0e06",
     muted: "#5c432c",
     faint: "#7d5c3c",
+    "faint-text": "#7d5c3c",
     terminal: "#fbf6ee",
     "terminal-text": "#2b1a0e",
     selection: "#ead2b0",
@@ -54,6 +56,7 @@ export const THEMES = {
     "text-strong": "#ffffff",
     muted: "#b4b7bc",
     faint: "#7c8087",
+    "faint-text": "#898c92",
     terminal: "#161719",
     "terminal-text": "#e6e6e6",
     selection: "#3a3d42",
@@ -68,6 +71,13 @@ export const THEMES = {
 };
 
 const ORDER = ["ember", "paper", "graphite", "custom"];
+
+// The colors of "custom": ember with those of theme.json over it. A theme.json written before
+// faint-text existed keeps its faint for text too.
+export function customColorsOf(colors) {
+  const faintText = colors.faint && !colors["faint-text"] ? { "faint-text": colors.faint } : {};
+  return { ...THEMES.ember, ...faintText, ...colors };
+}
 
 // Light themes tell the engine, so form controls and scroll bars follow.
 const LIGHT = new Set(["paper"]);

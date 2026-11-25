@@ -23,11 +23,12 @@
   --text-strong: #fff6ea;
   --muted: #d9bfa0;
   --faint: #8a5a30;
+  --faint-text: #a88060;
   --terminal: #1f120a;
   --terminal-text: #f6e7d4;
   --selection: #5c300f;
   --active: #aa601f;
-  --on-active: #f6e7d4;
+  --on-active: #ffffff;
   --waiting: #f2b544;
   --working: #f6e7d4;
   --done: #a8c66c;
@@ -104,7 +105,7 @@ body {
 }
 
 .chip.paused, .chip.elsewhere {
-  color: var(--faint);
+  color: var(--faint-text);
 }
 
 .chip.open {
@@ -122,7 +123,7 @@ body {
 
 .pos {
   font-size: 11px;
-  color: var(--faint);
+  color: var(--faint-text);
 }
 
 .pos:empty {
@@ -174,7 +175,7 @@ body {
 }
 
 .chip-note {
-  color: var(--faint);
+  color: var(--faint-text);
 }
 
 #brand, #status {
@@ -268,14 +269,14 @@ body {
 }
 
 .tip-state.paused, .tip-state.elsewhere {
-  color: var(--faint);
+  color: var(--faint-text);
 }
 
 h1 {
   margin: 0 0 12px;
   font-size: 12px;
   font-weight: 700;
-  color: var(--faint);
+  color: var(--faint-text);
 }
 
 h1::before {
@@ -308,7 +309,7 @@ ol, ul {
 .number {
   width: 1ch;
   flex-shrink: 0;
-  color: var(--faint);
+  color: var(--faint-text);
   font-size: 11px;
 }
 
@@ -346,11 +347,11 @@ ol, ul {
 .detail {
   padding-left: calc(1ch + 8px);
   font-size: 11px;
-  color: var(--faint);
+  color: var(--faint-text);
 }
 
 .muted {
-  color: var(--faint);
+  color: var(--faint-text);
 }
 
 .openable {
@@ -402,7 +403,6 @@ ol, ul {
 
 .tab.active .pos {
   color: var(--on-active);
-  opacity: 0.75;
 }
 
 /* On the active tab's own color, its mark takes the color of its text. */
@@ -534,7 +534,7 @@ ol, ul {
 }
 
 .check.optional .check-state, .check.optional .check-text {
-  color: var(--faint);
+  color: var(--faint-text);
 }
 
 .check-text {
@@ -682,7 +682,7 @@ ol, ul {
 }
 
 .head-account {
-  color: var(--faint);
+  color: var(--faint-text);
 }
 
 .head-progress {
@@ -690,12 +690,11 @@ ol, ul {
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
-  color: var(--faint);
+  color: var(--faint-text);
 }
 
 .pane.active .head-progress {
   color: var(--on-active);
-  opacity: 0.6;
 }
 
 /* How many files the session changed: kept whole, after the progress line. */
@@ -708,7 +707,6 @@ ol, ul {
 
 .pane.active .head-changed {
   color: var(--on-active);
-  opacity: 0.8;
 }
 
 /* Until when the user is away: kept whole, it says the session will not wait for them. */
@@ -752,7 +750,7 @@ ol, ul {
 }
 
 .pane.active .prompt {
-  color: var(--on-accent);
+  color: var(--on-active);
 }
 
 .pane.active .head-title {
@@ -766,7 +764,6 @@ ol, ul {
 
 .pane.active .head-account {
   color: var(--on-active);
-  opacity: 0.75;
 }
 
 .pane.finished {
@@ -814,7 +811,7 @@ ol, ul {
 .image-error {
   flex: 1 1 0;
   margin: 0;
-  color: var(--faint);
+  color: var(--faint-text);
   overflow-wrap: anywhere;
 }
 
@@ -824,7 +821,7 @@ ol, ul {
   margin: 0;
   display: grid;
   place-items: center;
-  color: var(--faint);
+  color: var(--faint-text);
   pointer-events: none;
 }
 
@@ -1035,7 +1032,7 @@ input:focus, select:focus {
 .picker-day {
   padding: 10px 8px 2px;
   font-size: 11px;
-  color: var(--faint);
+  color: var(--faint-text);
 }
 
 .picker-day:first-child {
@@ -1045,7 +1042,7 @@ input:focus, select:focus {
 .when {
   flex-shrink: 0;
   font-size: 11px;
-  color: var(--faint);
+  color: var(--faint-text);
 }
 
 .selected {
@@ -1127,7 +1124,7 @@ input:focus, select:focus {
   overflow: hidden;
   font-size: 10px;
   text-transform: uppercase;
-  color: var(--faint);
+  color: var(--faint-text);
   background: var(--background);
   border-radius: var(--radius);
 }
@@ -1148,7 +1145,7 @@ input:focus, select:focus {
 
 .artifact-date {
   font-size: 11px;
-  color: var(--faint);
+  color: var(--faint-text);
 }
 
 .artifact-new {
@@ -1214,7 +1211,7 @@ input:focus, select:focus {
 }
 
 .change-binary {
-  color: var(--faint);
+  color: var(--faint-text);
 }
 
 .change-diff {
@@ -1245,7 +1242,7 @@ input:focus, select:focus {
 }
 
 .diff-meta {
-  color: var(--faint);
+  color: var(--faint-text);
 }
 
 #worktrees {
@@ -1524,7 +1521,7 @@ input:focus, select:focus {
 
 .worktree-branch {
   font-size: 11px;
-  color: var(--faint);
+  color: var(--faint-text);
 }
 
 .worktree-state {
@@ -1573,7 +1570,7 @@ input:focus, select:focus {
   gap: 8px;
   align-items: baseline;
   font-size: 11px;
-  color: var(--faint);
+  color: var(--faint-text);
 }
 
 .message-who {
@@ -1614,7 +1611,7 @@ input:focus, select:focus {
   font-size: 11px;
   text-transform: uppercase;
   letter-spacing: 0.08em;
-  color: var(--faint);
+  color: var(--faint-text);
 }
 
 .help-group kbd {
@@ -1830,7 +1827,7 @@ input:focus, select:focus {
 }
 
 .settings-categories.bypassed li {
-  color: var(--faint);
+  color: var(--faint-text);
 }
 
 .settings-content {
@@ -1868,7 +1865,7 @@ input:focus, select:focus {
   font-size: 11px;
   text-transform: uppercase;
   letter-spacing: 0.08em;
-  color: var(--faint);
+  color: var(--faint-text);
 }
 
 .shortcut {
@@ -2424,7 +2421,7 @@ input:focus, select:focus {
 .overview-hint {
   margin-top: auto;
   padding-top: 8px;
-  color: var(--faint);
+  color: var(--faint-text);
 }
 
 .control-row {
@@ -2497,7 +2494,7 @@ input:focus, select:focus {
 
 .step.is-note {
   margin: 0;
-  color: var(--faint);
+  color: var(--faint-text);
 }
 
 /* The task in progress under a row (decision 368), aligned with the session's name. */
@@ -2534,7 +2531,7 @@ input:focus, select:focus {
 }
 
 .task.is-completed {
-  color: var(--faint);
+  color: var(--faint-text);
 }
 
 .task-about {
@@ -2704,10 +2701,12 @@ input:focus, select:focus {
   color: var(--text-strong);
 }
 
+/* Badges that do not fit beside the text go under it, rather than cut it. */
 .row-doing {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
-  gap: 10px;
+  gap: 4px 10px;
   min-width: 0;
   color: var(--muted);
 }
@@ -2721,17 +2720,12 @@ input:focus, select:focus {
 
 .row-badge {
   flex: none;
-  margin-left: auto;
   padding: 0 6px;
   border: var(--stroke) solid var(--waiting);
   border-radius: var(--radius);
   font-size: 11px;
   white-space: nowrap;
   color: var(--waiting);
-}
-
-.row-badge + .row-badge {
-  margin-left: 0;
 }
 
 .row-badge.keeps {
@@ -2759,7 +2753,7 @@ input:focus, select:focus {
 }
 
 .row-kept.none {
-  color: var(--faint);
+  color: var(--faint-text);
   cursor: default;
 }
 
@@ -2794,7 +2788,7 @@ input:focus, select:focus {
 
 .row-ctx-none {
   grid-column: 2 / 4;
-  color: var(--faint);
+  color: var(--faint-text);
 }
 
 .row-account {
@@ -2831,11 +2825,8 @@ input:focus, select:focus {
     grid-area: name;
   }
 
-  /* Badges that do not fit beside the text go under it. */
   .row-doing {
     grid-area: doing;
-    flex-wrap: wrap;
-    row-gap: 4px;
   }
 
   .row-kept {
@@ -3014,7 +3005,7 @@ input:focus, select:focus {
 }
 
 .request button.other {
-  color: var(--faint);
+  color: var(--faint-text);
 }
 
 .option-number {
@@ -3039,7 +3030,7 @@ input:focus, select:focus {
 
 .request-note {
   margin: 0;
-  color: var(--faint);
+  color: var(--faint-text);
 }
 
 .request-note.error {

@@ -250,7 +250,7 @@ A `theme.json` next to the mailbox adds a **custom** theme: ember with the color
 {"background": "#101010", "active": "#c04020"}
 ```
 
-Names are the color variables at the top of `crates/desktop/ui/style.css`, without `--`. Only `#rgb`, `#rrggbb` and `#rrggbbaa` values are taken. The file is read again each time the theme is chosen.
+Names are the color variables at the top of `crates/desktop/ui/style.css`, without `--`. Only `#rgb`, `#rrggbb` and `#rrggbbaa` values are taken. `faint` colors the marks of sessions at rest, `faint-text` the quiet text; a file that names `faint` without `faint-text` uses its `faint` for both. The file is read again each time the theme is chosen.
 
 Claude Code draws for the background of the theme. kindric writes Claude Code themes in `~/.claude/themes`: `kindric.json`, and one per project (`kindric-` and 8 characters), light or dark after the terminal color of the theme they show in, in the variant you chose for Claude Code (daltonized, ANSI colors only). The sessions kindric starts use the theme of their project, else `kindric`, and Claude Code reloads it when the theme changes, without a restart. Sessions started before this version, or outside kindric, keep your own Claude Code theme.
 
