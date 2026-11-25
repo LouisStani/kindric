@@ -2524,8 +2524,7 @@ class ControlCenterKeysAndPromptAll(Journey):
         click_text(driver, ".prompt-all button", "send to 3 sessions?")
         wait_until("the message typed into each", lambda: all("together work:0" in prompts_of(session_id_of(name)) for name in ("alpha", "beta", "dozing")) or None, timeout=30)
 
-        # The button pressed is gone with the redraw, the focus with it: a click in the page first.
-        driver.click(driver.find(".control-head h1"))
+        # The button pressed is gone with the redraw: the keys still go to the control center.
         driver.press(ESCAPE)
         wait_until("all projects", lambda: self.heading() == ["all projects"] or None)
         hook = asked_by_hook(session_id_of("beta"), "Bash", {"command": "make", "description": "Build"})
@@ -2543,6 +2542,31 @@ class ControlCenterKeysAndPromptAll(Journey):
         wait_until("out of the field", lambda: driver.script("return document.activeElement?.dataset?.key ?? null") != f"prompt/{session_id_of('beta')}" or None)
         driver.press("o")
         wait_until("beta open in a pane", lambda: overview_hidden(driver) and (chip(driver, "beta") or ("", False))[1] or None)
+
+
+class OpenRightAfterAPrompt(Journey):
+    """A session opened right after a prompt was sent to it from the control center opens in a
+    pane once kindric has typed the prompt, not refused as if another window showed it."""
+
+    started = [("alpha", "first task work:0")]
+
+    def test_open_while_typing(self) -> None:
+        driver = self.driver
+        carry_messages(driver)
+        add_project(driver)
+        driver.press(CONTROL, SHIFT, "0")
+        wait_until("the control center", lambda: not overview_hidden(driver))
+        alpha = session_id_of("alpha")
+        driver.press(ARROW_DOWN)
+        wait_until("alpha picked", lambda: texts(driver, "article.control-row.selected .row-name") == ["alpha"] or None)
+        driver.press(ENTER)
+        field = wait_until("its field", lambda: driver.find(f"[data-key='prompt/{alpha}']"))
+        driver.type_into(field, "quick work:0" + ENTER)
+        driver.press(ESCAPE)
+        driver.press("o")
+        wait_until("the notice", lambda: "sending the message first" in driver.text(driver.find("#status")) or None, timeout=2)
+        wait_until("alpha open in a pane", lambda: overview_hidden(driver) and (chip(driver, "alpha") or ("", False))[1] or None)
+        self.assertIn("quick work:0", prompts_of(alpha))
 
 
 def status_line(session_id: str, context: float, five_hour: float, seven_day: float) -> None:

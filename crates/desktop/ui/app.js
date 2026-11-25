@@ -15,6 +15,7 @@ import { Overview } from "./overview.js";
 import { summaryOf } from "./overview-board.js";
 import { chipState, dotSign, stateWords, tabMark } from "./chips.js";
 import { pickerItems } from "./picker.js";
+import { Typing } from "./typing.js";
 
 const { invoke } = window.__TAURI__.core;
 const { listen } = window.__TAURI__.event;
@@ -24,6 +25,9 @@ let currentTheme = "ember";
 // The colors of theme.json as last read, null without one: a project may use them.
 let customColors = null;
 const picker = { rows: [], selected: 0, query: 0 };
+const typing = new Typing();
+// Counts the sessions opened: an opening that waited gives way to a later one.
+let openings = 0;
 // `lasting`: a notice that stays until the settings are opened (a login to renew).
 const status = { notice: "", timer: null, lasting: "" };
 // The welcome list, null until checked; what it was checked for; one check at a time, and
@@ -311,26 +315,30 @@ async function readControlFigures() {
 
 // The answer to a `kindric ask` of `row`, typed as the user's message with its question: in the
 // pane of this window that shows the session, else by kindric without a pane (`type_answer`).
-async function typeAnswer(row, request, text) {
-  const view = panes.viewShowing({ account: row.account, short_id: row.short_id });
-  if (!view) {
-    await invoke("type_answer", { account: row.account, shortId: row.short_id, sessionId: request.session_id, id: request.id, text });
-    return;
-  }
-  const words = await invoke("answer_words", { sessionId: request.session_id, id: request.id, text });
-  if (!view.say(words)) throw new Error("the pane of this session has ended: open it again");
-  await invoke("settle_request", { sessionId: request.session_id, id: request.id });
+function typeAnswer(row, request, text) {
+  return typing.during(row, async () => {
+    const view = panes.viewShowing({ account: row.account, short_id: row.short_id });
+    if (!view) {
+      await invoke("type_answer", { account: row.account, shortId: row.short_id, sessionId: request.session_id, id: request.id, text });
+      return;
+    }
+    const words = await invoke("answer_words", { sessionId: request.session_id, id: request.id, text });
+    if (!view.say(words)) throw new Error("the pane of this session has ended: open it again");
+    await invoke("settle_request", { sessionId: request.session_id, id: request.id });
+  });
 }
 
 // A prompt from the control center, typed as the user's message: in the pane of this window that
 // shows the session, else by kindric without a pane (`type_prompt`).
-async function typePrompt(row, text) {
-  const view = panes.viewShowing({ account: row.account, short_id: row.short_id });
-  if (!view) {
-    await invoke("type_prompt", { account: row.account, shortId: row.short_id, text });
-    return;
-  }
-  if (!view.say(text)) throw new Error("the pane of this session has ended: open it again");
+function typePrompt(row, text) {
+  return typing.during(row, async () => {
+    const view = panes.viewShowing({ account: row.account, short_id: row.short_id });
+    if (!view) {
+      await invoke("type_prompt", { account: row.account, shortId: row.short_id, text });
+      return;
+    }
+    if (!view.say(text)) throw new Error("the pane of this session has ended: open it again");
+  });
 }
 
 // What the sessions ask, read every second: a hook writes a request at any time. The count in
@@ -483,6 +491,13 @@ async function openSession(session) {
   if (!session.short_id) {
     setStatus(elsewhere(session));
     return;
+  }
+  openings += 1;
+  const opening = openings;
+  if (typing.busy(session)) {
+    setStatus("sending the message first…");
+    await typing.over(session);
+    if (opening !== openings) return;
   }
   setStatus("");
   if (session.tab !== undefined) await panes.goTabId(session.tab);

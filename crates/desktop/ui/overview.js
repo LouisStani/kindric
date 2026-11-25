@@ -220,6 +220,9 @@ export class Overview {
     if (again) {
       again.focus();
       if (caret !== null && again instanceof HTMLInputElement) again.setSelectionRange(caret, caret);
+    } else if (focused) {
+      // A button pressed is gone with the redraw: the keys still go to the control center.
+      this.section.focus();
     }
   }
 
