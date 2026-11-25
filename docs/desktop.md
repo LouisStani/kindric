@@ -163,13 +163,14 @@ A file can also be dragged onto the head of a group.
 
 ## Usage
 
-`F3`, or **open usage** in the accounts section of the settings, shows what the accounts of Claude Code use. `←` `→` choose the last 7 or 30 days.
+`F3`, or **open usage** in the accounts section of the settings, shows what the accounts use. `←` `→` choose the last 7 or 30 days.
 
 - The weekly limit of each subscription, as its status lines last gave it, and where its pace leads: how much will be used when the week starts again, or when it will be full. Nothing is projected during the first 24 hours of a week, and figures more than an hour old say when they were read.
 - The tokens by project (a worktree of Claude Code counts for its checkout) and by session (all its tokens since it started, for the sessions active in the period). **new** adds up the input, the output and the cache written; the cache read again is apart, since it is far larger.
+- The cost, in a column of its own, of what is paid by use: the accounts with a key of Anthropic (`--provider api`, or a Console key chosen in `/login`), as Claude Code counts it, and those of OpenCode, at the prices OpenCode knows. Not a subscription, nor Codex, OpenRouter, Ollama or a gateway, whose cost is not known.
 - The cache written, by hour over 7 days, by day over 30.
 
-kindric reads the transcripts of Claude Code, a format it does not document, and keeps what it read in a cache: the first reading takes a few seconds, the next ones only what was added. Nothing leaves the computer. An isolated account is left out unless **show in stats** is ticked on its line of the settings. Not yet: the tokens of Codex and OpenCode accounts, and the cost of accounts paid by use.
+kindric reads the transcripts of Claude Code and of Codex, formats they do not document, and keeps what it read in a cache: the first reading takes a few seconds, the next ones only what was added. The sessions of an OpenCode account are asked to its service, only when it runs; those read before stay. Nothing leaves the computer. An isolated account is left out unless **show in stats** is ticked on its line of the settings.
 
 ## Shortcuts
 

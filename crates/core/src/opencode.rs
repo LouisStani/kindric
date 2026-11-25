@@ -25,6 +25,9 @@ const TIMEOUT: Duration = Duration::from_secs(3);
 const MAX_RESPONSE: u64 = 16 * 1024 * 1024;
 /// The sessions at rest listed, the most recent first, as for Codex.
 pub const STOPPED_LISTED: usize = 50;
+/// Items of a page of a whole list, and the most pages read of one.
+const PAGE: usize = 100;
+const MAX_PAGES: usize = 200;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Status {
@@ -101,6 +104,58 @@ fn parse_response(response: &[u8]) -> io::Result<Vec<u8>> {
         Some(200..=299) => Ok(body),
         _ => Err(io::Error::new(error_kind(code), format!("the OpenCode service answered {status:?}: {}", said(&body)))),
     }
+}
+
+/// A session of the service, for the statistics.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct UsedSession {
+    pub id: String,
+    /// The session it is a subagent of.
+    pub parent: Option<String>,
+    pub directory: String,
+    /// When it last changed, as the service says (milliseconds).
+    pub updated: i64,
+}
+
+fn used_session(info: &Value) -> Option<UsedSession> {
+    Some(UsedSession {
+        id: info.get("id")?.as_str()?.to_string(),
+        parent: info.get("parentID").and_then(Value::as_str).map(String::from),
+        directory: directory_of(info).unwrap_or_default(),
+        updated: info.pointer("/time/updated")?.as_i64()?,
+    })
+}
+
+/// A reply of a model: its tokens, the cache apart, and what it cost.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Reply {
+    /// Unix milliseconds.
+    pub at: i64,
+    pub model: String,
+    /// US dollars, at the price OpenCode knows; 0 for a model without one.
+    pub cost: f64,
+    pub input: u64,
+    pub output: u64,
+    pub reasoning: u64,
+    pub cache_read: u64,
+    pub cache_write: u64,
+}
+
+fn reply(message: &Value) -> Option<Reply> {
+    if message.get("type").and_then(Value::as_str) != Some("assistant") {
+        return None;
+    }
+    let tokens = |pointer: &str| message.pointer(pointer).and_then(Value::as_u64).unwrap_or(0);
+    Some(Reply {
+        at: message.pointer("/time/created")?.as_i64()?,
+        model: message.pointer("/model/id").and_then(Value::as_str).unwrap_or_default().to_string(),
+        cost: message.get("cost").and_then(Value::as_f64).filter(|cost| cost.is_finite() && *cost > 0.0).unwrap_or(0.0),
+        input: tokens("/tokens/input"),
+        output: tokens("/tokens/output"),
+        reasoning: tokens("/tokens/reasoning"),
+        cache_read: tokens("/tokens/cache/read"),
+        cache_write: tokens("/tokens/cache/write"),
+    })
 }
 
 /// The kind of the error for an HTTP status: 404 is a session or request the service does not
@@ -272,6 +327,36 @@ impl Service {
     pub fn updated_times(&self) -> io::Result<BTreeMap<String, i64>> {
         let listed = self.request("GET", &format!("/api/session?archived=false&parentID=null&order=desc&limit={STOPPED_LISTED}"), None)?;
         Ok(data_items(&listed).filter_map(|info| Some((id_of(&info), updated_seconds(&info)?))).collect())
+    }
+
+    /// Every page of `path`, a list of the service given 100 items at a time.
+    fn all_items(&self, path: &str) -> io::Result<Vec<Value>> {
+        let separator = if path.contains('?') { '&' } else { '?' };
+        let page_path = format!("{path}{separator}limit={PAGE}");
+        let mut items = Vec::new();
+        let mut next = page_path.clone();
+        for _ in 0..MAX_PAGES {
+            let page = self.request("GET", &next, None)?;
+            let count = items.len();
+            items.extend(data_items(&page));
+            // The last page has a cursor too, to an empty one.
+            let cursor = page.pointer("/cursor/next").and_then(Value::as_str);
+            let Some(cursor) = cursor.filter(|_| items.len() > count) else {
+                return Ok(items);
+            };
+            next = format!("{page_path}&cursor={cursor}");
+        }
+        Ok(items)
+    }
+
+    /// Every session of the account, those archived and those of subagents included.
+    pub fn used_sessions(&self) -> io::Result<Vec<UsedSession>> {
+        Ok(self.all_items("/api/session")?.iter().filter_map(used_session).collect())
+    }
+
+    /// The replies of the session `id`.
+    pub fn replies(&self, id: &str) -> io::Result<Vec<Reply>> {
+        Ok(self.all_items(&format!("/api/session/{id}/message?type=assistant"))?.iter().filter_map(reply).collect())
     }
 
     /// The folder the session `id` works in, if the service knows it.

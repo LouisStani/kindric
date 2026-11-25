@@ -12,7 +12,7 @@ pub fn sources(accounts: &[String], isolated: &[String], shown_isolated: &[Strin
     accounts
         .iter()
         .filter(|account| !isolated.contains(account) || shown_isolated.contains(account))
-        .map(|account| Source { account: account.clone(), dir: dir_of(account) })
+        .map(|account| Source::of(account.clone(), dir_of(account)))
         .collect()
 }
 
@@ -69,13 +69,13 @@ mod tests {
 
         let problems = cache.refresh(&sources(&accounts, &isolated, &names(&["pro"]), under(&root)));
         assert!(problems.is_empty(), "{problems:?}");
-        let shown: Vec<String> = cache.summary().sessions.into_iter().map(|row| row.account).collect();
+        let shown: Vec<String> = cache.summary(&std::collections::BTreeMap::new()).sessions.into_iter().map(|row| row.account).collect();
         assert_eq!(shown, ["pro", "work"]);
 
         cache.refresh(&sources(&accounts, &isolated, &[], under(&root)));
-        let shown: Vec<String> = cache.summary().sessions.into_iter().map(|row| row.account).collect();
+        let shown: Vec<String> = cache.summary(&std::collections::BTreeMap::new()).sessions.into_iter().map(|row| row.account).collect();
         assert_eq!(shown, ["work"]);
-        assert!(cache.summary().hours.iter().all(|row| row.account == "work"));
+        assert!(cache.summary(&std::collections::BTreeMap::new()).hours.iter().all(|row| row.account == "work"));
         fs::remove_dir_all(root).unwrap();
     }
 }

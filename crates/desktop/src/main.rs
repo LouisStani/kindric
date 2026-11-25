@@ -1014,7 +1014,7 @@ fn stats(shared: State<'_, Shared>) -> Result<serde_json::Value, String> {
     }
     let counted: Vec<String> = sources.into_iter().map(|source| source.account).collect();
     Ok(serde_json::json!({
-        "summary": cache.summary(),
+        "summary": cache.summary(&accounts::costs(&paths, &counted)),
         "history": accounts::histories(&paths, &counted),
         "problems": problems,
     }))

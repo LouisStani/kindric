@@ -1,8 +1,9 @@
 //! Login state, plan and running sessions of each account.
 
 use std::fs;
+use std::io;
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
+use std::process::{Command, Output, Stdio};
 use std::thread;
 
 use serde::Serialize;
@@ -121,20 +122,39 @@ fn account_login(claude: &Path, dir: &Path) -> Login {
     }
 }
 
-/// Exit code 0: logged in; 1: logged out; anything else: unknown. Claude Code reads
-/// its own credentials: only the exit code, the plan name and the login's expiry are used here.
-fn login(claude: &Path, dir: &Path) -> Login {
+/// `claude auth status --json` for the account in `dir`.
+fn auth_status(claude: &Path, dir: &Path) -> io::Result<Output> {
     let mut command = Command::new(claude);
     for variable in launch::STRIPPED_ENV {
         command.env_remove(variable);
     }
-    let output = command
+    command
         .args(["auth", "status", "--json"])
         .env("CLAUDE_CONFIG_DIR", dir)
         .stdin(Stdio::null())
         .stderr(Stdio::null())
-        .output();
-    match output.map(|output| (output.status.code(), output.stdout)) {
+        .output()
+}
+
+/// Whether Anthropic bills the account in `dir` by use: logged in with a key of the Claude Console,
+/// which `/login` made. `None` when it cannot be told. Takes about half a second.
+pub fn billed_by_use(claude: &Path, dir: &Path) -> Option<bool> {
+    let output = auth_status(claude, dir).ok().filter(|output| output.status.success())?;
+    says_billed_by_use(&String::from_utf8_lossy(&output.stdout))
+}
+
+/// `authMethod` is `claude.ai` for a subscription, `api_key` for a key of the Console (seen on
+/// 2.1.331); `apiProvider` is `firstParty` for Anthropic's own API.
+fn says_billed_by_use(json: &str) -> Option<bool> {
+    let value: serde_json::Value = serde_json::from_str(json).ok()?;
+    let text = |name: &str| value.get(name).and_then(serde_json::Value::as_str);
+    Some(text("authMethod")? == "api_key" && text("apiProvider") == Some("firstParty"))
+}
+
+/// Exit code 0: logged in; 1: logged out; anything else: unknown. Claude Code reads
+/// its own credentials: only the exit code, the plan name and the login's expiry are used here.
+fn login(claude: &Path, dir: &Path) -> Login {
+    match auth_status(claude, dir).map(|output| (output.status.code(), output.stdout)) {
         Ok((Some(0), stdout)) => {
             let text = String::from_utf8_lossy(&stdout);
             Login::claude(LoginState::LoggedIn, subscription_type(&text), login_expires(&text))
@@ -334,6 +354,17 @@ mod tests {
         assert_eq!(subscription_type(r#"{"loggedIn": true, "subscriptionType": "max"}"#), Some("max".into()));
         assert_eq!(subscription_type(r#"{"loggedIn": true, "authMethod": "api_key"}"#), None);
         assert_eq!(subscription_type(r#"{"subscriptionType": "Pro Plus"}"#), None);
+    }
+
+    #[test]
+    fn a_key_of_the_console_is_billed_by_use() {
+        // As Claude Code 2.1.331 answered for a key made by /login, then for a subscription.
+        let console = r#"{"loggedIn":true,"authMethod":"api_key","apiProvider":"firstParty","apiKeySource":"/login managed key"}"#;
+        assert_eq!(says_billed_by_use(console), Some(true));
+        assert_eq!(says_billed_by_use(r#"{"loggedIn":true,"authMethod":"claude.ai","apiProvider":"firstParty","subscriptionType":"pro"}"#), Some(false));
+        assert_eq!(says_billed_by_use(r#"{"loggedIn":true,"authMethod":"api_key","apiProvider":"gateway"}"#), Some(false));
+        assert_eq!(says_billed_by_use("{}"), None);
+        assert_eq!(says_billed_by_use("not json"), None);
         assert_eq!(subscription_type("not json"), None);
     }
 

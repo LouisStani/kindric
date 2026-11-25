@@ -15,7 +15,9 @@ use serde_json::{Map, Value};
 use crate::files;
 use crate::launch;
 use crate::paths::Paths;
+use crate::provider;
 use crate::registry;
+use crate::status;
 
 /// The subcommand Claude Code runs for the status line.
 pub const SUBCOMMAND: &str = "statusline";
@@ -83,14 +85,19 @@ pub fn read_history(paths: &Paths, name: &str) -> Vec<Usage> {
     text.lines().filter_map(|line| serde_json::from_str(line).ok()).collect()
 }
 
-fn last_noted(file: &Path) -> Option<Usage> {
+/// The end of `file`, its first line perhaps cut; `None` when it cannot be read.
+fn tail_of(file: &Path) -> Option<String> {
     use std::io::{Read, Seek, SeekFrom};
-    let mut history = std::fs::File::open(file).ok()?;
-    let length = history.metadata().ok()?.len();
-    history.seek(SeekFrom::Start(length.saturating_sub(HISTORY_TAIL_BYTES))).ok()?;
-    let mut tail = String::new();
-    history.read_to_string(&mut tail).ok()?;
-    serde_json::from_str(tail.lines().last()?).ok()
+    let mut file = std::fs::File::open(file).ok()?;
+    let length = file.metadata().ok()?.len();
+    file.seek(SeekFrom::Start(length.saturating_sub(HISTORY_TAIL_BYTES))).ok()?;
+    let mut tail = Vec::new();
+    file.read_to_end(&mut tail).ok()?;
+    Some(String::from_utf8_lossy(&tail).into_owned())
+}
+
+fn last_noted(file: &Path) -> Option<Usage> {
+    serde_json::from_str(tail_of(file)?.lines().last()?).ok()
 }
 
 fn first_noted(file: &Path) -> io::Result<Option<Usage>> {
@@ -198,6 +205,147 @@ fn forget_old_contexts(dir: &Path, now: i64) {
     }
 }
 
+/// What a session of an account paid by use has cost since it started, as its status line gave it.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct Cost {
+    pub session_id: String,
+    /// US dollars; it goes on when the session is resumed.
+    pub total_usd: f64,
+    /// Unix seconds.
+    pub updated_at: i64,
+}
+
+/// One line each time the cost of a session of `name` grew.
+pub fn cost_file(paths: &Paths, name: &str) -> PathBuf {
+    paths.data_root.join(".usage").join("cost").join(format!("{name}.jsonl"))
+}
+
+/// The costs noted for `name`, oldest first; lines that cannot be read are skipped.
+pub fn read_costs(paths: &Paths, name: &str) -> Vec<Cost> {
+    std::fs::read_to_string(cost_file(paths, name)).map(|text| costs_in(&text)).unwrap_or_default()
+}
+
+fn costs_in(text: &str) -> Vec<Cost> {
+    text.lines().filter_map(|line| serde_json::from_str(line).ok()).collect()
+}
+
+/// The cost of the session in the status line input; `None` before it cost anything.
+fn cost_of(input: &[u8], now: i64) -> Option<Cost> {
+    #[derive(Deserialize)]
+    struct Input {
+        session_id: Option<String>,
+        cost: Option<Given>,
+    }
+    #[derive(Deserialize)]
+    struct Given {
+        total_cost_usd: Option<f64>,
+    }
+    let input = serde_json::from_slice::<Input>(input).ok()?;
+    let session_id = input.session_id.filter(|id| is_session_id(id))?;
+    let total_usd = input.cost?.total_cost_usd.filter(|total| total.is_finite() && *total > 0.0)?;
+    Some(Cost { session_id, total_usd, updated_at: now })
+}
+
+/// Whether an account without a provider pays by use, and when Claude Code was asked.
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+struct Billing {
+    by_use: bool,
+    /// Unix seconds.
+    asked_at: i64,
+}
+
+/// A login may change: Claude Code is asked again after this long, in seconds.
+const BILLING_KEPT_SECONDS: i64 = 10 * 60;
+
+fn billing_file(paths: &Paths, name: &str) -> PathBuf {
+    paths.data_root.join(".usage").join("billing").join(format!("{name}.json"))
+}
+
+/// Whether what Claude Code says the sessions of `name` cost is what they cost: with a key of
+/// Anthropic, of the account's provider or of its login. A subscription is not paid by use, and
+/// Claude Code gives the models it does not know (Ollama, OpenRouter, gateways) the price of
+/// another. `ask` asks Claude Code how the account in a directory is billed.
+fn paid_by_use(paths: &Paths, name: &str, now: i64, ask: impl Fn(&Path) -> Option<bool>) -> io::Result<bool> {
+    let dir = paths.account_dir(name);
+    match provider::read(&dir) {
+        Ok(Some(provider)) => return Ok(provider.provider == provider::Kind::Api),
+        Ok(None) => {},
+        Err(_) => return Ok(false),
+    }
+    let file = billing_file(paths, name);
+    let known = std::fs::read_to_string(&file).ok().and_then(|text| serde_json::from_str::<Billing>(&text).ok());
+    if let Some(known) = known.filter(|known| (0..BILLING_KEPT_SECONDS).contains(&(now - known.asked_at))) {
+        return Ok(known.by_use);
+    }
+    let by_use = ask(&dir).unwrap_or(false);
+    write_json(&file, &Billing { by_use, asked_at: now })?;
+    Ok(by_use)
+}
+
+/// Asks the `claude` of `PATH`.
+fn ask_claude(dir: &Path) -> Option<bool> {
+    status::billed_by_use(&launch::require_claude().ok()?, dir)
+}
+
+/// `costs` without those before `oldest_kept`, except the last one of a session that has some
+/// after: what it costs later is counted from it.
+fn recent_costs(costs: Vec<Cost>, oldest_kept: i64) -> Vec<Cost> {
+    let split = costs.partition_point(|cost| cost.updated_at < oldest_kept);
+    let (old, recent) = costs.split_at(split);
+    let mut kept: Vec<Cost> = Vec::new();
+    for (index, cost) in old.iter().enumerate() {
+        let same = |other: &Cost| other.session_id == cost.session_id;
+        if recent.iter().any(same) && !old[index + 1..].iter().any(same) {
+            kept.push(cost.clone());
+        }
+    }
+    kept.extend_from_slice(recent);
+    kept
+}
+
+/// Whether the last line of its session in `costs` says `cost`.
+fn already_noted(costs: &[Cost], cost: &Cost) -> bool {
+    let last = costs.iter().rev().find(|noted| noted.session_id == cost.session_id);
+    #[allow(clippy::float_cmp)] // The same figure read twice.
+    last.is_some_and(|noted| noted.total_usd == cost.total_usd)
+}
+
+/// Notes `cost` unless the last line of its session already says it, then drops what is older
+/// than `HISTORY_KEPT_SECONDS` once there is a day of it. Two status lines cutting and noting at
+/// the same moment can lose one line: the next one of the session makes up for it.
+fn note_cost(file: &Path, cost: &Cost) -> io::Result<()> {
+    // A status line runs far more often than its session replies: the end of the file is enough
+    // most of the time.
+    if already_noted(&tail_of(file).map(|tail| costs_in(&tail)).unwrap_or_default(), cost) {
+        return Ok(());
+    }
+    let text = match std::fs::read_to_string(file) {
+        Ok(text) => text,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => String::new(),
+        Err(error) => return Err(error),
+    };
+    let costs = costs_in(&text);
+    if already_noted(&costs, cost) {
+        return Ok(());
+    }
+    if let Some(dir) = file.parent() {
+        files::create_private_dir(dir)?;
+    }
+    files::append_line(file, &serde_json::to_string(cost).map_err(io::Error::other)?)?;
+    let oldest_kept = cost.updated_at - HISTORY_KEPT_SECONDS;
+    let too_old = |noted: &Cost| noted.updated_at < oldest_kept - HISTORY_SLACK_SECONDS;
+    let bases = recent_costs(costs.clone(), oldest_kept).iter().filter(|noted| noted.updated_at < oldest_kept).count();
+    if costs.iter().filter(|noted| too_old(noted)).count() > bases {
+        let mut text = String::new();
+        for kept in recent_costs(costs, oldest_kept).iter().chain([cost]) {
+            text.push_str(&serde_json::to_string(kept).map_err(io::Error::other)?);
+            text.push('\n');
+        }
+        files::write_atomic(file, &text)?;
+    }
+    Ok(())
+}
+
 fn write_json(file: &Path, value: &impl Serialize) -> io::Result<()> {
     if let Some(dir) = file.parent() {
         files::create_private_dir(dir)?;
@@ -243,18 +391,31 @@ fn account_of(paths: &Paths, config_dir: Option<&OsStr>) -> Option<String> {
     (listed && paths.account_dir(&name) == dir).then_some(name)
 }
 
-/// Writes down the figures of `input` for the account of `config_dir`, and how full the context
-/// of its session is. Nothing to write is not an error.
+/// Writes down the figures of `input` for the account of `config_dir`, how full the context of its
+/// session is, and what it cost when the account is paid by use. Nothing to write is not an error.
 pub fn record(paths: &Paths, config_dir: Option<&OsStr>, input: &[u8], now: i64) -> io::Result<()> {
+    record_asking(paths, config_dir, input, now, ask_claude)
+}
+
+fn record_asking(paths: &Paths, config_dir: Option<&OsStr>, input: &[u8], now: i64, ask: impl Fn(&Path) -> Option<bool>) -> io::Result<()> {
     let Some(name) = account_of(paths, config_dir) else {
         return Ok(());
     };
     // A history that cannot be written leaves the context to note all the same.
     let mut history = Ok(());
-    if let Some(usage) = usage_of(input, now) {
+    let usage = usage_of(input, now);
+    // Claude Code gives limits to subscriptions only: asking about those is needless.
+    let subscription = usage.is_some();
+    if let Some(usage) = usage {
         write_json(&usage_file(paths, &name), &usage)?;
         history = note_history(&history_file(paths, &name), &usage)
             .map_err(|error| io::Error::new(error.kind(), format!("history of {name}: {error}")));
+    }
+    let mut cost_noted = Ok(());
+    if let Some(cost) = cost_of(input, now).filter(|_| !subscription) {
+        cost_noted = paid_by_use(paths, &name, now, ask)
+            .and_then(|by_use| if by_use { note_cost(&cost_file(paths, &name), &cost) } else { Ok(()) })
+            .map_err(|error| io::Error::new(error.kind(), format!("costs of {name}: {error}")));
     }
     if let Some((session, context)) = context_of(input, now)
         && let Some(file) = context_file(paths, &name, &session)
@@ -265,7 +426,7 @@ pub fn record(paths: &Paths, config_dir: Option<&OsStr>, input: &[u8], now: i64)
             forget_old_contexts(&context_dir(paths, &name), now);
         }
     }
-    history
+    history.and(cost_noted)
 }
 
 /// The command of the user's status line, in `~/.claude/settings.json`.
@@ -903,6 +1064,90 @@ mod tests {
 
     fn noted_at(paths: &Paths, name: &str) -> Vec<i64> {
         read_history(paths, name).iter().map(|usage| usage.updated_at).collect()
+    }
+
+    fn costing(session: &str, total: &str) -> String {
+        format!(r#"{{"session_id":"{session}","cost":{{"total_cost_usd":{total},"total_duration_ms":5}}}}"#)
+    }
+
+    fn paid_with(paths: &Paths, name: &str, kind: provider::Kind) {
+        fs::create_dir_all(paths.account_dir(name)).unwrap();
+        provider::write(&paths.account_dir(name), &provider::Provider { provider: kind, url: None, model: None }).unwrap();
+    }
+
+    fn costs_noted(paths: &Paths, name: &str) -> Vec<(String, f64)> {
+        read_costs(paths, name).into_iter().map(|cost| (cost.session_id, cost.total_usd)).collect()
+    }
+
+    #[test]
+    fn a_session_costs_what_claude_code_says() {
+        let cost = cost_of(costing("s1", "0.012").as_bytes(), 7);
+        assert_eq!(cost, Some(Cost { session_id: "s1".into(), total_usd: 0.012, updated_at: 7 }));
+        assert_eq!(cost_of(costing("s1", "0").as_bytes(), 7), None, "nothing yet");
+        assert_eq!(cost_of(costing("../up", "1").as_bytes(), 7), None);
+        assert_eq!(cost_of(br#"{"session_id":"s1"}"#, 7), None);
+    }
+
+    #[test]
+    fn the_cost_is_noted_when_it_grows_for_a_key_of_anthropic_only() {
+        let (root, paths) = setup("cost", &["key", "login", "router"]);
+        paid_with(&paths, "key", provider::Kind::Api);
+        paid_with(&paths, "router", provider::Kind::OpenRouter);
+        for name in ["key", "login", "router"] {
+            let dir = paths.account_dir(name).into_os_string();
+            for (at, session, total) in [(1, "s1", "0.01"), (2, "s1", "0.01"), (3, "s2", "0.5"), (4, "s1", "0.01"), (5, "s1", "0.02")] {
+                record_asking(&paths, Some(&dir), costing(session, total).as_bytes(), at, |_| Some(false)).unwrap();
+            }
+        }
+        assert_eq!(costs_noted(&paths, "key"), [("s1".into(), 0.01), ("s2".into(), 0.5), ("s1".into(), 0.02)]);
+        assert_eq!(costs_noted(&paths, "login"), []);
+        assert_eq!(costs_noted(&paths, "router"), [], "Claude Code does not know its prices");
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn a_login_is_asked_how_it_is_billed_once_in_a_while() {
+        let (root, paths) = setup("billing", &["console", "unknown", "plan"]);
+        let asked = std::cell::Cell::new(0);
+        let noted = |name: &str, input: &str, at: i64, answer: Option<bool>| {
+            let dir = paths.account_dir(name).into_os_string();
+            record_asking(&paths, Some(&dir), input.as_bytes(), at, |_| {
+                asked.set(asked.get() + 1);
+                answer
+            })
+            .unwrap();
+        };
+        noted("console", &costing("s1", "0.01"), 1_000, Some(true));
+        noted("console", &costing("s1", "0.02"), 1_000 + BILLING_KEPT_SECONDS - 1, Some(false));
+        assert_eq!((costs_noted(&paths, "console").len(), asked.get()), (2, 1));
+        noted("console", &costing("s1", "0.03"), 1_000 + BILLING_KEPT_SECONDS, Some(false));
+        assert_eq!((costs_noted(&paths, "console").len(), asked.get()), (2, 2), "a subscription since");
+        noted("unknown", &costing("s1", "0.01"), 1, None);
+        assert_eq!((costs_noted(&paths, "unknown").len(), asked.get()), (0, 3));
+        let plan = r#"{"session_id":"s1","cost":{"total_cost_usd":1.0},"rate_limits":{"five_hour":{"used_percentage":1,"resets_at":9}}}"#;
+        noted("plan", plan, 1, Some(true));
+        assert_eq!((costs_noted(&paths, "plan").len(), asked.get()), (0, 3), "limits: a subscription, not asked");
+        noted("plan", &costing("s1", "0"), 2, Some(true));
+        assert_eq!(asked.get(), 3, "nothing paid yet, not asked");
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn old_costs_go_but_what_a_session_still_costs_counts_from_its_last_one() {
+        let (root, paths) = setup("cost-cut", &["key"]);
+        paid_with(&paths, "key", provider::Kind::Api);
+        let now = 1_794_400_000;
+        let old = now - HISTORY_KEPT_SECONDS - HISTORY_SLACK_SECONDS - 10;
+        let file = cost_file(&paths, "key");
+        files::create_private_dir(file.parent().unwrap()).unwrap();
+        let line = |session: &str, total: f64, at: i64| format!(r#"{{"session_id":"{session}","total_usd":{total},"updated_at":{at}}}"#);
+        fs::write(&file, [line("long", 1.0, old), line("gone", 3.0, old + 1), line("long", 2.0, old + 2), line("long", 2.5, now - 50)].join("\n") + "\n").unwrap();
+        let dir = paths.account_dir("key").into_os_string();
+        record(&paths, Some(&dir), costing("new", "0.1").as_bytes(), now).unwrap();
+        assert_eq!(costs_noted(&paths, "key"), [("long".into(), 2.0), ("long".into(), 2.5), ("new".into(), 0.1)]);
+        record(&paths, Some(&dir), costing("new", "0.2").as_bytes(), now + 1).unwrap();
+        assert_eq!(costs_noted(&paths, "key").len(), 4, "what is kept as a start is not cut again");
+        fs::remove_dir_all(root).unwrap();
     }
 
     #[test]

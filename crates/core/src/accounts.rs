@@ -505,6 +505,11 @@ pub fn histories(paths: &Paths, names: &[String]) -> BTreeMap<String, Vec<usage:
     names.iter().map(|name| (name.clone(), usage::read_history(paths, name))).collect()
 }
 
+/// What the sessions of each of `names` cost, as their status lines noted it.
+pub fn costs(paths: &Paths, names: &[String]) -> BTreeMap<String, Vec<usage::Cost>> {
+    names.iter().map(|name| (name.clone(), usage::read_costs(paths, name))).collect()
+}
+
 /// The accounts registered, then those kept out of messages: two small files.
 pub fn registered(paths: &Paths) -> io::Result<(Vec<String>, Vec<String>)> {
     let accounts = registry::list_accounts(paths).map_err(library_error)?;

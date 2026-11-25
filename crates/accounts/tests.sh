@@ -359,6 +359,13 @@ test_statusline() {
 	check "statusline garde l'historique, sans doublon des mêmes chiffres" test "$(wc -l <"$HOME/.local/share/kindric-accounts/.usage/history/pro1.jsonl")" -eq 1
 	out=$(printf '%s' "$input" | CLAUDE_CONFIG_DIR="$SANDBOX/ailleurs/pro2" ca statusline)
 	check "statusline : dossier hors comptes, rien noté" test ! -e "$HOME/.local/share/kindric-accounts/.usage/pro2.json"
+	local cost='{"session_id":"s1","cost":{"total_cost_usd":0.012}}' costs="$HOME/.local/share/kindric-accounts/.usage/cost"
+	printf '%s' "$cost" | CLAUDE_CONFIG_DIR="$(data_dir pro1)" ca statusline >/dev/null
+	check "statusline : le coût d'un abonnement n'est pas noté" test ! -e "$costs/pro1.jsonl"
+	printf '{"provider":"api"}' >"$(data_dir pro1)/kindric-provider.json"
+	printf '%s' "$cost" | CLAUDE_CONFIG_DIR="$(data_dir pro1)" ca statusline >/dev/null
+	check "statusline note le coût d'un compte à clé Anthropic" json_true '.session_id == "s1" and .total_usd == 0.012' "$costs/pro1.jsonl"
+	rm -- "$(data_dir pro1)/kindric-provider.json"
 	printf '{}\n' >"$HOME/.claude/settings.json"
 }
 

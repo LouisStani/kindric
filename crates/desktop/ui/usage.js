@@ -2,7 +2,7 @@
 // each project and session, and the cache written hour by hour. Rust reads the transcripts and the
 // history of the status lines (`stats`); usage-board.js works out what to show.
 
-import { PERIODS, byProject, bySession, cacheColumns, newTokens, tokensText, total, weekOf, weekText } from "./usage-board.js";
+import { PERIODS, byProject, bySession, cacheColumns, costOf, costText, newTokens, tokensText, total, weekOf, weekText } from "./usage-board.js";
 
 const { invoke } = window.__TAURI__.core;
 
@@ -136,25 +136,31 @@ export class UsageWindow {
 
   // A line per row: the bar counts the new tokens, the cache read again has its own column.
   tokens(title, rows, sum) {
-    const note = sum ? `${tokensText(newTokens(sum))} new, ${tokensText(sum.cache_read)} read again from the cache` : "since each one started";
+    const cost = costOf(rows);
+    const paid = cost > 0 ? `, ${costText(cost)} paid by use` : "";
+    const note = sum ? `${tokensText(newTokens(sum))} new, ${tokensText(sum.cache_read)} read again from the cache${paid}` : "since each one started";
     const box = section(title, note);
     if (rows.length === 0) {
       box.append(element("p", "muted", "nothing in this period"));
       return box;
     }
-    const head = element("div", "usage-row usage-row-head");
+    // The column of the costs only when something was paid by use.
+    const kind = cost > 0 ? "usage-row with-cost" : "usage-row";
+    const head = element("div", `${kind} usage-row-head`);
     head.append(element("span"), element("span"), element("span", "usage-figure", "new"), element("span", "usage-figure", "cache read"));
+    if (cost > 0) head.append(element("span", "usage-figure", "cost"));
     box.append(head);
     const most = Math.max(1, ...rows.filter((row) => !row.rest).map((row) => newTokens(row.tokens)));
     for (const row of rows) {
       const { input, output, cache_creation: written } = row.tokens;
-      const line = element("div", row.rest ? "usage-row is-rest" : "usage-row");
+      const line = element("div", row.rest ? `${kind} is-rest` : kind);
       const name = element("span", "usage-name", row.name);
       name.title = row.title;
       if (row.project) name.append(element("span", "usage-project", ` · ${row.project}`));
       const track = row.rest ? element("span") : bar("", newTokens(row.tokens) / most);
       track.title = `input ${tokensText(input)} · output ${tokensText(output)} · cache written ${tokensText(written)}`;
       line.append(name, track, element("span", "usage-figure", tokensText(newTokens(row.tokens))), element("span", "usage-figure", tokensText(row.tokens.cache_read)));
+      if (cost > 0) line.append(element("span", "usage-figure", costText(row.cost)));
       box.append(line);
     }
     return box;
