@@ -29,7 +29,7 @@ use kindric_core::launcher::{self, Request, resolve_directory};
 use kindric_core::mailbox::Mailbox;
 use kindric_core::accounts::SessionInfo;
 use kindric_core::artifacts::{self, Kind};
-use kindric_core::{accounts, activity, attach, atlas, codex_approval, opencode, opencode_request, away, changes, checks, claude_theme, images, mailbox, origins, overview, refresher, steps, worktrees};
+use kindric_core::{account_limits, accounts, activity, attach, atlas, codex_approval, opencode, opencode_request, away, changes, checks, claude_theme, images, mailbox, origins, overview, refresher, steps, worktrees};
 use serde::Serialize;
 use serde::de::DeserializeOwned;
 use tauri::ipc::{Channel, InvokeResponseBody, Response};
@@ -88,6 +88,8 @@ struct Shared {
     /// When the page first saw each request of an OpenCode session, by request id (decision 441):
     /// those requests are read again from the service at each reading, and keep their time.
     opencode_seen: Mutex<HashMap<String, i64>>,
+    /// The limits of the Codex accounts, asked to their daemons now and then.
+    account_limits: account_limits::AccountLimits,
     /// Held while the statistics are read: two calls wait for each other instead of reading the
     /// same transcripts and writing the same cache at once.
     stats_reading: Mutex<()>,
@@ -252,6 +254,8 @@ struct ControlFigures {
     kept: std::collections::BTreeMap<String, usize>,
     /// Account → its provider and model, for the accounts whose model is not a Claude login.
     providers: std::collections::BTreeMap<String, String>,
+    /// Codex or OpenCode account → its limits, none for one without; null while not known.
+    limits: std::collections::BTreeMap<String, Option<Vec<account_limits::CardLimit>>>,
 }
 
 /// What the control center shows of the session picked: its last steps, when its transcript was
@@ -310,8 +314,13 @@ fn control_figures(shared: State<'_, Shared>, accounts: Vec<String>, sessions: V
         .chain(std::iter::once(None))
         .map(|project| artifacts::root_of_project(&data, project))
         .collect();
+    let now = unix_now()?;
+    let limits = shared
+        .account_limits
+        .read(&paths, &accounts, now, |account, error| eprintln!("kindric-desktop: limits of {account} not read: {error}"));
     Ok(ControlFigures {
-        usages: accounts::usages(&paths, &accounts, unix_now()?),
+        limits,
+        usages: accounts::usages(&paths, &accounts, now),
         contexts: accounts::contexts(&paths, &sessions),
         kept: origins::kept_for_user(&roots),
         providers: accounts::provider_labels(&paths, &accounts),
@@ -1851,6 +1860,7 @@ fn main() -> ExitCode {
         claude_facts: Mutex::new(None),
         codex_asked: Mutex::new(HashMap::new()),
         opencode_seen: Mutex::new(HashMap::new()),
+        account_limits: account_limits::AccountLimits::default(),
         stats_reading: Mutex::new(()),
     };
     let built = tauri::Builder::default()

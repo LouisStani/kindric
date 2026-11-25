@@ -56,6 +56,12 @@ function clockOf(seconds) {
   return new Date(seconds * 1000).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
 }
 
+// When a window starts again: the time when less than a day away, else the day.
+function resetText(seconds) {
+  if (seconds - Date.now() / 1000 < 86_400) return `at ${clockOf(seconds)}`;
+  return `on ${new Date(seconds * 1000).toLocaleDateString([], { day: "numeric", month: "short" })}`;
+}
+
 // A bar filled to `percent`, set through the CSSOM: the page's policy refuses style attributes.
 function bar(className, percent) {
   const track = element("span", `bar ${className}`);
@@ -251,7 +257,7 @@ export class Overview {
       projects.append(line);
     }
     projects.append(button("control-add", "+ add a project", () => this.onAddProject()));
-    const cards = accountCards(rows, accounts, this.figures.usages ?? [], this.figures.providers ?? {});
+    const cards = accountCards(rows, accounts, this.figures.usages ?? [], this.figures.providers ?? {}, this.figures.limits ?? {});
     const title = element("h3", "control-side-title", "accounts");
     this.side.replaceChildren(projects, title, ...cards.map((card) => this.accountCard(card)));
   }
@@ -271,16 +277,14 @@ export class Overview {
     const head = element("div", "account-head");
     head.append(element("strong", "", card.name), element("span", "", card.sessions === 1 ? "1 session" : `${card.sessions} sessions`));
     box.append(head, element("p", "account-provider", card.provider));
-    if (!card.usage) {
-      box.append(element("p", "account-note", card.limits ? "no figures yet" : "no 5h or 7d limits"));
-      return box;
-    }
-    for (const [label, percent] of [["5h", card.usage.five_hour], ["7d", card.usage.seven_day]]) {
+    if (card.note) box.append(element("p", "account-note", card.note));
+    card.bars.forEach(({ label, percent }, index) => {
       const line = element("div", "account-line");
-      line.append(element("span", "", label), bar(label === "5h" && card.hot ? "hot" : "", percent), element("span", "account-percent", `${Math.round(percent)}%`));
+      line.append(element("span", "", label), bar(index === 0 && card.hot ? "hot" : "", percent), element("span", "account-percent", `${Math.round(percent)}%`));
       box.append(line);
-    }
-    if (card.usage.five_hour_resets_at) box.append(element("p", "account-note", `5h resets at ${clockOf(card.usage.five_hour_resets_at)}`));
+    });
+    const [first] = card.bars;
+    if (first?.resetsAt) box.append(element("p", "account-note", `${first.label} resets ${resetText(first.resetsAt)}`));
     return box;
   }
 

@@ -132,21 +132,47 @@ export function keptLabel(kept, fresh) {
 // From this share of its five hours, an account's card is framed (mockup C2).
 export const HOT_PERCENT = 80;
 
+// How long a window lasts, in words: "5h", "7d", "30d".
+export function windowText(minutes) {
+  if (minutes === null) return "limit";
+  if (minutes % 1440 === 0) return `${minutes / 1440}d`;
+  return minutes % 60 === 0 ? `${minutes / 60}h` : `${minutes}min`;
+}
+
+// The limits of a Claude subscription, as a card shows them.
+function claudeBars(usage) {
+  return [
+    { label: "5h", percent: usage.five_hour, resetsAt: usage.five_hour_resets_at },
+    { label: "7d", percent: usage.seven_day, resetsAt: null },
+  ];
+}
+
 // The accounts of the side: those of `accounts` (the registry's order), then any other a session
 // runs on; one is kept with sessions running, figures, or a model that is not a Claude login.
-// `usages` and `providers` as `control_figures` gives them; `provider` is "claude" for a Claude
-// login, else the provider and model ("openrouter qwen3"), whose account has no five-hour or weekly
-// limits (decision 417).
-export function accountCards(rows, accounts, usages, providers = {}) {
+// `usages`, `providers` and `limits` as `control_figures` gives them; `provider` is "claude" for a
+// Claude login, else the provider and model ("openrouter qwen3"), whose account has no five-hour or
+// weekly limits (decision 417), or the agent ("codex"), whose limits are its own (decision 464).
+// `bars` are the limits, shortest window first (the first one frames the card); `note` says why
+// there are none.
+export function accountCards(rows, accounts, usages, providers = {}, limits = {}) {
   const names = new Set([...accounts, ...rows.map((row) => row.account)]);
   return [...names]
     .map((name) => {
       const usage = usages.find((candidate) => candidate.name === name) ?? null;
       const sessions = rows.filter((row) => row.account === name && row.state !== "paused").length;
       const provider = providers[name] ?? null;
-      return { name, sessions, usage, provider: provider ?? "claude", limits: provider === null, hot: usage !== null && usage.five_hour >= HOT_PERCENT };
+      const ofAgent = name in limits;
+      let bars = [];
+      if (usage) bars = claudeBars(usage);
+      else if (ofAgent) bars = (limits[name] ?? []).map((limit) => ({ label: windowText(limit.minutes), percent: limit.percent, resetsAt: limit.resets_at }));
+      let note = null;
+      if (bars.length === 0) {
+        if (ofAgent) note = limits[name] === null ? "no figures yet" : "no limits";
+        else note = provider === null ? "no figures yet" : "no 5h or 7d limits";
+      }
+      return { name, sessions, provider: provider ?? "claude", bars, note, hot: bars.length > 0 && bars[0].percent >= HOT_PERCENT };
     })
-    .filter((card) => card.sessions > 0 || card.usage !== null || !card.limits);
+    .filter((card) => card.sessions > 0 || card.bars.length > 0 || card.provider !== "claude");
 }
 
 // Whether a prompt can be typed into a session from here: one kindric runs in the background

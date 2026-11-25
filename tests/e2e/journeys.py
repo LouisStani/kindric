@@ -2357,8 +2357,8 @@ class CodexSessionsInKindric(Journey):
     """A Codex account's sessions, read from its daemon: in the bar with their states (a permission
     waiting is a question); one opens in a pane, Codex's TUI started in its folder; Ctrl+N on the
     Codex account starts a named session in the daemon; Ctrl+Shift+K stops the turn of a working
-    one and hides it; a message typed in the control center goes to Codex for the session; the
-    command a session asks to run shows in the control center, and "a" allows it through the
+    one and hides it; the account's card has the limit its daemon gives; a message typed in the
+    control center goes to Codex for the session; the command a session asks to run shows in the control center, and "a" allows it through the
     daemon; the purge archives the one idle for 10 days."""
 
     THREADS = [
@@ -2424,7 +2424,7 @@ class CodexSessionsInKindric(Journey):
         with open(os.path.join(CODEX_ACCOUNT_DIR, "hooks.json"), encoding="utf-8") as file:
             hooks = json.load(file)["hooks"]
         commands = sorted({hook["command"].split()[-1] for groups in hooks.values() for group in groups for hook in group["hooks"]})
-        self.assertEqual(commands, ["away-hook", "overview-start"])
+        self.assertEqual(commands, ["away-hook", "overview-start", "unread"])
         self.assertTrue(os.path.exists(os.path.join(CODEX_ACCOUNT_DIR, ".kindric-hooks-trusted")), "Codex was not asked to trust them")
 
         open_from_bar(driver, "codex-busy")
@@ -2436,6 +2436,10 @@ class CodexSessionsInKindric(Journey):
         self.assertEqual([turn["status"] for turn in busy.get("turns", [])], ["completed", "interrupted"])
 
         driver.press(CONTROL, SHIFT, "0")
+        card = """const card = [...document.querySelectorAll('.account-card')].find((card) => card.querySelector('strong').textContent === 'cx');
+          return card ? [...card.querySelectorAll('.account-line > span:first-child, .account-percent, .account-note')].map((part) => part.textContent) : [];"""
+        wait_until("the limit of cx on its card", lambda: driver.script(card)[:2] == ["30d", "12%"] or None)
+        self.assertTrue(driver.script(card)[2].startswith("30d resets on "), driver.script(card))
         idle = self.THREADS[0]["id"]
         wait_until("codex-idle in the control center", lambda: driver.find(f"[data-key='row/{idle}']"))
         picked = "return document.querySelector('.control-row.selected')?.dataset.session ?? null"
