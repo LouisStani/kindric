@@ -16,6 +16,7 @@ import { summaryOf } from "./overview-board.js";
 import { chipState, dotSign, stateWords, tabMark } from "./chips.js";
 import { pickerItems } from "./picker.js";
 import { Typing } from "./typing.js";
+import { UsageWindow } from "./usage.js";
 
 const { invoke } = window.__TAURI__.core;
 const { listen } = window.__TAURI__.event;
@@ -586,6 +587,11 @@ function openArtifacts() {
   return artifactsWindow.open(project ? project.directory : null, project ? project.name : "other");
 }
 
+// F3: the limits and the tokens of every account.
+function openUsage() {
+  return usageWindow.open();
+}
+
 // Ctrl+Shift+B: the worktrees of the project of the visible tab.
 function openWorktrees() {
   const project = panes.activeTab().project;
@@ -1129,6 +1135,7 @@ const SHORTCUTS = [
   { group: "app", id: "artifacts", keys: "ctrl+shift+a", help: "artifacts of this project", run: openArtifacts },
   { group: "app", id: "worktrees", keys: "ctrl+shift+b", help: "worktrees of this project: merged or not, remove", run: openWorktrees },
   { group: "app", id: "settings", keys: "ctrl+comma", help: "settings: accounts, memory, sessions, shortcuts", run: openSettings },
+  { group: "app", id: "usage", keys: "f3", help: "usage: weekly limits, tokens by project and session", run: openUsage },
   { group: "app", id: "next-theme", keys: "ctrl+shift+e", help: "next theme", run: cycleTheme },
   { group: "app", id: "project-theme", keys: "ctrl+alt+e", help: "theme of this project: the next, then kindric's", run: cycleProjectTheme },
   { group: "app", id: "help", keys: "f1", help: "what is left to set up, and these shortcuts", run: openHelp },
@@ -1319,10 +1326,14 @@ const artifactsWindow = new ArtifactsWindow(document.getElementById("artifacts")
 const changesWindow = new ChangesWindow(document.getElementById("changes"));
 const worktreesWindow = new WorktreesWindow(document.getElementById("worktrees"));
 const atlasWindow = new AtlasWindow(document.getElementById("atlas"), { onError: setStatus });
+const usageWindow = new UsageWindow(document.getElementById("usage"), {
+  labelOf: (account, session) => lastView.sessions.find((row) => row.account === account && row.session_id === session)?.label ?? null,
+});
 const settingsWindow = new SettingsWindow(document.getElementById("settings"), {
   shortcuts: shortcutSettings,
   onAccounts: (accounts) => (accountStatuses = accounts),
   onAtlas: () => atlasWindow.open(),
+  onUsage: openUsage,
   onTabs: (tabs) => panes.render(tabs),
 });
 

@@ -23,7 +23,9 @@ ENTER = ""
 ESCAPE = ""
 TAB = ""
 F2 = ""
+F3 = ""
 ARROW_DOWN = "\ue015"
+ARROW_RIGHT = "\ue014"
 DELETE = "\ue017"
 
 T = TypeVar("T")

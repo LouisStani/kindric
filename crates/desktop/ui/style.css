@@ -1201,6 +1201,136 @@ input:focus, select:focus {
   width: min(760px, 90vw);
 }
 
+#usage {
+  width: min(900px, 94vw);
+  max-height: 90vh;
+  outline: none;
+}
+
+.usage-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: var(--gap);
+}
+
+.usage-head h1 {
+  margin: 0;
+}
+
+.usage-periods {
+  display: flex;
+  gap: 6px;
+}
+
+.usage-periods .on {
+  border-color: var(--active);
+  background: var(--active);
+  color: var(--on-active);
+}
+
+.usage-section {
+  margin-top: 20px;
+}
+
+.usage-section h2 {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 4px 12px;
+  margin: 0 0 8px;
+  font-size: 13px;
+}
+
+.usage-section-note, .usage-week-text, .usage-week-age, .usage-caption {
+  font-size: 12px;
+  font-weight: 400;
+  color: var(--muted);
+}
+
+.usage-week {
+  display: grid;
+  grid-template-columns: 12ch minmax(0, 1fr) 5ch;
+  align-items: center;
+  gap: 0 var(--gap);
+  padding: 4px 0;
+}
+
+.usage-week strong, .usage-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.usage-week-text, .usage-week-age {
+  grid-column: 2 / -1;
+}
+
+.usage-row {
+  display: grid;
+  grid-template-columns: minmax(10ch, 26ch) minmax(0, 1fr) 8ch 10ch;
+  align-items: center;
+  gap: var(--gap);
+  padding: 3px 0;
+}
+
+.usage-row-head, .usage-row.is-rest {
+  color: var(--muted);
+}
+
+/* On the cells: the columns, in ch, keep their width. */
+.usage-row-head > *, .usage-row.is-rest > *, .usage-project {
+  font-size: 12px;
+}
+
+.usage-project {
+  color: var(--muted);
+}
+
+.usage-figure {
+  text-align: right;
+  white-space: nowrap;
+}
+
+.usage-columns {
+  display: flex;
+  align-items: flex-end;
+  height: 96px;
+  border-bottom: 1px solid var(--line-strong);
+}
+
+/* The whole height answers the mouse, not only the drawn part. */
+.usage-column {
+  display: flex;
+  align-items: flex-end;
+  flex: 1 1 0;
+  min-width: 0;
+  height: 100%;
+  padding: 0 0.5px;
+}
+
+.usage-columns.is-days .usage-column {
+  padding: 0 1px;
+}
+
+.usage-column-fill {
+  flex: 1;
+  border-radius: 2px 2px 0 0;
+  background: var(--muted);
+}
+
+.usage-column:hover .usage-column-fill {
+  background: var(--text-strong);
+}
+
+.usage-caption {
+  margin: 6px 0 0;
+}
+
+.usage-problem {
+  color: var(--error);
+}
+
 .worktree-branch {
   font-size: 11px;
   color: var(--faint);

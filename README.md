@@ -72,6 +72,7 @@ Only sessions started after this get it.
 | `Ctrl+Shift+T` | Add a project tab |
 | `Ctrl+Shift+0` | Control center |
 | `Alt+1` … `Alt+9` | Open chip n of the bar (`Alt+1` is the session that needs you most) |
+| `F3` | Usage: limits and tokens |
 | `F1` | Setup checklist and every shortcut |
 
 On macOS, `Cmd` replaces `Ctrl`.
