@@ -16,7 +16,7 @@ use crate::mailbox::is_valid_session_id;
 use crate::overview::{self, Body, Request};
 use crate::progress::{one_line, timeline_tail};
 
-/// The end of the reply kept as the question's context, in characters: the page shows it whole.
+/// How much of the reply is kept as the question's context, in characters: the page shows it whole.
 const CONTEXT: usize = 600;
 
 #[derive(Deserialize)]
@@ -48,19 +48,97 @@ fn last_line(text: &str) -> String {
     text.lines().rev().find(|line| !line.trim().is_empty()).unwrap_or(text).trim().to_string()
 }
 
-/// The end of `text` without the question it ends with, on one line, at most `CONTEXT`
-/// characters, cut at a word.
+/// The end of `text` without the question it ends with, line by line as the page shows it: no
+/// Markdown marks, no code block. Whole lines, at most `CONTEXT` characters in all; only when they
+/// say little, the line before them too, cut at a word.
 pub(crate) fn context_of(text: &str, question: &str) -> String {
-    let text = text.trim();
-    let before = text.strip_suffix(question.trim()).unwrap_or(text);
-    let flat = before.split_whitespace().collect::<Vec<_>>().join(" ");
-    let count = flat.chars().count();
-    if count <= CONTEXT {
-        return flat;
+    let mut lines = readable_lines(text);
+    if let Some(last) = lines.last_mut()
+        && let Some(before) = last.strip_suffix(&plain(question))
+    {
+        *last = before.trim_end().to_string();
     }
-    let end: String = flat.chars().skip(count - CONTEXT).collect();
+    let mut kept: Vec<String> = Vec::new();
+    let mut left = CONTEXT;
+    for line in lines.into_iter().rev().filter(|line| !line.is_empty()) {
+        let length = line.chars().count();
+        if length <= left {
+            left -= length;
+            kept.push(line);
+            continue;
+        }
+        kept.push(if left > CONTEXT / 2 { end_of(&line, left) } else { "…".to_string() });
+        break;
+    }
+    kept.reverse();
+    kept.join("\n")
+}
+
+/// The last `most` characters of `line` at most, cut at a word.
+fn end_of(line: &str, most: usize) -> String {
+    let end: String = line.chars().skip(line.chars().count().saturating_sub(most)).collect();
     let from_word = end.split_once(' ').map_or(end.as_str(), |(_, rest)| rest);
     format!("…{from_word}")
+}
+
+/// The lines of a reply written in Markdown, without its code blocks, its empty lines, its rules
+/// nor its marks; the cells of a table's row are separated by a dot.
+fn readable_lines(text: &str) -> Vec<String> {
+    let mut fence: Option<&str> = None;
+    let mut lines = Vec::new();
+    for line in text.lines().map(str::trim) {
+        let mark = ["```", "~~~"].into_iter().find(|mark| line.starts_with(mark));
+        match (fence, mark) {
+            (None, Some(mark)) => fence = Some(mark),
+            (Some(open), Some(mark)) if open == mark => fence = None,
+            (Some(_), _) => {},
+            (None, None) if line.is_empty() || is_rule(line) => {},
+            (None, None) => lines.push(plain(line)),
+        }
+    }
+    lines
+}
+
+/// A horizontal rule, or the line under the head of a table.
+fn is_rule(line: &str) -> bool {
+    line.chars().all(|character| "-*_|: ".contains(character)) && line.contains(['-', '*', '_'])
+}
+
+fn plain(line: &str) -> String {
+    let line = line.trim();
+    let line = match line.trim_start_matches('#').strip_prefix(' ') {
+        Some(heading) if line.starts_with('#') => heading.trim(),
+        _ => line.strip_prefix("> ").unwrap_or(line),
+    };
+    let cells = line.strip_prefix('|').and_then(|row| row.strip_suffix('|'));
+    let line = match cells {
+        Some(cells) => cells.split('|').map(str::trim).filter(|cell| !cell.is_empty()).collect::<Vec<_>>().join(" · "),
+        None => line.to_string(),
+    };
+    let words = line.replace("**", "").replace('`', "");
+    without_links(&words.split_whitespace().collect::<Vec<_>>().join(" "))
+}
+
+/// `[text](target)` as its text.
+fn without_links(line: &str) -> String {
+    let mut out = String::new();
+    let mut rest = line;
+    while let Some((before, after)) = rest.split_once('[') {
+        out.push_str(before);
+        let link = after.split_once("](").and_then(|(text, target)| Some((text, target.split_once(')')?.1)));
+        match link {
+            Some((text, after)) if !text.contains(['[', ']']) => {
+                out.push_str(text);
+                rest = after;
+            },
+            _ => {
+                out.push('[');
+                rest = after;
+            },
+        }
+    }
+    out.push_str(rest);
+    out
 }
 
 /// The request for the overview, for `input` (the JSON Claude Code gives a Stop hook) and the end
@@ -174,6 +252,31 @@ mod tests {
         assert!(context.starts_with('…') && context.ends_with("mot fin."), "{context}");
         assert!(context.chars().count() <= CONTEXT + 1, "{}", context.chars().count());
         assert!(context[3..].starts_with("mot"), "cut at a word: {context}");
+    }
+
+    #[test]
+    fn the_context_keeps_the_lines_of_the_reply_without_its_marks_nor_its_code() {
+        let reply = "## Le mail\n\nDeux mairies **n'ont rien reçu** :\n- `Nogent` : voir [la page](https://x.y/z) ;\n- tableau[0] [a] reste.\n\n```\ngit push\n```\n---\n| Ville | État |\n|---|:---:|\n| Nogent | **lu** |\n\n**Je l'envoie ?**";
+        let (question, context) = blocked_question(&end("blocked", "Je l'envoie ?", reply)).unwrap();
+        assert_eq!(question, "Je l'envoie ?");
+        assert_eq!(context, "Le mail\nDeux mairies n'ont rien reçu :\n- Nogent : voir la page ;\n- tableau[0] [a] reste.\nVille · État\nNogent · lu");
+    }
+
+    #[test]
+    fn a_long_reply_keeps_whole_lines_of_its_end() {
+        let reply = format!("{}\n- {}\n- {}\nJe continue ?", "début ".repeat(60), "b".repeat(250), "c".repeat(250));
+        let context = context_of(&reply, "Je continue ?");
+        assert_eq!(context, format!("…\n- {}\n- {}", "b".repeat(250), "c".repeat(250)));
+        let short_end = format!("{}\nVoilà.", "mot ".repeat(300));
+        let context = context_of(&short_end, "");
+        assert!(context.starts_with("…mot mot") && context.ends_with("mot\nVoilà."), "{context}");
+        assert!(context.chars().count() <= CONTEXT + 2, "{}", context.chars().count());
+    }
+
+    #[test]
+    fn a_code_block_never_closed_and_a_reply_of_code_only_give_no_context() {
+        assert_eq!(context_of("```\na\n~~~\nb\n", ""), "");
+        assert_eq!(context_of("", ""), "");
     }
 
     #[test]

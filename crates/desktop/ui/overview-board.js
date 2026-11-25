@@ -313,9 +313,11 @@ export function taskLine(tasks) {
   return tasks.about ? `${doing} · ${tasks.about}` : doing;
 }
 
-// What a row says the session does: what it last said, else what it waits for.
+// What a row says the session does: what it last said, else what it waits for. A question asked
+// under the row is not said twice.
 export function lineOf(row, requests = new Map()) {
-  if (row.progress) return row.progress;
+  const asked = (requests.get(row.session_id) ?? []).some((request) => request.kind === "ask" && request.question === row.progress);
+  if (row.progress && !asked) return row.progress;
   switch (standing(row, requests)) {
     case "need":
       if (row.waiting_for) return `waits for you: ${row.waiting_for}`;

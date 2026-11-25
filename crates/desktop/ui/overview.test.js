@@ -331,6 +331,9 @@ test("a session with a request needs you, even one that keeps working on a kindr
   assert.equal(standing(board, requests), "need");
   assert.equal(standing(other, requests), "rest");
   assert.equal(lineOf(board, requests), "waits for your answer", "no question of Claude Code on screen to quote");
+  const said = { ...board, progress: "UTC or local time?" };
+  assert.equal(lineOf(said, new Map([[said.session_id, [{ kind: "ask", question: "UTC or local time?" }]]])), "waits for your answer", "its question is under the row already");
+  assert.equal(lineOf(said, new Map([[said.session_id, [{ kind: "ask", question: "another?" }]]])), "UTC or local time?");
   const permission = requestsBySession([request("3-1", "s-merge", { kind: "permission", tool: "Bash", input: { command: "git merge main" } })]);
   assert.equal(lineOf(row("merge", 1, { session_id: "s-merge" }), permission), "waits for your permission");
   assert.deepEqual(summaryOf([board, other], requests), { need: 1, working: 0, done: 0, rest: 1, paused: 0 });
