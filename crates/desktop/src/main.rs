@@ -1319,7 +1319,7 @@ fn publish(app: &AppHandle, update: refresher::Update) -> bool {
     let (view, to_count, resting) = {
         let mut current = shared.view.lock().unwrap_or_else(PoisonError::into_inner);
         let mut next = view::apply(&current, update, tabs.watched());
-        let resting = came_to_rest(&current, &next);
+        let resting = view::came_to_rest(&current, &next);
         view::propose_images(&mut next, &current, |session| proposed_images(session, implicit_default));
         let to_count = view::to_count(&next, &current);
         view::carry_changed(&mut next, &current, &HashMap::new());
@@ -1354,17 +1354,6 @@ fn publish(app: &AppHandle, update: refresher::Update) -> bool {
     emitted
 }
 
-/// The OpenCode sessions that came to rest between `before` and `after`: OpenCode has no Stop hook,
-/// so kindric itself keeps them working while the user is away.
-fn came_to_rest(before: &view::ListView, after: &view::ListView) -> Vec<SessionInfo> {
-    after
-        .sessions
-        .iter()
-        .filter(|row| row.info.agent == Agent::OpenCode && row.info.state == accounts::SessionState::Paused)
-        .filter(|row| before.sessions.iter().any(|old| old.info.session_id == row.info.session_id && old.info.state != accounts::SessionState::Paused))
-        .map(|row| row.info.clone())
-        .collect()
-}
 
 /// What the away hook does for Claude Code and Codex, done by kindric for an OpenCode session that
 /// came to rest: relaunched while the user is away (see `away::opencode_relaunch`).
