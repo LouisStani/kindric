@@ -146,6 +146,10 @@ test_add_and_list() {
 	check "list affiche les deux comptes" test "$(ca list)" = $'pro1\npro2'
 	check "add refuse un doublon" bash -c '! "$0" add pro1 2>/dev/null' "$SCRIPT"
 	check "add refuse un nom dangereux" bash -c '! "$0" add ../x 2>/dev/null' "$SCRIPT"
+	check "add --help montre l'aide et ne crée rien" bash -c \
+		'out=$("$0" add --help) && grep -q "kindric-accounts add" <<<"$out" && ! "$0" list | grep -q help' "$SCRIPT"
+	check "add refuse un nom qui commence par un tiret" bash -c \
+		'out=$("$0" add --agent 2>&1); status=$?; test "$status" -ne 0 && grep -q "start with a dash" <<<"$out"' "$SCRIPT"
 	check "add refuse le nom réservé default" bash -c \
 		'out=$("$0" add default 2>&1); status=$?; test "$status" -ne 0 && grep -q reserved <<<"$out"' "$SCRIPT"
 	check "default refusé : ni listé ni créé" bash -c \

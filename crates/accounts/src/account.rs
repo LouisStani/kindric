@@ -71,7 +71,7 @@ pub fn add_opencode(paths: &Paths, name: &str) -> Result<Created> {
 }
 
 fn check_new_name(paths: &Paths, name: &str) -> Result<()> {
-    registry::validate_name(name)?;
+    registry::validate_new_name(name)?;
     if name == registry::DEFAULT_ACCOUNT {
         return fail(format!("'{name}' is reserved for Claude Code's own configuration (~/.claude)"));
     }
