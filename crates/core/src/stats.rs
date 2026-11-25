@@ -229,8 +229,9 @@ impl Cache {
     }
 
     /// Reads what the transcripts of `sources` gained since the last time. The figures of those gone
-    /// stay; other accounts are forgotten. Returns what could not be read.
-    pub fn refresh(&mut self, sources: &[Source]) -> Vec<String> {
+    /// stay, and those of the accounts of `unseen` as they were; other accounts are forgotten.
+    /// Returns what could not be read.
+    pub fn refresh(&mut self, sources: &[Source], unseen: &[&str]) -> Vec<String> {
         let mut problems: Vec<String> = self.gone_unread.iter().cloned().collect();
         let mut kept = BTreeMap::new();
         for source in sources {
@@ -256,26 +257,34 @@ impl Cache {
                 }
             }
         }
-        let left = std::mem::take(&mut self.files);
+        let mut left = std::mem::take(&mut self.files);
+        left.retain(|key, transcript| {
+            let unseen = unseen.contains(&transcript.account.as_str());
+            if unseen {
+                kept.insert(key.clone(), transcript.clone());
+            }
+            !unseen
+        });
         self.version = VERSION;
         self.files = kept;
-        self.keep_gone(left, sources);
+        let counted: BTreeSet<&str> = sources.iter().map(|source| source.account.as_str()).chain(unseen.iter().copied()).collect();
+        self.keep_gone(left, &counted);
         problems
     }
 
     /// Adds `left`, the transcripts known that were not found, to those gone; a transcript found
-    /// again, and the accounts that do not count any more, leave them.
-    fn keep_gone(&mut self, left: BTreeMap<String, Transcript>, sources: &[Source]) {
+    /// again, and the accounts that are not `counted` any more, leave them.
+    fn keep_gone(&mut self, left: BTreeMap<String, Transcript>, counted: &BTreeSet<&str>) {
         if self.gone_unread.is_some() {
             // Not to be written over: they stay in the cache until it can be read again.
-            self.files.extend(left.into_iter().filter(|(_, transcript)| sources.iter().any(|source| source.account == transcript.account)));
+            self.files.extend(left.into_iter().filter(|(_, transcript)| counted.contains(transcript.account.as_str())));
             return;
         }
         let before = self.gone.clone();
         self.gone.extend(left.into_iter().filter(|(_, transcript)| !transcript.hours.is_empty() || !transcript.spans.is_empty()));
         let found: BTreeSet<Identity> = self.files.iter().map(|(key, transcript)| identity(key, transcript)).collect();
         self.gone.retain(|key, transcript| {
-            sources.iter().any(|source| source.account == transcript.account) && !found.contains(&identity(key, transcript))
+            counted.contains(transcript.account.as_str()) && !found.contains(&identity(key, transcript))
         });
         self.gone_changed |= self.gone != before;
     }
@@ -984,10 +993,10 @@ mod tests {
         write(&session, &lines(&[prompt(T0, r#""go""#), reply("m1", T0, 10)]));
         write(&agent, &lines(&[reply("a1", T0, 5)]));
         let mut cache = Cache::default();
-        assert!(cache.refresh(std::slice::from_ref(&setup.source)).is_empty());
+        assert!(cache.refresh(std::slice::from_ref(&setup.source), &[]).is_empty());
 
         append(&session, &lines(&[reply("m2", "2026-11-18T17:00:00Z", 1)]));
-        assert!(cache.refresh(std::slice::from_ref(&setup.source)).is_empty());
+        assert!(cache.refresh(std::slice::from_ref(&setup.source), &[]).is_empty());
         let summary = cache.summary(&BTreeMap::new());
 
         assert_eq!(summary.sessions.len(), 1);
@@ -1006,9 +1015,9 @@ mod tests {
         let session = setup.source.dir.join("projects/p/s1.jsonl");
         write(&session, &lines(&[reply("m1", T0, 10), reply("m2", T0, 10)]));
         let mut cache = Cache::default();
-        cache.refresh(std::slice::from_ref(&setup.source));
+        cache.refresh(std::slice::from_ref(&setup.source), &[]);
         write(&session, &lines(&[reply("m3", T0, 1)]));
-        cache.refresh(std::slice::from_ref(&setup.source));
+        cache.refresh(std::slice::from_ref(&setup.source), &[]);
         assert_eq!(cache.summary(&BTreeMap::new()).sessions[0].tokens.output, 1);
     }
 
@@ -1018,13 +1027,36 @@ mod tests {
         let session = setup.source.dir.join("projects/p/s1.jsonl");
         write(&session, &lines(&[reply("m1", T0, 10)]));
         let mut cache = Cache::default();
-        cache.refresh(std::slice::from_ref(&setup.source));
+        cache.refresh(std::slice::from_ref(&setup.source), &[]);
         assert_eq!(cache.files.len(), 1);
         fs::remove_file(&session).expect("remove");
-        cache.refresh(std::slice::from_ref(&setup.source));
+        cache.refresh(std::slice::from_ref(&setup.source), &[]);
         assert_eq!((cache.files.len(), cache.gone.len()), (0, 1));
-        cache.refresh(&[]);
+        cache.refresh(&[], &[]);
         assert!(cache.files.is_empty() && cache.gone.is_empty());
+    }
+
+    #[test]
+    fn the_figures_of_an_account_unseen_for_once_stay() {
+        let setup = setup("stats-unseen");
+        let file = setup.root.join("kindric").join(CACHE_FILE);
+        let account = setup.source.account.clone();
+        let path = setup.source.dir.join("projects/p/s1.jsonl");
+        write(&path, &lines(&[reply("m1", T0, 10)]));
+        write(&setup.source.dir.join("projects/p/s2.jsonl"), &lines(&[reply("m2", T0, 5)]));
+        let read = |sources: &[Source], unseen: &[&str]| {
+            let mut cache = Cache::load(&file);
+            assert_eq!(cache.refresh(sources, unseen), Vec::<String>::new());
+            cache.save(&file).expect("save");
+            output_of(&cache)
+        };
+        let sources = std::slice::from_ref(&setup.source);
+        read(sources, &[]);
+        fs::remove_file(&path).expect("remove");
+        assert_eq!(read(sources, &[]), [10, 5]);
+        assert_eq!(read(&[], &[&account]), [10, 5], "not asked to read: as it was");
+        assert_eq!(read(sources, &[]), [10, 5], "back, counted once");
+        assert!(read(&[], &[]).is_empty(), "removed");
     }
 
     fn output_of(cache: &Cache) -> Vec<u64> {
@@ -1040,7 +1072,7 @@ mod tests {
         let file = setup.root.join("kindric").join(CACHE_FILE);
         let refreshed = || {
             let mut cache = Cache::load(&file);
-            assert_eq!(cache.refresh(std::slice::from_ref(&setup.source)), Vec::<String>::new());
+            assert_eq!(cache.refresh(std::slice::from_ref(&setup.source), &[]), Vec::<String>::new());
             cache.save(&file).expect("save");
             cache
         };
@@ -1063,10 +1095,10 @@ mod tests {
         let before = source.dir.join("sessions/2026/11/01").join(name);
         write(&before, &lines(&[codex_start(), vec![codex_tokens(T0, 10, 0, 7)]].concat()));
         let mut cache = Cache::default();
-        cache.refresh(std::slice::from_ref(&source));
+        cache.refresh(std::slice::from_ref(&source), &[]);
         fs::create_dir_all(source.dir.join("archived_sessions")).expect("create dir");
         fs::rename(&before, source.dir.join("archived_sessions").join(name)).expect("move");
-        cache.refresh(std::slice::from_ref(&source));
+        cache.refresh(std::slice::from_ref(&source), &[]);
         assert_eq!(output_of(&cache), [7]);
     }
 
@@ -1078,9 +1110,9 @@ mod tests {
         let file = setup.root.join("kindric").join(CACHE_FILE);
         write(&gone_file(&file), b"{broken");
         let mut cache = Cache::load(&file);
-        cache.refresh(std::slice::from_ref(&setup.source));
+        cache.refresh(std::slice::from_ref(&setup.source), &[]);
         fs::remove_file(&session).expect("remove");
-        let problems = cache.refresh(std::slice::from_ref(&setup.source));
+        let problems = cache.refresh(std::slice::from_ref(&setup.source), &[]);
         assert!(problems.len() == 1 && problems[0].contains(GONE_FILE), "{problems:?}");
         cache.save(&file).expect("save");
         assert_eq!(fs::read(gone_file(&file)).expect("read"), b"{broken");
@@ -1097,7 +1129,7 @@ mod tests {
             format!(r#"{{"/x/s9.jsonl":{{"account":"louis","session":"s9","hours":{{"{hour}":{{"tokens":{{"output":4}}}}}}}}}}"#).as_bytes(),
         );
         let mut cache = Cache::load(&file);
-        assert_eq!(cache.refresh(std::slice::from_ref(&setup.source)), Vec::<String>::new());
+        assert_eq!(cache.refresh(std::slice::from_ref(&setup.source), &[]), Vec::<String>::new());
         assert_eq!(output_of(&cache), [4]);
     }
 
@@ -1106,7 +1138,7 @@ mod tests {
         let setup = setup("stats-cache");
         write(&setup.source.dir.join("projects/p/s1.jsonl"), &lines(&[reply("m1", T0, 10)]));
         let mut cache = Cache::default();
-        cache.refresh(std::slice::from_ref(&setup.source));
+        cache.refresh(std::slice::from_ref(&setup.source), &[]);
         let file = setup.root.join("kindric").join(CACHE_FILE);
         cache.save(&file).expect("save");
         assert_eq!(Cache::load(&file), cache);
@@ -1148,9 +1180,9 @@ mod tests {
         text.extend([codex_tokens(T0, 1000, 400, 50), codex_tokens(T0, 1000, 400, 50)]);
         write(&file, &lines(&text));
         let mut cache = Cache::default();
-        assert!(cache.refresh(std::slice::from_ref(&source)).is_empty());
+        assert!(cache.refresh(std::slice::from_ref(&source), &[]).is_empty());
         append(&file, &lines(&[codex_tokens("2026-11-18T17:00:00Z", 1500, 800, 70)]));
-        assert!(cache.refresh(std::slice::from_ref(&source)).is_empty());
+        assert!(cache.refresh(std::slice::from_ref(&source), &[]).is_empty());
 
         let summary = cache.summary(&BTreeMap::new());
         let row = &summary.sessions[0];
@@ -1170,7 +1202,7 @@ mod tests {
         write(&source.dir.join("archived_sessions/notes.jsonl"), &text);
         write(&source.dir.join("sessions/stray.jsonl"), &text);
         let mut cache = Cache::default();
-        assert!(cache.refresh(&[source]).is_empty());
+        assert!(cache.refresh(&[source], &[]).is_empty());
         assert_eq!(cache.summary(&BTreeMap::new()).sessions.len(), 1);
     }
 
@@ -1199,7 +1231,7 @@ mod tests {
         ]);
         let source = opencode_source(&setup, port);
         let mut cache = Cache::default();
-        assert_eq!(cache.refresh(std::slice::from_ref(&source)), Vec::<String>::new());
+        assert_eq!(cache.refresh(std::slice::from_ref(&source), &[]), Vec::<String>::new());
         let summary = cache.summary(&BTreeMap::new());
         let row = &summary.sessions[0];
         assert_eq!((summary.sessions.len(), row.session.as_str(), row.project.as_str()), (1, "ses_a", "/work/shop"), "a subagent counts for its session");
@@ -1207,14 +1239,14 @@ mod tests {
         assert_eq!((row.cost, row.spans.len()), (16_800, 1));
         assert_eq!(summary.hours[0].figures.cost, 16_800);
 
-        cache.refresh(std::slice::from_ref(&source));
+        cache.refresh(std::slice::from_ref(&source), &[]);
         let messages = requests.try_iter().filter(|request| request.contains("/message")).count();
         assert_eq!(messages, 2, "sessions that did not change are not read again");
 
         let source = opencode_source(&setup, opencode::fake::NO_SERVICE);
-        assert_eq!(cache.refresh(&[source]), Vec::<String>::new());
+        assert_eq!(cache.refresh(&[source], &[]), Vec::<String>::new());
         assert_eq!(cache.summary(&BTreeMap::new()).sessions[0].cost, 16_800);
-        cache.refresh(&[]);
+        cache.refresh(&[], &[]);
         assert!(cache.summary(&BTreeMap::new()).sessions.is_empty(), "an account left out is forgotten");
     }
 
@@ -1233,7 +1265,7 @@ mod tests {
         let setup = setup("stats-cost");
         write(&setup.source.dir.join("projects/-work-kindric/s1.jsonl"), &lines(&[reply("m1", T0, 10)]));
         let mut cache = Cache::default();
-        cache.refresh(std::slice::from_ref(&setup.source));
+        cache.refresh(std::slice::from_ref(&setup.source), &[]);
         let at = T0_MS / 1000;
         let costs = BTreeMap::from([("louis".to_string(), vec![noted("s1", 0.25, at), noted("unknown", 9.0, at)])]);
         let summary = cache.summary(&costs);
