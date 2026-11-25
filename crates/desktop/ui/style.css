@@ -847,6 +847,12 @@ input, select, button {
   padding: 6px 8px;
 }
 
+/* The browser's gray cannot be read on a light theme. */
+::placeholder {
+  color: color-mix(in srgb, var(--muted) 80%, transparent);
+  opacity: 1;
+}
+
 /* The arrows of the browser do not follow the theme; the keys still step the number. */
 input[type="number"] {
   -webkit-appearance: textfield;
