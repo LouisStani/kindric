@@ -2583,7 +2583,8 @@ def status_line(session_id: str, context: float, five_hour: float, seven_day: fl
 
 class UsageWindow(Journey):
     """F3 opens the usage window: the week of the account, its tokens by project, a worktree counted
-    for its checkout, then 30 days with the arrow; the settings open it too."""
+    for its checkout, then 30 days with the arrow; the settings open it too. What an account with a
+    key of Anthropic cost, from its status line, has a column of its own."""
 
     started = [("alpha", "first task work:0")]
 
@@ -2604,6 +2605,17 @@ class UsageWindow(Journey):
         with open(os.path.join(folder, "cccccccc-0000-4000-8000-000000000003.jsonl"), "w", encoding="utf-8") as file:
             file.write(reply(20, "/work/old", "m3", 49000) + "\n")
 
+        accounts("add", "key", "--provider", "api")
+        key_dir = os.path.join(os.path.dirname(ACCOUNT_DIR), "key")
+        paid = "dddddddd-0000-4000-8000-000000000004"
+        os.makedirs(os.path.join(key_dir, "projects", "-paid"))
+        with open(os.path.join(key_dir, "projects", "-paid", f"{paid}.jsonl"), "w", encoding="utf-8") as file:
+            file.write(reply(1, "/work/paid", "m4", 1000) + "\n")
+        for total in (0.1, 0.42):
+            given = json.dumps({"session_id": paid, "cost": {"total_cost_usd": total}})
+            subprocess.run(["kindric-accounts", "statusline"], input=given, capture_output=True, text=True, timeout=30, check=True,
+                           cwd=PROJECT, env=dict(os.environ, CLAUDE_CONFIG_DIR=key_dir))
+
     def figures(self, name: str) -> list[str]:
         found = self.driver.script("""const row = [...document.querySelectorAll('#usage .usage-section:nth-of-type(2) .usage-row')].find((row) => row.querySelector('.usage-name')?.textContent === arguments[0]);
           return row ? [...row.querySelectorAll('.usage-figure')].map((cell) => cell.textContent) : [];""", name)
@@ -2617,10 +2629,11 @@ class UsageWindow(Journey):
         wait_until("the usage window", lambda: dialog_open(driver, "usage"))
         wait_until("the week of the account", lambda: texts(driver, "#usage .usage-week .usage-figure") == ["60%"] or None)
         self.assertTrue(texts(driver, "#usage .usage-week-text")[0].startswith("at this pace, 70% when it starts again "))
-        wait_until("shop, its worktree included", lambda: self.figures("shop") == ["10k", "1.8M"] or None)
+        wait_until("shop, its worktree included", lambda: self.figures("shop") == ["10k", "1.8M", ""] or None)
+        self.assertEqual(self.figures("paid"), ["2k", "900k", "$0.42"])
         self.assertEqual(self.figures("old"), [], "20 days ago, not in the last 7")
         driver.press(ARROW_RIGHT)
-        wait_until("30 days", lambda: self.figures("old") == ["50k", "900k"] or None)
+        wait_until("30 days", lambda: self.figures("old") == ["50k", "900k", ""] or None)
         driver.press(ESCAPE)
         wait_until("closed", lambda: not dialog_open(driver, "usage"))
 

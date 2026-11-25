@@ -183,6 +183,7 @@ Each account gets its own `CLAUDE_CONFIG_DIR`.
 | Read rules of an isolated account | Added to the same `.shared-settings/<name>.json` |
 | Usage of the limits | `~/.local/share/kindric-accounts/.usage/<name>.json`, written by `kindric-accounts statusline` |
 | History of the usage of the limits | `~/.local/share/kindric-accounts/.usage/history/<name>.jsonl`, written by `kindric-accounts statusline` |
+| Cost of the sessions paid by use | `~/.local/share/kindric-accounts/.usage/cost/<name>.jsonl`, written by `kindric-accounts statusline` (since 2.5.0) |
 | Context used by each session | `~/.local/share/kindric-accounts/.usage/context/<name>/<session id>.json`, written by `kindric-accounts statusline` |
 | Unread messages of kindric | Hooks added to the same `.shared-settings/<name>.json`, see below |
 | The user away, in kindric | Hooks added to the same `.shared-settings/<name>.json`, see below |
@@ -300,9 +301,10 @@ At each launch, kindric-accounts reads the `mcpServers` of the other accounts, m
 Claude Code tells how much of its limits an account used, over five hours and over the week, only to the command of its status line. So the sessions kindric-accounts starts get `kindric-accounts statusline` as their status line. It notes the two figures in `~/.local/share/kindric-accounts/.usage/<name>.json`, then runs the status line of your `~/.claude/settings.json` with the same input and shows what it prints. You see the same status line as before.
 
 - Only sessions started by kindric-accounts, or by kindric, note figures. A `claude` started some other way does not.
-- An account billed by API key has no limits and notes nothing.
+- An account billed by API key has no limits: it notes none.
 - It also keeps a history in `~/.local/share/kindric-accounts/.usage/history/<name>.jsonl`: one line per note, with the same fields as `<name>.json`. A line is added when a figure or a reset time changes, or when the last line is 10 minutes old. Lines older than 60 days are removed about once a day. kindric uses it for its statistics.
 - It also notes how full the context window of each session is, once the session has answered: `~/.local/share/kindric-accounts/.usage/context/<name>/<session id>.json`, with `used_percentage` and `updated_at`. A file untouched for 7 days is removed when the account writes a new one.
+- For an account of the provider `api`, it notes what each session cost (since 2.5.0): `~/.local/share/kindric-accounts/.usage/cost/<name>.jsonl`, one line each time the cost grew, with `session_id`, `total_usd` (the session's cost since it started, which goes on when it is resumed, as Claude Code gives it) and `updated_at`. Lines older than 60 days are removed about once a day, except the last one of a session that has some after. Not for the other providers: Claude Code gives the models it does not know the price of another. Not for a key chosen in `/login` either: the account then looks like any login.
 - If kindric-accounts cannot be found in `PATH` at launch, sessions start with your settings as before, without figures.
 
 ## Messages of kindric

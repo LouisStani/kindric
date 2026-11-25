@@ -1,7 +1,9 @@
-//! Figures over the transcripts of Claude Code: tokens, replies, messages typed, and the spans of
-//! time each session was active (decisions 347, 384, 387). There can be gigabytes of transcripts:
-//! a file is read once, then only what was appended since, and what each file said is kept in a
-//! cache. The transcripts are not documented: a line that cannot be read counts for nothing.
+//! Figures over the transcripts of Claude Code, those of Codex and the sessions of OpenCode:
+//! tokens, replies, messages typed, what they cost, and the spans of time each session was active
+//! (decisions 347, 384, 387, 470). There can be gigabytes of transcripts: a file is read once, then
+//! only what was appended since, and what each file said is kept in a cache. The transcripts are
+//! not documented: a line that cannot be read counts for nothing. OpenCode keeps a database: its
+//! service is asked, when it runs, for the sessions that changed.
 //!
 //! Figures are added up per hour in UTC; the page turns hours into its own local days.
 
@@ -11,12 +13,16 @@ use std::fs::{self, File};
 use std::io::{self, Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
 
+use kindric_accounts::agent::{self, Agent};
+use kindric_accounts::usage::Cost;
 use kindric_accounts::Paths;
 use serde::de::{self, Deserializer, IgnoredAny, MapAccess, SeqAccess, Visitor};
 use serde::{Deserialize, Serialize};
 
+use crate::opencode;
+
 /// Bumped when what the cache holds changes: an older cache is then read again from scratch.
-const VERSION: u32 = 1;
+const VERSION: u32 = 2;
 const CACHE_FILE: &str = "stats.json";
 /// A pause longer than this ends a span of activity.
 const IDLE_GAP_MS: i64 = 30 * 60 * 1000;
@@ -56,6 +62,8 @@ pub struct Figures {
     pub tokens: Tokens,
     /// Model → replies.
     pub models: BTreeMap<String, u64>,
+    /// Millionths of a US dollar, for what is paid by use and whose cost is known.
+    pub cost: u64,
 }
 
 impl Figures {
@@ -64,6 +72,7 @@ impl Figures {
         for (model, replies) in &other.models {
             *self.models.entry(model.clone()).or_default() += replies;
         }
+        self.cost += other.cost;
     }
 }
 
@@ -86,6 +95,9 @@ struct Transcript {
     read: u64,
     /// A reply takes one line per block, each with the same usage, one after the other.
     last_reply: Option<String>,
+    /// Codex: the model of its turns, and the tokens counted up to the last reply.
+    model: String,
+    counted: CodexTotal,
     /// Unix hour (UTC) → figures.
     hours: BTreeMap<i64, Figures>,
     spans: Vec<Span>,
@@ -98,11 +110,20 @@ pub struct Cache {
     files: BTreeMap<String, Transcript>,
 }
 
-/// An account whose transcripts count, and where Claude Code keeps its files.
+/// An account whose sessions count, where its files are, and the program it runs.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Source {
     pub account: String,
     pub dir: PathBuf,
+    pub agent: Agent,
+}
+
+impl Source {
+    /// An unreadable agent file counts as Claude Code, which every older account runs.
+    pub fn of(account: String, dir: PathBuf) -> Self {
+        let agent = agent::read(&dir).unwrap_or_default();
+        Self { account, dir, agent }
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
@@ -122,6 +143,8 @@ pub struct SessionRow {
     pub project: String,
     /// Its subagents' included.
     pub tokens: Tokens,
+    /// Millionths of a US dollar.
+    pub cost: u64,
     pub spans: Vec<Span>,
 }
 
@@ -164,10 +187,18 @@ impl Cache {
         let mut problems = Vec::new();
         let mut kept = BTreeMap::new();
         for source in sources {
-            for found in transcripts(&source.dir, &mut problems) {
+            let (listed, read_lines): (_, LineReader) = match source.agent {
+                Agent::ClaudeCode => (transcripts(&source.dir, &mut problems), claude_line),
+                Agent::Codex => (rollouts(&source.dir, &mut problems), codex_line),
+                Agent::OpenCode => {
+                    self.refresh_opencode(source, &mut kept, &mut problems);
+                    continue;
+                },
+            };
+            for found in listed {
                 let key = found.path.to_string_lossy().into_owned();
                 let previous = self.files.remove(&key).filter(|old| old.account == source.account);
-                match update(previous, &source.account, &found) {
+                match update(previous, &source.account, &found, read_lines) {
                     Ok(transcript) => {
                         kept.insert(key, transcript);
                     }
@@ -180,8 +211,30 @@ impl Cache {
         problems
     }
 
-    /// Figures added up per hour, account and project, then per session.
-    pub fn summary(&self) -> Summary {
+    /// Reads the sessions of an OpenCode account that changed. What was read stays while its
+    /// service does not run: it is not started for this.
+    fn refresh_opencode(&mut self, source: &Source, kept: &mut BTreeMap<String, Transcript>, problems: &mut Vec<String>) {
+        let mut known: BTreeMap<String, Transcript> = BTreeMap::new();
+        self.files.retain(|key, transcript| {
+            let ours = transcript.account == source.account && key.starts_with(OPENCODE_KEY);
+            if ours {
+                known.insert(key.clone(), transcript.clone());
+            }
+            !ours
+        });
+        match read_opencode(source, &known, problems) {
+            Ok(Some(read)) => kept.extend(read),
+            Ok(None) => kept.extend(known),
+            Err(error) => {
+                problems.push(format!("cannot read the OpenCode sessions of {}: {error}", source.account));
+                kept.extend(known);
+            },
+        }
+    }
+
+    /// Figures added up per hour, account and project, then per session. `costs`: account → the
+    /// costs its status lines noted.
+    pub fn summary(&self, costs: &BTreeMap<String, Vec<Cost>>) -> Summary {
         let mut hours: BTreeMap<(i64, &str, &str), Figures> = BTreeMap::new();
         let mut sessions: BTreeMap<(&str, &str), SessionRow> = BTreeMap::new();
         for transcript in self.files.values() {
@@ -191,6 +244,7 @@ impl Cache {
                 session: transcript.session.clone(),
                 project: project.to_string(),
                 tokens: Tokens::default(),
+                cost: 0,
                 spans: Vec::new(),
             });
             if !transcript.agent {
@@ -199,7 +253,19 @@ impl Cache {
             }
             for (hour, figures) in &transcript.hours {
                 session.tokens.add(&figures.tokens);
+                session.cost += figures.cost;
                 hours.entry((*hour, &transcript.account, project)).or_default().add(figures);
+            }
+        }
+        // Only for a session whose transcript is there: without one, its project is unknown.
+        for (account, noted) in costs {
+            for (session_id, hour, micros) in cost_steps(noted) {
+                let Some(session) = sessions.get_mut(&(account.as_str(), session_id)) else {
+                    continue;
+                };
+                session.cost += micros;
+                let project = self.project_of(account, session_id);
+                hours.entry((hour, account, project)).or_default().cost += micros;
             }
         }
         Summary {
@@ -215,6 +281,99 @@ impl Cache {
             sessions: sessions.into_values().collect(),
         }
     }
+
+    fn project_of(&self, account: &str, session: &str) -> &str {
+        self.files
+            .values()
+            .find(|transcript| transcript.account == account && transcript.session == session && !transcript.agent)
+            .and_then(|transcript| transcript.project.as_deref())
+            .unwrap_or("")
+    }
+}
+
+#[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)] // Saturates, and is never negative.
+fn micros(dollars: f64) -> u64 {
+    (dollars * 1e6).round().max(0.0) as u64
+}
+
+/// What each note adds to the cost of its session: `(session, hour, millionths of a dollar)`. A
+/// total lower than the one before started again from nothing.
+fn cost_steps(noted: &[Cost]) -> Vec<(&str, i64, u64)> {
+    let mut totals: BTreeMap<&str, u64> = BTreeMap::new();
+    noted
+        .iter()
+        .filter_map(|cost| {
+            let total = micros(cost.total_usd);
+            let before = totals.insert(&cost.session_id, total).unwrap_or(0);
+            let step = if total >= before { total - before } else { total };
+            (step > 0).then(|| (cost.session_id.as_str(), cost.updated_at.div_euclid(3600), step))
+        })
+        .collect()
+}
+
+/// The start of the key of an OpenCode session in the cache, where a transcript has its path.
+const OPENCODE_KEY: &str = "opencode:";
+
+/// The sessions of an OpenCode account as its service has them now, those of `known` that did not
+/// change taken as they are; `None` when the service does not run.
+fn read_opencode(source: &Source, known: &BTreeMap<String, Transcript>, problems: &mut Vec<String>) -> io::Result<Option<BTreeMap<String, Transcript>>> {
+    let Some(service) = opencode::Service::running(&source.dir)? else {
+        return Ok(None);
+    };
+    let mut read = BTreeMap::new();
+    for session in service.used_sessions()? {
+        let key = format!("{OPENCODE_KEY}{}:{}", source.account, session.id);
+        let updated = u64::try_from(session.updated).unwrap_or(0);
+        match known.get(&key) {
+            Some(same) if same.read == updated => {
+                read.insert(key, same.clone());
+            },
+            previous => match service.replies(&session.id) {
+                Ok(replies) => {
+                    read.insert(key, opencode_transcript(&source.account, &session, updated, &replies));
+                },
+                Err(error) => {
+                    problems.push(format!("cannot read the OpenCode session {} of {}: {error}", session.id, source.account));
+                    read.extend(previous.map(|old| (key, old.clone())));
+                },
+            },
+        }
+    }
+    Ok(Some(read))
+}
+
+fn opencode_transcript(account: &str, session: &opencode::UsedSession, updated: u64, replies: &[opencode::Reply]) -> Transcript {
+    let mut transcript = Transcript {
+        account: account.to_string(),
+        session: session.parent.clone().unwrap_or_else(|| session.id.clone()),
+        agent: session.parent.is_some(),
+        project: Some(session.directory.clone()).filter(|directory| !directory.is_empty()),
+        read: updated,
+        ..Transcript::default()
+    };
+    let mut times: Vec<i64> = Vec::new();
+    for reply in replies {
+        let figures = transcript.hours.entry(reply.at.div_euclid(MS_PER_HOUR)).or_default();
+        figures.tokens.add(&Tokens {
+            input: reply.input,
+            output: reply.output + reply.reasoning,
+            cache_read: reply.cache_read,
+            cache_creation: reply.cache_write,
+            thinking: reply.reasoning,
+            replies: 1,
+            ..Tokens::default()
+        });
+        figures.cost += micros(reply.cost);
+        *figures.models.entry(reply.model.clone()).or_default() += 1;
+        times.push(reply.at);
+    }
+    if !transcript.agent {
+        times.sort_unstable();
+        for time in times {
+            extend_spans(&mut transcript.spans, time);
+        }
+    }
+    transcript
 }
 
 struct Found {
@@ -250,6 +409,35 @@ fn transcripts(dir: &Path, problems: &mut Vec<String>) -> Vec<Found> {
     found
 }
 
+/// The length of a session id of Codex, a UUID, at the end of the name of its file.
+const UUID_LENGTH: usize = 36;
+
+/// The sessions of a Codex account: `<dir>/sessions/<year>/<month>/<day>/rollout-<time>-<id>.jsonl`,
+/// and those archived, in `<dir>/archived_sessions`.
+fn rollouts(dir: &Path, problems: &mut Vec<String>) -> Vec<Found> {
+    let mut files = entries(&dir.join("archived_sessions"), problems);
+    for year in entries(&dir.join("sessions"), problems) {
+        for month in folders(&year, problems) {
+            for day in folders(&month, problems) {
+                files.extend(folders(&day, problems));
+            }
+        }
+    }
+    files
+        .into_iter()
+        .filter_map(|path| {
+            let name = path.file_name()?.to_str()?.strip_prefix("rollout-")?.strip_suffix(".jsonl")?;
+            let session = name.get(name.len().checked_sub(UUID_LENGTH)?..)?.to_string();
+            Some(Found { path, session, agent: false })
+        })
+        .collect()
+}
+
+/// What `path` holds, nothing for a file.
+fn folders(path: &Path, problems: &mut Vec<String>) -> Vec<PathBuf> {
+    if path.is_dir() { entries(path, problems) } else { Vec::new() }
+}
+
 fn entries(dir: &Path, problems: &mut Vec<String>) -> Vec<PathBuf> {
     match fs::read_dir(dir) {
         Ok(read) => read.filter_map(|entry| entry.ok().map(|entry| entry.path())).collect(),
@@ -263,7 +451,7 @@ fn entries(dir: &Path, problems: &mut Vec<String>) -> Vec<PathBuf> {
 
 /// `previous` with what was appended to the file since. A file shorter than what was read was
 /// written again: it is read from the start.
-fn update(previous: Option<Transcript>, account: &str, found: &Found) -> io::Result<Transcript> {
+fn update(previous: Option<Transcript>, account: &str, found: &Found, read_line: LineReader) -> io::Result<Transcript> {
     let size = fs::metadata(&found.path)?.len();
     let mut transcript = previous.filter(|old| old.read <= size).unwrap_or_else(|| Transcript {
         account: account.to_string(),
@@ -278,21 +466,98 @@ fn update(previous: Option<Transcript>, account: &str, found: &Found) -> io::Res
     file.seek(SeekFrom::Start(transcript.read))?;
     let mut bytes = Vec::new();
     file.read_to_end(&mut bytes)?;
-    let used = feed(&mut transcript, &bytes);
+    let used = feed(&mut transcript, &bytes, read_line);
     transcript.read += used as u64;
     Ok(transcript)
 }
 
+/// Counts one line of a transcript.
+type LineReader = fn(&mut Transcript, &[u8]);
+
+fn claude_line(transcript: &mut Transcript, line: &[u8]) {
+    if let Ok(line) = serde_json::from_slice::<Line>(line) {
+        count(transcript, line);
+    }
+}
+
+/// The tokens of a Codex session since it started, as its last reply said. Those read from the
+/// cache are part of `input_tokens`.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+struct CodexTotal {
+    input_tokens: u64,
+    cached_input_tokens: u64,
+    output_tokens: u64,
+    reasoning_output_tokens: u64,
+}
+
+#[derive(Deserialize)]
+struct CodexLine {
+    timestamp: Option<String>,
+    payload: Option<CodexPayload>,
+}
+
+#[derive(Deserialize)]
+struct CodexPayload {
+    #[serde(rename = "type")]
+    kind: Option<String>,
+    cwd: Option<String>,
+    model: Option<String>,
+    info: Option<CodexInfo>,
+}
+
+#[derive(Deserialize)]
+struct CodexInfo {
+    total_token_usage: Option<CodexTotal>,
+}
+
+/// A turn starts with a message of the user, written apart in a form that also holds what Codex
+/// adds. A reply is what the totals gained since the line before: the same totals may come twice.
+fn codex_line(transcript: &mut Transcript, line: &[u8]) {
+    let Ok(CodexLine { timestamp, payload: Some(payload) }) = serde_json::from_slice::<CodexLine>(line) else {
+        return;
+    };
+    if transcript.project.is_none() {
+        transcript.project = payload.cwd;
+    }
+    if let Some(model) = payload.model {
+        transcript.model = model;
+    }
+    let Some(time) = timestamp.as_deref().and_then(unix_ms) else {
+        return;
+    };
+    let hour = time.div_euclid(MS_PER_HOUR);
+    match (payload.kind.as_deref(), payload.info.and_then(|info| info.total_token_usage)) {
+        (Some("task_started"), _) => transcript.hours.entry(hour).or_default().tokens.prompts += 1,
+        (Some("token_count"), Some(total)) if total != transcript.counted => {
+            // Totals lower than before started again from nothing.
+            let before = if total.input_tokens >= transcript.counted.input_tokens { transcript.counted } else { CodexTotal::default() };
+            transcript.counted = total;
+            let cached = total.cached_input_tokens.saturating_sub(before.cached_input_tokens);
+            let figures = transcript.hours.entry(hour).or_default();
+            figures.tokens.add(&Tokens {
+                input: total.input_tokens.saturating_sub(before.input_tokens).saturating_sub(cached),
+                output: total.output_tokens.saturating_sub(before.output_tokens),
+                cache_read: cached,
+                thinking: total.reasoning_output_tokens.saturating_sub(before.reasoning_output_tokens),
+                replies: 1,
+                ..Tokens::default()
+            });
+            *figures.models.entry(transcript.model.clone()).or_default() += 1;
+        },
+        _ => return,
+    }
+    extend_spans(&mut transcript.spans, time);
+}
+
 /// Counts the whole lines of `bytes`; returns how many bytes they took. A last line without its
 /// end is still being written: it waits for the next read.
-fn feed(transcript: &mut Transcript, bytes: &[u8]) -> usize {
+fn feed(transcript: &mut Transcript, bytes: &[u8], read_line: LineReader) -> usize {
     let Some(last_end) = bytes.iter().rposition(|byte| *byte == b'\n') else {
         return 0;
     };
     for line in bytes[..last_end].split(|byte| *byte == b'\n') {
-        if let Ok(line) = serde_json::from_slice::<Line>(line) {
-            count(transcript, line);
-        }
+        read_line(transcript, line);
     }
     last_end + 1
 }
@@ -507,7 +772,7 @@ mod tests {
 
     fn fed(text: &[u8]) -> Transcript {
         let mut transcript = Transcript::default();
-        let used = feed(&mut transcript, text);
+        let used = feed(&mut transcript, text, claude_line);
         transcript.read = used as u64;
         transcript
     }
@@ -550,7 +815,7 @@ mod tests {
     #[test]
     fn a_reply_repeated_across_two_reads_counts_once() {
         let mut transcript = fed(&lines(&[reply("m1", T0, 10)]));
-        feed(&mut transcript, &lines(&[reply("m1", T0, 10), reply("m2", T0, 1)]));
+        feed(&mut transcript, &lines(&[reply("m1", T0, 10), reply("m2", T0, 1)]), claude_line);
         assert_eq!(transcript.hours[&(T0_MS / MS_PER_HOUR)].tokens.replies, 2);
     }
 
@@ -583,7 +848,7 @@ mod tests {
     #[test]
     fn a_subagent_gives_tokens_but_no_prompts_nor_time() {
         let mut transcript = Transcript { agent: true, ..Transcript::default() };
-        feed(&mut transcript, &lines(&[prompt(T0, r#""task for the agent""#), reply("a1", T0, 4)]));
+        feed(&mut transcript, &lines(&[prompt(T0, r#""task for the agent""#), reply("a1", T0, 4)]), claude_line);
         let figures = &transcript.hours[&(T0_MS / MS_PER_HOUR)];
         assert_eq!((figures.tokens.prompts, figures.tokens.output), (0, 4));
         assert!(transcript.spans.is_empty());
@@ -616,7 +881,7 @@ mod tests {
     fn setup(label: &str) -> Setup {
         let root = std::env::temp_dir().join(format!("kindric-stats-{label}-{}", std::process::id()));
         let _ = fs::remove_dir_all(&root);
-        let source = Source { account: "louis".into(), dir: root.join("louis") };
+        let source = Source::of("louis".into(), root.join("louis"));
         Setup { root, source }
     }
 
@@ -648,7 +913,7 @@ mod tests {
 
         append(&session, &lines(&[reply("m2", "2026-11-18T17:00:00Z", 1)]));
         assert!(cache.refresh(std::slice::from_ref(&setup.source)).is_empty());
-        let summary = cache.summary();
+        let summary = cache.summary(&BTreeMap::new());
 
         assert_eq!(summary.sessions.len(), 1);
         let row = &summary.sessions[0];
@@ -669,7 +934,7 @@ mod tests {
         cache.refresh(std::slice::from_ref(&setup.source));
         write(&session, &lines(&[reply("m3", T0, 1)]));
         cache.refresh(std::slice::from_ref(&setup.source));
-        assert_eq!(cache.summary().sessions[0].tokens.output, 1);
+        assert_eq!(cache.summary(&BTreeMap::new()).sessions[0].tokens.output, 1);
     }
 
     #[test]
@@ -704,5 +969,128 @@ mod tests {
         fs::write(&file, "{broken").expect("write");
         assert_eq!(Cache::load(&file), Cache::default());
         assert_eq!(Cache::load(&setup.root.join("missing.json")), Cache::default());
+    }
+
+    fn codex_tokens(time: &str, input: u64, cached: u64, output: u64) -> String {
+        format!(
+            r#"{{"timestamp":"{time}","type":"event_msg","payload":{{"type":"token_count","info":{{"total_token_usage":{{"input_tokens":{input},"cached_input_tokens":{cached},"cache_write_input_tokens":0,"output_tokens":{output},"reasoning_output_tokens":3,"total_tokens":1}},"model_context_window":258400}},"rate_limits":null}}}}"#
+        )
+    }
+
+    /// Lines as codex 0.172.0 writes them, the rest left out.
+    fn codex_start() -> Vec<String> {
+        vec![
+            format!(r#"{{"timestamp":"{T0}","type":"session_meta","payload":{{"id":"01a2","cwd":"/work/shop","git":{{}}}}}}"#),
+            format!(r#"{{"timestamp":"{T0}","type":"turn_context","payload":{{"cwd":"/work/shop","model":"gpt-6-luna"}}}}"#),
+            format!(r#"{{"timestamp":"{T0}","type":"event_msg","payload":{{"type":"task_started","turn_id":"t1"}}}}"#),
+            format!(r#"{{"timestamp":"{T0}","type":"event_msg","payload":{{"type":"token_count","info":null}}}}"#),
+        ]
+    }
+
+    fn codex_source(setup: &Setup) -> Source {
+        Source { agent: Agent::Codex, ..setup.source.clone() }
+    }
+
+    #[test]
+    fn a_codex_session_counts_what_its_totals_gain() {
+        let setup = setup("stats-codex");
+        let source = codex_source(&setup);
+        let file = source.dir.join("sessions/2026/11/18/rollout-2026-11-18T16-52-20-01a20533-7ccd-7873-8297-750f72a13e8b.jsonl");
+        let mut text = codex_start();
+        text.extend([codex_tokens(T0, 1000, 400, 50), codex_tokens(T0, 1000, 400, 50)]);
+        write(&file, &lines(&text));
+        let mut cache = Cache::default();
+        assert!(cache.refresh(std::slice::from_ref(&source)).is_empty());
+        append(&file, &lines(&[codex_tokens("2026-11-18T17:00:00Z", 1500, 800, 70)]));
+        assert!(cache.refresh(std::slice::from_ref(&source)).is_empty());
+
+        let summary = cache.summary(&BTreeMap::new());
+        let row = &summary.sessions[0];
+        assert_eq!((row.session.as_str(), row.project.as_str()), ("01a20533-7ccd-7873-8297-750f72a13e8b", "/work/shop"));
+        assert_eq!((row.tokens.input, row.tokens.cache_read, row.tokens.output, row.tokens.thinking), (700, 800, 70, 3));
+        assert_eq!((row.tokens.replies, row.tokens.prompts, row.cost), (2, 1, 0), "the same totals twice are one reply");
+        assert_eq!(summary.hours[0].figures.tokens.input, 600);
+        assert_eq!(summary.hours[1].figures.models["gpt-6-luna"], 1);
+    }
+
+    #[test]
+    fn an_archived_codex_session_counts_and_other_files_do_not() {
+        let setup = setup("stats-codex-archived");
+        let source = codex_source(&setup);
+        let text = lines(&[codex_start(), vec![codex_tokens(T0, 10, 0, 1)]].concat());
+        write(&source.dir.join("archived_sessions/rollout-2026-11-01T10-00-00-01a20533-7ccd-7873-8297-750f72a13e8b.jsonl"), &text);
+        write(&source.dir.join("archived_sessions/notes.jsonl"), &text);
+        write(&source.dir.join("sessions/stray.jsonl"), &text);
+        let mut cache = Cache::default();
+        assert!(cache.refresh(&[source]).is_empty());
+        assert_eq!(cache.summary(&BTreeMap::new()).sessions.len(), 1);
+    }
+
+    /// The account of an OpenCode service on `port`.
+    fn opencode_source(setup: &Setup, port: u16) -> Source {
+        let config = kindric_accounts::opencode::config_dir(&setup.source.dir);
+        write(&config.join("service.json"), format!(r#"{{"port":{port},"password":"x"}}"#).as_bytes());
+        Source { agent: Agent::OpenCode, ..setup.source.clone() }
+    }
+
+    /// As OpenCode 2.4.1 answered on the test bench, the rest left out.
+    const OPENCODE_SESSIONS: &str = r#"{"data":[
+        {"id":"ses_a","title":"cost","location":{"directory":"/work/shop"},"time":{"created":1,"updated":20}},
+        {"id":"ses_b","parentID":"ses_a","title":"sub","location":{"directory":"/work/shop"},"time":{"created":1,"updated":21}}],"cursor":{"previous":"p","next":null}}"#;
+    const OPENCODE_REPLIES: &str = r#"{"data":[{"id":"msg_1","type":"assistant","time":{"created":1795017140069},"model":{"id":"m","providerID":"fake"},
+        "cost":0.0084,"tokens":{"input":600,"output":70,"reasoning":30,"cache":{"read":400,"write":0}}}],"cursor":{"next":null}}"#;
+
+    #[test]
+    fn opencode_sessions_are_read_from_the_service_and_kept_when_it_stops() {
+        let setup = setup("stats-opencode");
+        let (port, requests) = opencode::fake::service(vec![
+            ("/api/session/active", r#"{"data":{}}"#),
+            ("/api/session?limit=100", OPENCODE_SESSIONS),
+            ("/api/session/ses_a/message?type=assistant&limit=100", OPENCODE_REPLIES),
+            ("/api/session/ses_b/message?type=assistant&limit=100", OPENCODE_REPLIES),
+        ]);
+        let source = opencode_source(&setup, port);
+        let mut cache = Cache::default();
+        assert_eq!(cache.refresh(std::slice::from_ref(&source)), Vec::<String>::new());
+        let summary = cache.summary(&BTreeMap::new());
+        let row = &summary.sessions[0];
+        assert_eq!((summary.sessions.len(), row.session.as_str(), row.project.as_str()), (1, "ses_a", "/work/shop"), "a subagent counts for its session");
+        assert_eq!((row.tokens.input, row.tokens.output, row.tokens.thinking, row.tokens.cache_read), (1200, 200, 60, 800));
+        assert_eq!((row.cost, row.spans.len()), (16_800, 1));
+        assert_eq!(summary.hours[0].figures.cost, 16_800);
+
+        cache.refresh(std::slice::from_ref(&source));
+        let messages = requests.try_iter().filter(|request| request.contains("/message")).count();
+        assert_eq!(messages, 2, "sessions that did not change are not read again");
+
+        let stopped = std::net::TcpListener::bind("127.0.0.1:0").unwrap().local_addr().unwrap().port();
+        let source = opencode_source(&setup, stopped);
+        assert_eq!(cache.refresh(&[source]), Vec::<String>::new());
+        assert_eq!(cache.summary(&BTreeMap::new()).sessions[0].cost, 16_800);
+        cache.refresh(&[]);
+        assert!(cache.summary(&BTreeMap::new()).sessions.is_empty(), "an account gone is forgotten");
+    }
+
+    fn noted(session: &str, total_usd: f64, updated_at: i64) -> Cost {
+        Cost { session_id: session.into(), total_usd, updated_at }
+    }
+
+    #[test]
+    fn a_cost_is_what_its_session_gained_since_its_last_note() {
+        let costs = [noted("s1", 0.01, 3600), noted("s2", 1.0, 3600), noted("s1", 0.03, 7200), noted("s1", 0.005, 7300), noted("s1", 0.005, 7400)];
+        assert_eq!(cost_steps(&costs), [("s1", 1, 10_000), ("s2", 1, 1_000_000), ("s1", 2, 20_000), ("s1", 2, 5_000)]);
+    }
+
+    #[test]
+    fn the_cost_of_a_claude_session_goes_to_its_project() {
+        let setup = setup("stats-cost");
+        write(&setup.source.dir.join("projects/-work-kindric/s1.jsonl"), &lines(&[reply("m1", T0, 10)]));
+        let mut cache = Cache::default();
+        cache.refresh(std::slice::from_ref(&setup.source));
+        let at = T0_MS / 1000;
+        let costs = BTreeMap::from([("louis".to_string(), vec![noted("s1", 0.25, at), noted("unknown", 9.0, at)])]);
+        let summary = cache.summary(&costs);
+        assert_eq!(summary.sessions.iter().map(|row| row.cost).collect::<Vec<_>>(), [250_000]);
+        assert_eq!(summary.hours.iter().map(|row| (row.project.as_str(), row.figures.cost)).collect::<Vec<_>>(), [("/work/kindric", 250_000)]);
     }
 }

@@ -3,7 +3,7 @@
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { ROWS_SHOWN, byProject, bySession, cacheColumns, newTokens, projectName, projectOf, tokensText, total, weekOf, weekText } from "./usage-board.js";
+import { ROWS_SHOWN, byProject, bySession, cacheColumns, costOf, costText, newTokens, projectName, projectOf, tokensText, total, weekOf, weekText } from "./usage-board.js";
 
 const NOW = 1_795_600_000;
 const HOUR = Math.floor(NOW / 3600);
@@ -13,8 +13,8 @@ function tokens(output, extra = {}) {
   return { input: 0, output, cache_read: 0, cache_creation: 0, thinking: 0, web_searches: 0, replies: 1, prompts: 0, ...extra };
 }
 
-function hour(ago, project, figures) {
-  return { hour: HOUR - ago, account: "louis", project, tokens: figures, models: {} };
+function hour(ago, project, figures, cost = 0) {
+  return { hour: HOUR - ago, account: "louis", project, tokens: figures, models: {}, cost };
 }
 
 test("tokens are short", () => {
@@ -50,11 +50,19 @@ test("past the lines shown, the others take one", () => {
 });
 
 test("the sessions active in the period, with their names", () => {
-  const session = (id, endedAgo, output) => ({ account: "louis", session: id, project: "/p/kindric", tokens: tokens(output), spans: [{ start: 0, end: (NOW - endedAgo) * 1000 }] });
+  const session = (id, endedAgo, output) => ({ account: "louis", session: id, project: "/p/kindric", tokens: tokens(output), cost: output * 1000, spans: [{ start: 0, end: (NOW - endedAgo) * 1000 }] });
   const sessions = [session("aaaaaaaa-1", DAY, 5), session("bbbbbbbb-2", 8 * DAY, 50), session("cccccccc-3", 60, 9)];
   const rows = bySession({ hours: [], sessions }, 7, NOW, (account, id) => (id === "cccccccc-3" ? "parser" : null));
   assert.deepEqual(rows.map((row) => [row.name, row.project, row.title]), [["parser", "kindric", "louis"], ["aaaaaaaa", "kindric", "louis"]]);
   assert.equal(bySession({ hours: [], sessions }, 30, NOW, () => null).length, 3);
+});
+
+test("what was paid by use", () => {
+  assert.deepEqual([0, 1, 4_999, 12_000, 420_000, 99_990_000, 123_400_000].map(costText), ["", "<$0.01", "<$0.01", "$0.01", "$0.42", "$99.99", "$123"]);
+  const hours = [hour(1, "/p/shop", tokens(5), 16_800), hour(2, "/p/shop/.claude/worktrees/x", tokens(5), 3_200), hour(1, "/p/free", tokens(50))];
+  const rows = byProject({ hours, sessions: [] }, 7, NOW);
+  assert.deepEqual(rows.map((row) => [row.name, row.cost]), [["free", 0], ["shop", 20_000]]);
+  assert.equal(costOf(rows), 20_000);
 });
 
 test("the cache written, an hour a column over a week, a day over a month", () => {

@@ -1274,6 +1274,10 @@ input:focus, select:focus {
   padding: 3px 0;
 }
 
+.usage-row.with-cost {
+  grid-template-columns: minmax(10ch, 26ch) minmax(0, 1fr) 8ch 10ch 8ch;
+}
+
 .usage-row-head, .usage-row.is-rest {
   color: var(--muted);
 }

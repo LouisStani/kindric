@@ -21,6 +21,14 @@ export function tokensText(count) {
   return `${count}`;
 }
 
+// "$0.42", "$123": what was paid by use, in millionths of a dollar.
+export function costText(micros) {
+  const dollars = micros / 1e6;
+  if (micros === 0) return "";
+  if (dollars < 0.005) return "<$0.01";
+  return dollars < 99.995 ? `$${dollars.toFixed(2)}` : `$${Math.round(dollars)}`;
+}
+
 // What a reply costs anew. Cache read again is counted apart: far larger, it would hide the rest.
 export function newTokens(tokens) {
   return tokens.input + tokens.output + tokens.cache_creation;
@@ -51,15 +59,20 @@ function none() {
   return { input: 0, output: 0, cache_creation: 0, cache_read: 0 };
 }
 
+// What `rows` cost together.
+export function costOf(rows) {
+  return rows.reduce((sum, row) => sum + row.cost, 0);
+}
+
 // The most first, without those that used nothing, then one line for all the others.
 function most(all, others) {
-  const rows = all.filter((row) => newTokens(row.tokens) + row.tokens.cache_read > 0);
+  const rows = all.filter((row) => newTokens(row.tokens) + row.tokens.cache_read + row.cost > 0);
   rows.sort((a, b) => newTokens(b.tokens) - newTokens(a.tokens));
   if (rows.length <= ROWS_SHOWN) return rows;
   const rest = rows.slice(ROWS_SHOWN);
   const total = none();
   for (const row of rest) added(total, row.tokens);
-  return [...rows.slice(0, ROWS_SHOWN), { name: others(rest.length), title: "", tokens: total, rest: true }];
+  return [...rows.slice(0, ROWS_SHOWN), { name: others(rest.length), title: "", tokens: total, cost: costOf(rest), rest: true }];
 }
 
 // The tokens of each project over the last `days` days.
@@ -67,10 +80,12 @@ export function byProject(summary, days, now) {
   const projects = new Map();
   for (const row of within(summary.hours, days, now)) {
     const project = projectOf(row.project);
-    if (!projects.has(project)) projects.set(project, none());
-    added(projects.get(project), row.tokens);
+    if (!projects.has(project)) projects.set(project, { tokens: none(), cost: 0 });
+    const sum = projects.get(project);
+    added(sum.tokens, row.tokens);
+    sum.cost += row.cost;
   }
-  const rows = [...projects].map(([project, tokens]) => ({ name: projectName(project), title: project, tokens, rest: false }));
+  const rows = [...projects].map(([project, sum]) => ({ name: projectName(project), title: project, ...sum, rest: false }));
   return most(rows, (count) => `${count} other projects`);
 }
 
@@ -85,6 +100,7 @@ export function bySession(summary, days, now, labelOf) {
       project: projectName(projectOf(session.project)),
       title: session.account,
       tokens: session.tokens,
+      cost: session.cost,
       rest: false,
     }));
   return most(rows, (count) => `${count} other sessions`);
