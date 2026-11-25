@@ -87,8 +87,8 @@ fn read_new_name(paths: &Paths) -> Result<Option<String>> {
         if name.is_empty() {
             return Ok(None);
         }
-        if !registry::is_valid_name(&name) {
-            show_message("Invalid name: use 1 to 32 characters among a-z, 0-9, _ and -.");
+        if !registry::is_valid_new_name(&name) {
+            show_message("Invalid name: use 1 to 32 characters among a-z, 0-9, _ and -, without a dash first.");
             continue;
         }
         if registry::account_exists(paths, &name)? {

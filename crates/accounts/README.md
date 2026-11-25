@@ -106,7 +106,7 @@ Or just run `kindric-accounts` to open the menu. It shows whether each account i
 | Command | Effect |
 | --- | --- |
 | `kindric-accounts` | Opens the menu and starts Claude in the current terminal. |
-| `kindric-accounts add <name>` | Creates an account and its private directory. |
+| `kindric-accounts add <name>` | Creates an account and its private directory. The name has 1 to 32 characters among a-z 0-9 _ -, and does not start with a dash. |
 | `kindric-accounts add <name> --provider <provider> [--url <address>] [--model <name>]` | Creates an account whose model comes from an API key or a gateway. See [Accounts without a Claude login](#accounts-without-a-claude-login). |
 | `kindric-accounts add <name> --agent codex` | Creates an account that runs Codex instead of Claude Code. See [Codex accounts](#codex-accounts). |
 | `kindric-accounts add <name> --agent opencode` | Creates an account that runs OpenCode, with a port of its own. See [OpenCode accounts](#opencode-accounts). |
@@ -121,7 +121,7 @@ Or just run `kindric-accounts` to open the menu. It shows whether each account i
 | `kindric-accounts statusline` | The status line of the sessions it starts. Claude Code runs it; it notes how much of its limits the account used, then shows your own status line. See [Usage of the limits](#usage-of-the-limits). |
 | `kindric-accounts --version` | Prints the installed version. |
 
-Names use 1 to 32 characters among `a-z`, `0-9`, `_` and `-`. `default` is reserved: kindric uses it for Claude Code's own configuration, `~/.claude`.
+Names use 1 to 32 characters among `a-z`, `0-9`, `_` and `-`, and do not start with `-`. `default` is reserved: kindric uses it for Claude Code's own configuration, `~/.claude`.
 
 `add`, `list`, `remove` and `run` work without the menu, so you can use them in scripts and aliases:
 
@@ -145,7 +145,7 @@ Other programs can drive kindric-accounts through the commands below. Their outp
 | `run <name> [args]` | Replaces itself with `claude` running on this account. |
 | `isolated --json` | `["work"]`, or `[]` |
 | `token <name> --print` | The key of a provider account, for Claude Code's `apiKeyHelper`. `no-key` for Ollama without a key. Exit code 1 when a needed key is missing. |
-| `--version` | `kindric-accounts 2.3.0` |
+| `--version` | `kindric-accounts 2.5.0` |
 
 ```json
 [

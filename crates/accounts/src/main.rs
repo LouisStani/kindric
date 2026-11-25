@@ -424,6 +424,10 @@ fn dispatch(args: &[String], raw_args: &[OsString]) -> Result<Exit> {
     let name = args.get(1).filter(|name| !name.is_empty());
     match (command, name) {
         ("", _) => menu::run(&paths),
+        ("add", Some(name)) if name == "--help" || name == "-h" => {
+            print!("{USAGE}");
+            Ok(Exit::Success)
+        },
         ("add", Some(name)) => cmd_add(&paths, name, &args[2..]),
         ("token", Some(name)) => cmd_token(&paths, name, &args[2..]),
         ("list", _) => cmd_list(&paths, &args[1..]),
