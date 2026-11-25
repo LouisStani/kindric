@@ -56,15 +56,17 @@ function setStatus(text) {
   renderStatus();
 }
 
-// The right end of the bar: an error, a notice, or the name of the app.
+// What lasts (an error, a login to renew) takes the place of the app's name, at the right end of the
+// bar; a notice shows under the bar, so that the sessions keep their room.
 function renderStatus() {
   const node = document.getElementById("status");
   const errors = lastView.errors.join(" · ");
   const text = errors || status.notice || status.lasting;
-  node.className = errors ? "error" : text ? "notice" : "";
+  node.className = errors ? "error" : status.notice ? "notice" : "lasting";
+  node.hidden = !text;
   node.title = text;
-  if (text) node.replaceChildren(element("span", "status-text", text));
-  else node.replaceChildren("kindric", element("span", "cursor"));
+  node.replaceChildren(element("span", "status-text", text));
+  document.getElementById("brand").hidden = Boolean(text) && node.className !== "notice";
 }
 
 function directoryField(formId) {

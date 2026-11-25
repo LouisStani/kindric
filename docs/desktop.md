@@ -85,7 +85,7 @@ A chip shows the state, a short name and the unread count. Hovering it shows Cla
 
 The **progress line** is what a background session last said it is doing. Claude Code writes it in `jobs/<id>/state.json` (or, once the session stopped, the last such line of `jobs/<id>/timeline.jsonl`). These files are not documented, so the line may disappear with a Claude Code update. It also shows in the pane head and in `Ctrl+P`.
 
-Chips that do not fit are counted in a **+N** chip that opens `Ctrl+P`. Errors and notices show at the right end of the bar.
+Chips that do not fit are counted in a **+N** chip that opens `Ctrl+P`. A notice shows under the right end of the bar for a few seconds. Errors, and a login to renew, stay in the bar as long as they last, cut short; hover to read all of it.
 
 Clicking a chip opens the session in the active pane of its project's tab, moving there if needed. Until the session first prints (about a quarter of a second, the time `claude attach` takes), the pane shows, dimmed, the last screen it had in this window at the same width; otherwise it says "connecting to <name>…".
 

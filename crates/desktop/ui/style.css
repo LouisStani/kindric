@@ -177,20 +177,47 @@ body {
   color: var(--faint);
 }
 
-#status {
-  flex-shrink: 1;
-  min-width: 0;
-  max-width: 40%;
+#brand, #status {
+  flex-shrink: 0;
   margin: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
   font-weight: 700;
   color: var(--text);
 }
 
-#status.notice {
+#brand[hidden], #status[hidden] {
+  display: none;
+}
+
+/* Cut short: the whole text is in its tooltip. */
+#status {
+  flex-shrink: 1;
+  min-width: 0;
+  max-width: min(40%, 32ch);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+#status.lasting {
   color: var(--waiting);
+}
+
+/* Under the bar, over what is there: it goes after a few seconds. */
+#status.notice {
+  position: fixed;
+  z-index: 9;
+  top: calc(50px + var(--gap));
+  right: var(--gap);
+  max-width: min(70ch, 90vw);
+  padding: 8px 12px;
+  white-space: normal;
+  overflow-wrap: anywhere;
+  pointer-events: none;
+  color: var(--waiting);
+  background: var(--raised);
+  border: var(--stroke) solid var(--line-strong);
+  border-radius: var(--radius);
+  box-shadow: 0 10px 24px rgb(0 0 0 / 45%);
 }
 
 #status.error {
