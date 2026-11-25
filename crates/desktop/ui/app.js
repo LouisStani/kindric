@@ -17,6 +17,7 @@ import { chipState, dotSign, stateWords, tabMark } from "./chips.js";
 import { pickerItems } from "./picker.js";
 import { Typing } from "./typing.js";
 import { UsageWindow } from "./usage.js";
+import { StatsWindow } from "./stats-window.js";
 
 const { invoke } = window.__TAURI__.core;
 const { listen } = window.__TAURI__.event;
@@ -592,6 +593,11 @@ function openUsage() {
   return usageWindow.open();
 }
 
+// F4: the figures of every account, for the pleasure of it.
+function openStats() {
+  return statsWindow.open();
+}
+
 // Ctrl+Shift+B: the worktrees of the project of the visible tab.
 function openWorktrees() {
   const project = panes.activeTab().project;
@@ -1136,6 +1142,7 @@ const SHORTCUTS = [
   { group: "app", id: "worktrees", keys: "ctrl+shift+b", help: "worktrees of this project: merged or not, remove", run: openWorktrees },
   { group: "app", id: "settings", keys: "ctrl+comma", help: "settings: accounts, memory, sessions, shortcuts", run: openSettings },
   { group: "app", id: "usage", keys: "f3", help: "usage: weekly limits, tokens by project and session", run: openUsage },
+  { group: "app", id: "stats", keys: "f4", help: "stats: big numbers, graphs, records", run: openStats },
   { group: "app", id: "next-theme", keys: "ctrl+shift+e", help: "next theme", run: cycleTheme },
   { group: "app", id: "project-theme", keys: "ctrl+alt+e", help: "theme of this project: the next, then kindric's", run: cycleProjectTheme },
   { group: "app", id: "help", keys: "f1", help: "what is left to set up, and these shortcuts", run: openHelp },
@@ -1326,14 +1333,16 @@ const artifactsWindow = new ArtifactsWindow(document.getElementById("artifacts")
 const changesWindow = new ChangesWindow(document.getElementById("changes"));
 const worktreesWindow = new WorktreesWindow(document.getElementById("worktrees"));
 const atlasWindow = new AtlasWindow(document.getElementById("atlas"), { onError: setStatus });
-const usageWindow = new UsageWindow(document.getElementById("usage"), {
-  labelOf: (account, session) => lastView.sessions.find((row) => row.account === account && row.session_id === session)?.label ?? null,
-});
+// The name of a session of the list, null for one that is not there any more.
+const labelOf = (account, session) => lastView.sessions.find((row) => row.account === account && row.session_id === session)?.label ?? null;
+const usageWindow = new UsageWindow(document.getElementById("usage"), { labelOf });
+const statsWindow = new StatsWindow(document.getElementById("stats"), { labelOf });
 const settingsWindow = new SettingsWindow(document.getElementById("settings"), {
   shortcuts: shortcutSettings,
   onAccounts: (accounts) => (accountStatuses = accounts),
   onAtlas: () => atlasWindow.open(),
   onUsage: openUsage,
+  onStats: openStats,
   onTabs: (tabs) => panes.render(tabs),
 });
 

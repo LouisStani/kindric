@@ -137,9 +137,9 @@ class PurgeSection {
 export class SettingsWindow {
   // `onAccounts(accounts)`: the accounts each time they are read, for the rest of the app.
   // `onAtlas()`: opens the memory atlas, once the settings are closed.
-  // `onUsage()`: opens the usage window, likewise.
+  // `onUsage()` and `onStats()`: open the usage and the stats windows, likewise.
   // `onTabs(tabs)`: the tabs after a purge, whose panes may have emptied.
-  constructor(dialog, { shortcuts, onAccounts, onAtlas, onUsage, onTabs }) {
+  constructor(dialog, { shortcuts, onAccounts, onAtlas, onUsage, onStats, onTabs }) {
     this.dialog = dialog;
     this.onAccounts = onAccounts;
     this.onTabs = onTabs;
@@ -151,6 +151,10 @@ export class SettingsWindow {
     dialog.querySelector(".usage-open").addEventListener("click", () => {
       dialog.close();
       onUsage();
+    });
+    dialog.querySelector(".stats-open").addEventListener("click", () => {
+      dialog.close();
+      onStats();
     });
     this.search = dialog.querySelector(".settings-search");
     this.content = dialog.querySelector(".settings-content");

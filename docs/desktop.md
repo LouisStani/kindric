@@ -13,6 +13,7 @@
 - [Worktrees](#worktrees)
 - [Artifacts](#artifacts)
 - [Usage](#usage)
+- [Stats](#stats)
 - [Shortcuts](#shortcuts)
 - [Settings](#settings)
 - [Themes](#themes)
@@ -172,6 +173,17 @@ A file can also be dragged onto the head of a group.
 
 kindric reads the transcripts of Claude Code and of Codex, formats they do not document, and keeps what it read in a cache: the first reading takes a few seconds, the next ones only what was added. The sessions of an OpenCode account are asked to its service, only when it runs; those read before stay. Nothing leaves the computer. An isolated account is left out unless **show in stats** is ticked on its line of the settings.
 
+## Stats
+
+`F4`, or **open stats** in the accounts section of the settings, shows the figures of every account together, for the pleasure of it. `←` `→` choose the last 7 or 30 days, today included, or everything when there is more than a month of it.
+
+- The big numbers: the tokens, those written (next to the length of a novel, a rough estimate), those of thinking, the sessions, the messages typed and the replies. Over 7 days, how the new tokens compare with the 7 days before.
+- The new tokens by day, a small graph per account, all on the same scale.
+- When it happens: a column per day, a row per hour.
+- Records (best day, longest run of a session, heaviest session, days in a row, sessions at once) and habits (busiest hour, favorite project and model).
+
+The figures are those of [Usage](#usage). Claude Code removes its transcripts after about a month (`cleanupPeriodDays` of its settings): kindric keeps their figures (tokens by hour, account and project, when a session was active, never what was said) in `stats-gone.json`, and reads them once a day while it is open. Those of an account removed, or of an isolated one whose **show in stats** is not ticked, are dropped.
+
 ## Shortcuts
 
 | Key | Effect |
@@ -202,6 +214,7 @@ kindric reads the transcripts of Claude Code and of Codex, formats they do not d
 | `Ctrl+Shift+A` | Artifacts of this project |
 | `Ctrl+Shift+B` | Worktrees of this project |
 | `F3` | Usage: weekly limits, tokens by project and session |
+| `F4` | Stats: big numbers, graphs, records |
 | `Ctrl+,` | Settings: accounts, memory, sessions, shortcuts |
 | `Ctrl+Shift+E` | Next theme |
 | `Ctrl+Alt+E` | Next theme of this project, then kindric's again |
@@ -249,6 +262,7 @@ All in kindric's data folder, next to the mailbox: `~/.local/share/kindric/` on 
 | `workspace.json` | The tab you left and the session of each tab's active pane |
 | `sessions.json` | Short names and hidden sessions |
 | `settings.json` | The theme and the shortcuts you changed |
+| `stats.json`, `stats-gone.json` | What [Usage](#usage) and [Stats](#stats) read of the transcripts, and the figures of those gone |
 | `theme.json` | Your custom theme, if you write one |
 | `artifacts/<project>/` | The files sessions kept (`user/`, `claude/`), and `origins.json`: the session that kept each one, followed when the artifacts window moves it |
 | `starts/` | The state of each session's repository when it started, for [Changed files](#changed-files) |
