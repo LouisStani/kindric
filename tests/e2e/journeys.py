@@ -723,7 +723,7 @@ class SetupLeftWithSessions(Journey):
         driver.press(CONTROL, SHIFT, "0")
         wait_until("the control center", lambda: not overview_hidden(driver))
         line = wait_until("the line of what is left", lambda: texts(driver, ".control-setup") or None)
-        self.assertEqual(line, ["1 thing left to set up · F1 shows them"])
+        self.assertEqual(line, ["1 thing left to set up · F1 shows it"])
         self.assertTrue(driver.script("return document.getElementById('welcome').hidden"))
         wait_until("the session's row", lambda: texts(driver, "article.control-row .row-name") == ["already-here"])
 

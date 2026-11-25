@@ -812,6 +812,14 @@ dialog {
   border-radius: var(--radius-pane);
   background: var(--raised);
   color: var(--text);
+  /* A window that takes the keyboard itself, not a field of it, needs no ring of the browser. */
+  outline: none;
+}
+
+/* The ring of the keyboard on a button, in the colors of the theme. */
+button:focus-visible {
+  outline: 2px solid var(--text-strong);
+  outline-offset: 2px;
 }
 
 dialog::backdrop {
@@ -837,6 +845,16 @@ input, select, button {
   border: var(--stroke) solid var(--line);
   border-radius: var(--radius);
   padding: 6px 8px;
+}
+
+/* The arrows of the browser do not follow the theme; the keys still step the number. */
+input[type="number"] {
+  -webkit-appearance: textfield;
+  appearance: textfield;
+}
+
+input[type="number"]::-webkit-inner-spin-button {
+  -webkit-appearance: none;
 }
 
 input:focus, select:focus {
@@ -1204,7 +1222,6 @@ input:focus, select:focus {
 #usage {
   width: min(900px, 94vw);
   max-height: 90vh;
-  outline: none;
 }
 
 .usage-head {
@@ -1865,10 +1882,12 @@ input:focus, select:focus {
   display: flex;
   gap: 10px;
   align-items: center;
-  flex-wrap: wrap;
 }
 
-.memory-atlas button { cursor: pointer; }
+.memory-atlas button {
+  flex: none;
+  cursor: pointer;
+}
 
 .purge-choices, .purge-confirm {
   display: flex;
