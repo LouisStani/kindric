@@ -264,7 +264,8 @@ fn billing_file(paths: &Paths, name: &str) -> PathBuf {
 /// Whether what Claude Code says the sessions of `name` cost is what they cost: with a key of
 /// Anthropic, of the account's provider or of its login. A subscription is not paid by use, and
 /// Claude Code gives the models it does not know (Ollama, OpenRouter, gateways) the price of
-/// another. `ask` asks Claude Code how the account in a directory is billed.
+/// another. `ask` asks Claude Code how the account in a directory is billed; when it cannot tell,
+/// the last answer stands.
 fn paid_by_use(paths: &Paths, name: &str, now: i64, ask: impl Fn(&Path) -> Option<bool>) -> io::Result<bool> {
     let dir = paths.account_dir(name);
     match provider::read(&dir) {
@@ -277,7 +278,7 @@ fn paid_by_use(paths: &Paths, name: &str, now: i64, ask: impl Fn(&Path) -> Optio
     if let Some(known) = known.filter(|known| (0..BILLING_KEPT_SECONDS).contains(&(now - known.asked_at))) {
         return Ok(known.by_use);
     }
-    let by_use = ask(&dir).unwrap_or(false);
+    let by_use = ask(&dir).or(known.map(|known| known.by_use)).unwrap_or(false);
     write_json(&file, &Billing { by_use, asked_at: now })?;
     Ok(by_use)
 }
@@ -1124,11 +1125,14 @@ mod tests {
         assert_eq!((costs_noted(&paths, "console").len(), asked.get()), (2, 2), "a subscription since");
         noted("unknown", &costing("s1", "0.01"), 1, None);
         assert_eq!((costs_noted(&paths, "unknown").len(), asked.get()), (0, 3));
+        noted("unknown", &costing("s1", "0.02"), 1 + BILLING_KEPT_SECONDS, Some(true));
+        noted("unknown", &costing("s1", "0.03"), 1 + 2 * BILLING_KEPT_SECONDS, None);
+        assert_eq!((costs_noted(&paths, "unknown").len(), asked.get()), (2, 5), "not told this time: as before");
         let plan = r#"{"session_id":"s1","cost":{"total_cost_usd":1.0},"rate_limits":{"five_hour":{"used_percentage":1,"resets_at":9}}}"#;
         noted("plan", plan, 1, Some(true));
-        assert_eq!((costs_noted(&paths, "plan").len(), asked.get()), (0, 3), "limits: a subscription, not asked");
+        assert_eq!((costs_noted(&paths, "plan").len(), asked.get()), (0, 5), "limits: a subscription, not asked");
         noted("plan", &costing("s1", "0"), 2, Some(true));
-        assert_eq!(asked.get(), 3, "nothing paid yet, not asked");
+        assert_eq!(asked.get(), 5, "nothing paid yet, not asked");
         fs::remove_dir_all(root).unwrap();
     }
 
