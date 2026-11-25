@@ -133,6 +133,10 @@ def answer(method: str, params: dict) -> object:
         return {"data": []}
     if method == "config/batchWrite":
         return {}
+    if method == "account/rateLimits/read":
+        # As codex 0.172.0 gives those of a "go" plan: one window, of 30 days.
+        window = {"usedPercent": 12, "windowDurationMins": 43200, "resetsAt": int(time.time()) + 10 * 86400}
+        return {"rateLimits": {"limitId": "codex", "primary": window, "secondary": None}}
     with Threads() as threads:
         if method == "thread/loaded/list":
             return {"data": [thread["id"] for thread in threads if loaded(thread)], "nextCursor": None}

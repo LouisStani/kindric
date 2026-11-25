@@ -47,7 +47,7 @@ Each tab is a project: a folder, and the sessions working in it, on any account.
 
 Tab **0**, `Ctrl+Shift+0`, is the page the app opens on. It shows every session without opening any of them.
 
-- On the left, **all**, then each project with a dot per session and the number that need you. Below, each account with where its model comes from (`claude`, `openrouter qwen/qwen3-coder`, `codex`…), its 5 h and 7 day limits and when the 5 h window starts again; a frame marks one past 80%. An account whose model does not come from a Claude subscription has no such limits.
+- On the left, **all**, then each project with a dot per session and the number that need you. Below, each account with where its model comes from (`claude`, `openrouter qwen/qwen3-coder`, `codex`…), its 5 h and 7 day limits and when the 5 h window starts again; a frame marks one past 80%. An account whose model does not come from a Claude subscription has no such limits. A Codex account has those of its ChatGPT plan, a bar each (`5h`, `7d`, `30d`…), read once a minute while its daemon runs; with an API key, it has none.
 - **all** lists the sessions that need you first, whatever their project, then a group per project. A project's name opens it.
 - The dot left of a project's name, on the left, leaves it out of **all** or brings it back. Left out, its name is grey and **all** shows only its sessions that need you; the project's own page still shows them all. The choice is kept in `projects.json`. **other** always shows.
 - A project lists its sessions, the paused ones last with **resume**. A session paused more than two hours ago takes a single line under **paused · N**: its name, how long ago, its account. Pick it to see its full row. Its head counts the files its sessions changed (each session since it started, so a file two sessions touched counts twice), its worktrees and its artifacts; a click opens the window of each. A row's **N files** opens the changes of its session.
@@ -266,7 +266,7 @@ A Codex account (added in the settings with **model from** set to codex, or with
 - Its sessions send and read messages and keep files, like those of Claude Code: kindric-accounts gives the account kindric's MCP server. A message sent with `wake` waits for its next prompt or tool.
 - Away mode (`Ctrl+Shift+Y`) works as for Claude Code: the session keeps working until then.
 
-Not yet: answering a question of the model in the control center, its last steps, images, context and limits. How it works: [Codex accounts](how-it-works.md#codex-accounts).
+Not yet: answering a question of the model in the control center, its last steps, images and context. How it works: [Codex accounts](how-it-works.md#codex-accounts).
 
 ## OpenCode accounts
 
@@ -282,4 +282,4 @@ An OpenCode account is added in the settings with **model from** set to opencode
 
 The sessions of an account live in its OpenCode service. kindric starts it when it does not run, and leaves it running: about 370 MB of memory per OpenCode account. `kindric-accounts run <name> service stop` stops it, until kindric needs it again.
 
-Not yet: its last steps, images, context and limits. How it works: [OpenCode accounts](how-it-works.md#opencode-accounts).
+Not yet: its last steps, images and context, and the limits of an OpenCode subscription (its card says `no limits`). How it works: [OpenCode accounts](how-it-works.md#opencode-accounts).

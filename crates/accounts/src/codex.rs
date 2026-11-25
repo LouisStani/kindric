@@ -533,6 +533,58 @@ pub fn sessions(dir: &Path, include_stopped: bool) -> io::Result<Vec<Thread>> {
     Ok(threads)
 }
 
+/// One of the limits of a ChatGPT plan: the share used of a window of time.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Limit {
+    /// How long the window lasts; `None` when Codex does not say.
+    pub minutes: Option<i64>,
+    pub used_percent: i64,
+    /// When the window starts again, Unix seconds.
+    pub resets_at: Option<i64>,
+}
+
+/// The limits in the answer to `account/rateLimits/read`, the shortest window first.
+fn limits_of(result: &Value) -> Vec<Limit> {
+    let Some(snapshot) = result.get("rateLimits") else {
+        return Vec::new();
+    };
+    let mut limits: Vec<Limit> = ["primary", "secondary"]
+        .iter()
+        .filter_map(|name| {
+            let window = snapshot.get(name)?;
+            Some(Limit {
+                minutes: window.get("windowDurationMins").and_then(Value::as_i64),
+                used_percent: window.get("usedPercent")?.as_i64()?,
+                resets_at: window.get("resetsAt").and_then(Value::as_i64),
+            })
+        })
+        .collect();
+    limits.sort_by_key(|limit| limit.minutes.unwrap_or(i64::MAX));
+    limits
+}
+
+/// Whether the answer to `account/read` names a login that is not a ChatGPT one, an API key say:
+/// those have no limits.
+fn has_no_plan(result: &Value) -> bool {
+    result.pointer("/account/type").and_then(Value::as_str).is_some_and(|kind| kind != "chatgpt")
+}
+
+/// The limits of the Codex account in `dir`, asked to its daemon, which asks OpenAI each time:
+/// empty for an account without any, `None` when the daemon does not run.
+pub fn limits(dir: &Path) -> io::Result<Option<Vec<Limit>>> {
+    let Some(mut daemon) = AppServer::connect_daemon(dir)? else {
+        return Ok(None);
+    };
+    // The details of the reset credits take a second request to OpenAI.
+    match daemon.request("account/rateLimits/read", json!({ "excludeResetCreditDetails": true })) {
+        Ok(result) => Ok(Some(limits_of(&result))),
+        Err(refused) => match daemon.request("account/read", json!({ "refreshToken": false })) {
+            Ok(account) if has_no_plan(&account) => Ok(Some(Vec::new())),
+            _ => Err(refused),
+        },
+    }
+}
+
 /// The name a new session gets: `name`, else the last folder of `cwd`, the title kindric shows for
 /// a session without a name anyway.
 fn session_name(name: &str, cwd: &Path) -> String {
@@ -945,6 +997,29 @@ mod tests {
             Thread { id: "01a155e3".into(), name: Some("Conseiller une stack".into()), cwd: "/home/u/Socials".into(), status: ThreadStatus::NotLoaded },
             Thread { id: "01a1505a".into(), name: None, cwd: "/home/u/Thr".into(), status: ThreadStatus::Idle },
         ]);
+    }
+
+    #[test]
+    fn limits_are_read_shortest_window_first() {
+        // As codex 0.172.0 answered on the test bench, the rest left out.
+        let window = |percent: i64, minutes: Value| json!({"usedPercent": percent, "windowDurationMins": minutes, "resetsAt": 1795600000});
+        let limit = |used_percent, minutes| Limit { minutes, used_percent, resets_at: Some(1_795_600_000) };
+        let plus = json!({"rateLimits": {"limitId": "codex", "primary": window(42, json!(300)), "secondary": window(7, json!(10080))}});
+        assert_eq!(limits_of(&plus), [limit(42, Some(300)), limit(7, Some(10_080))]);
+        let go = json!({"rateLimits": {"primary": window(12, json!(43200)), "secondary": null}});
+        assert_eq!(limits_of(&go), [limit(12, Some(43_200))]);
+        let swapped = json!({"rateLimits": {"primary": window(7, json!(null)), "secondary": window(42, json!(300))}});
+        assert_eq!(limits_of(&swapped), [limit(42, Some(300)), limit(7, None)], "a window of unknown length goes last");
+        assert_eq!(limits_of(&json!({"rateLimits": {"primary": {"usedPercent": 1}}})), [Limit { minutes: None, used_percent: 1, resets_at: None }]);
+        assert_eq!(limits_of(&json!({})), []);
+    }
+
+    #[test]
+    fn only_a_login_that_is_not_chatgpt_has_no_plan() {
+        // As codex 0.172.0 answered `account/read` on the test bench with an API key and without login.
+        assert!(has_no_plan(&json!({"account": {"type": "apiKey"}, "requiresOpenaiAuth": true})));
+        assert!(!has_no_plan(&json!({"account": null, "requiresOpenaiAuth": true})));
+        assert!(!has_no_plan(&json!({"account": {"type": "chatgpt", "planType": "go"}})));
     }
 
     #[test]

@@ -36,6 +36,7 @@ import {
   summaryOf,
   taskLine,
   tasksBadge,
+  windowText,
 } from "./overview-board.js";
 
 function row(label, tab, extra = {}) {
@@ -186,11 +187,45 @@ test("an account is shown with sessions running or figures, framed from 80% of i
 test("an account card names its provider, and one without a Claude login shows without sessions", () => {
   const usages = [{ name: "louis", five_hour: 10, seven_day: 5, five_hour_resets_at: null, updated_at: 1 }];
   const cards = accountCards([row("a", 1, { account: "louis" })], ["louis", "router", "idle"], usages, { router: "openrouter qwen3" });
-  assert.deepEqual(cards.map((card) => [card.name, card.sessions, card.provider, card.limits]), [
-    ["louis", 1, "claude", true],
-    ["router", 0, "openrouter qwen3", false],
+  assert.deepEqual(cards.map((card) => [card.name, card.sessions, card.provider, card.note]), [
+    ["louis", 1, "claude", null],
+    ["router", 0, "openrouter qwen3", "no 5h or 7d limits"],
   ]);
   assert.deepEqual(accountCards([], ["louis"], usages).map((card) => card.provider), ["claude"], "providers default to none");
+  const [unread] = accountCards([row("a", 1, { account: "louis" })], ["louis"], []);
+  assert.deepEqual([unread.bars, unread.note], [[], "no figures yet"]);
+});
+
+test("a Claude account's card has its five hours then its week", () => {
+  const [card] = accountCards([], ["louis"], [{ name: "louis", five_hour: 10, seven_day: 85, five_hour_resets_at: 7, updated_at: 1 }]);
+  assert.deepEqual(card.bars, [
+    { label: "5h", percent: 10, resetsAt: 7 },
+    { label: "7d", percent: 85, resetsAt: null },
+  ]);
+  assert.equal(card.hot, false, "only the five hours frame the card");
+});
+
+test("a Codex account's card has a bar per limit of its plan, an OpenCode one has none", () => {
+  const providers = { plus: "codex", go: "codex", key: "codex", late: "codex", oc: "opencode" };
+  const limits = {
+    plus: [{ minutes: 300, percent: 80, resets_at: 5 }, { minutes: 10_080, percent: 7, resets_at: 9 }],
+    go: [{ minutes: 43_200, percent: 12, resets_at: null }],
+    key: [],
+    late: null,
+    oc: [],
+  };
+  const cards = accountCards([], Object.keys(providers), [], providers, limits);
+  assert.deepEqual(cards.map((card) => [card.name, card.bars.map((bar) => [bar.label, bar.percent, bar.resetsAt]), card.note, card.hot]), [
+    ["plus", [["5h", 80, 5], ["7d", 7, 9]], null, true],
+    ["go", [["30d", 12, null]], null, false],
+    ["key", [], "no limits", false],
+    ["late", [], "no figures yet", false],
+    ["oc", [], "no limits", false],
+  ]);
+});
+
+test("a window is named after how long it lasts", () => {
+  assert.deepEqual([300, 10_080, 43_200, 1440, 90, null].map(windowText), ["5h", "7d", "30d", "1d", "90min", "limit"]);
 });
 
 test("a prompt reaches the project's sessions kindric runs, not the paused ones nor those elsewhere", () => {
