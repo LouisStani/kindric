@@ -23,7 +23,7 @@ use serde::{Deserialize, Serialize};
 use crate::opencode;
 
 /// Bumped when what the cache holds changes: an older cache is then read again from scratch.
-const VERSION: u32 = 2;
+const VERSION: u32 = 3;
 const CACHE_FILE: &str = "stats.json";
 /// The figures of the sessions whose transcript is gone, next to the cache. Never read again from
 /// anywhere: `VERSION` does not apply to it.
@@ -659,17 +659,22 @@ fn count(transcript: &mut Transcript, line: Line) {
             let Some(usage) = message.usage else {
                 return;
             };
-            if message.id.is_some() && message.id == transcript.last_reply {
-                return;
-            }
+            // A reply split in blocks takes several lines that repeat its usage. Its tokens count on
+            // each, as Claude Code's /stats counts them (decision 490); the reply counts once.
+            let new_reply = message.id.is_none() || message.id != transcript.last_reply;
             transcript.last_reply = message.id;
             let model = message.model.unwrap_or_default();
             if model == SYNTHETIC_MODEL {
                 return;
             }
             let figures = transcript.hours.entry(hour).or_default();
-            figures.tokens.add(&usage.tokens());
-            *figures.models.entry(model).or_default() += 1;
+            let mut tokens = usage.tokens();
+            if new_reply {
+                *figures.models.entry(model).or_default() += 1;
+            } else {
+                tokens.replies = 0;
+            }
+            figures.tokens.add(&tokens);
         }
         ("user", Some(message)) if !transcript.agent && !line.is_meta && message.content.as_ref().is_some_and(|content| content.typed) => {
             transcript.hours.entry(hour).or_default().tokens.prompts += 1;
@@ -882,25 +887,26 @@ mod tests {
     }
 
     #[test]
-    fn a_reply_split_in_blocks_counts_once() {
+    fn a_reply_split_in_blocks_is_one_reply_whose_tokens_count_on_each_line() {
         let transcript = fed(&lines(&[reply("m1", T0, 10), reply("m1", T0, 10), reply("m2", T0, 7)]));
         let figures = &transcript.hours[&(T0_MS / MS_PER_HOUR)];
         assert_eq!(figures.tokens.replies, 2);
-        assert_eq!(figures.tokens.output, 17);
-        assert_eq!(figures.tokens.input, 4);
-        assert_eq!(figures.tokens.cache_read, 200);
-        assert_eq!(figures.tokens.cache_creation, 100);
-        assert_eq!(figures.tokens.thinking, 6);
-        assert_eq!(figures.tokens.web_searches, 2);
+        assert_eq!(figures.tokens.output, 27, "as Claude Code's /stats counts");
+        assert_eq!(figures.tokens.input, 6);
+        assert_eq!(figures.tokens.cache_read, 300);
+        assert_eq!(figures.tokens.cache_creation, 150);
+        assert_eq!(figures.tokens.thinking, 9);
+        assert_eq!(figures.tokens.web_searches, 3);
         assert_eq!(figures.models["claude-opus-5-5"], 2);
         assert_eq!(transcript.project.as_deref(), Some("/work/kindric"));
     }
 
     #[test]
-    fn a_reply_repeated_across_two_reads_counts_once() {
+    fn a_reply_repeated_across_two_reads_is_one_reply() {
         let mut transcript = fed(&lines(&[reply("m1", T0, 10)]));
         feed(&mut transcript, &lines(&[reply("m1", T0, 10), reply("m2", T0, 1)]), claude_line);
-        assert_eq!(transcript.hours[&(T0_MS / MS_PER_HOUR)].tokens.replies, 2);
+        let figures = &transcript.hours[&(T0_MS / MS_PER_HOUR)];
+        assert_eq!((figures.tokens.replies, figures.tokens.output), (2, 21));
     }
 
     #[test]
