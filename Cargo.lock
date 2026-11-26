@@ -2077,7 +2077,7 @@ dependencies = [
 
 [[package]]
 name = "kindric"
-version = "0.5.0"
+version = "1.0.0"
 dependencies = [
  "alacritty_terminal",
  "kindric-core",
@@ -2100,7 +2100,7 @@ dependencies = [
 
 [[package]]
 name = "kindric-core"
-version = "0.5.0"
+version = "1.0.0"
 dependencies = [
  "kindric-accounts",
  "notify",
@@ -2110,7 +2110,7 @@ dependencies = [
 
 [[package]]
 name = "kindric-desktop"
-version = "0.5.0"
+version = "1.0.0"
 dependencies = [
  "fontdue",
  "kindric-core",
