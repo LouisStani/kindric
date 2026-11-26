@@ -75,6 +75,21 @@ jobs:
         run: |
           packaging/package.sh ${{ matrix.target }} target/release dist
           cd dist && { sha256sum kindric-* 2> /dev/null || shasum -a 256 kindric-*; } > SHA256SUMS && cat SHA256SUMS
+      # Nobody opened the app on a real Mac or PC: it is opened here, on the runner's screen, and its
+      # screenshot is kept with the run.
+      - name: Open the app (macOS)
+        if: runner.os == 'macOS'
+        run: packaging/ci/open-app.sh target/release app-screen
+      - name: Open the app (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: packaging/ci/open-app.ps1 target/release app-screen
+      - uses: actions/upload-artifact@v4
+        if: always() && runner.os != 'Linux'
+        with:
+          name: app-screen-${{ matrix.target }}
+          path: app-screen/
+          if-no-files-found: ignore
       - name: Install, run and uninstall (Linux, macOS)
         if: runner.os != 'Windows'
         run: packaging/ci/test-install.sh dist

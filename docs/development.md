@@ -35,6 +35,7 @@ The tests never start Claude Code and never touch your accounts. The JavaScript 
 - At every push to `main`, every pull request, and on demand (`gh workflow run CI --ref <branch>`), CI runs clippy and the tests on Linux, macOS and Windows, and the JavaScript tests on Linux.
 - It also runs kindric-accounts' command-line tests (`crates/accounts/tests.sh`, Linux) and smoke tests (macOS, Windows).
 - It tests the installers on Linux, macOS and Windows: `packaging/ci/test-install.sh` and `test-install.ps1` pack an archive, serve it on localhost and install, update and uninstall from it in a home of their own.
+- It opens the app on the macOS and Windows runners' screens (`packaging/ci/open-app.sh`, `open-app.ps1`): it waits for the page to be ready in `trace.log`, and keeps a screenshot with the run (`app-screen-<target>`).
 - A `v*` tag publishes the release, for five targets: an archive of the three programs per target (`packaging/package.sh`; on macOS the app is a `kindric.app`), `install.sh`, `install.ps1`, their `SHA256SUMS`, and kindric-accounts alone, as [its README](../crates/accounts/README.md#installation) installs it. Linux is built on Ubuntu 22.04, for its older glibc.
 
 ## The desktop page
