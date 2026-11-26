@@ -12,6 +12,9 @@ $Out = (Resolve-Path $Out).Path
 $trace = Join-Path $env:APPDATA 'kindric\trace.log'
 Remove-Item $trace -ErrorAction SilentlyContinue
 
+Write-Host 'processes with a window before the app:'
+Get-Process | Where-Object { $_.MainWindowHandle -ne 0 } | Sort-Object ProcessName | ForEach-Object { Write-Host "  $($_.ProcessName): $($_.MainWindowTitle)" }
+
 $env:KINDRIC_TRACE = '1'
 $env:PATH = "$Bin;$env:PATH"
 $app = Start-Process -FilePath (Join-Path $Bin 'kindric-desktop.exe') -PassThru `
