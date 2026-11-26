@@ -20,6 +20,7 @@
 - [Files kept by the app](#files-kept-by-the-app)
 - [Signal](#signal)
 - [Codex accounts](#codex-accounts)
+- [OpenCode accounts](#opencode-accounts)
 
 ## Setup checklist
 
@@ -230,7 +231,7 @@ Unlike the terminal interface, the number of a session changes with its state: `
 
 `Ctrl+,` opens the settings with the cursor in a search field: type to find a setting in every category, or pick a category on the left (Up and Down from the search). Escape empties the search, then closes.
 
-The accounts section lists the accounts of kindric-accounts: logged in or not, plan or where the model comes from, running sessions, isolated. **add** creates an account. Its **model from** says where: a Claude login (Claude Code's login then opens in a window of the app), an Anthropic API key, OpenRouter, Ollama on this computer (its model is picked among those installed) or another gateway (its address), or **codex**: the account runs OpenAI's Codex instead of Claude Code, and Codex's login opens in a window of the app. Each asks for what it needs: a model, a key. **set key** and **change key** give such an account its key, which kindric-accounts keeps (see [How it works](how-it-works.md)). **log in** opens the login of a Claude account that is logged out, or of a Codex account. **remove** takes an account off the list after you confirm; its folder stays on disk.
+The accounts section lists the accounts of kindric-accounts: logged in or not, plan or where the model comes from, running sessions, isolated. **add** creates an account. Its **model from** says where: a Claude login (Claude Code's login then opens in a window of the app), an Anthropic API key, OpenRouter, Ollama on this computer (its model is picked among those installed) or another gateway (its address), **codex**: the account runs OpenAI's Codex instead of Claude Code, and Codex's login opens in a window of the app, or **opencode**: the account runs OpenCode, whose login asks which provider to use. Each asks for what it needs: a model, a key. **set key** and **change key** give such an account its key, which kindric-accounts keeps (see [How it works](how-it-works.md)). **log in** opens the login of a Claude account that is logged out, or of a Codex or OpenCode account. **remove** takes an account off the list after you confirm; its folder stays on disk.
 
 The memory section sets the size above which a session is warned about the memory it opens at startup: 30 KB by default. It is a warning, nothing is cut. The value is kept in `~/.config/kindric-accounts/memory-warning`. **open the memory atlas** draws the memory of kindric (`~/.kindric/memory`) in 3D: each project is a system around its status, each file a planet. A pale sun is a status older than the project's last decision, a red planet a lesson given again, a grey rock a file its `INDEX.md` does not name. Drag to turn, pinch or use the wheel to go in and out, type to search. A click goes one level down, from the whole memory to a project, a system, then a planet to read; `Esc` comes back up.
 
@@ -294,7 +295,6 @@ A Codex account (added in the settings with **model from** set to codex, or with
 - `Ctrl+Shift+K` stops the turn running and hides the session. The purge of the settings archives a Codex session: `codex unarchive <id>` brings it back.
 - Its sessions send and read messages and keep files, like those of Claude Code: kindric-accounts gives the account kindric's MCP server. A message sent with `wake` waits for its next prompt or tool.
 - Away mode (`Ctrl+Shift+Y`) works as for Claude Code: the session keeps working until then.
-
 - The control center shows its last steps, how full its context is and the images its last turn names, and its pane head says what it does now, as for Claude Code.
 - `kindric ask` works from its sandbox: kindric-accounts lets Codex write in kindric's overview folder.
 
@@ -311,9 +311,8 @@ An OpenCode account is added in the settings with **model from** set to opencode
 - `Ctrl+Shift+K` stops the turn running and hides the session. The purge of the settings archives an OpenCode session: OpenCode keeps it, archived, not deleted.
 - Its sessions send and read messages and keep files: kindric-accounts gives the account kindric's MCP server. A message reaches a session at rest too, and wakes it up to read it.
 - Away mode (`Ctrl+Shift+Y`): a session that comes to rest is told to keep working, as with Claude Code, but only while kindric is open, since kindric does it and not a hook. Its commands are not checked meanwhile: it asks for them as usual, and the control center answers.
+- The control center shows its last steps, how full its context is and the images its last turn names, and its pane head says what it does now, as for Claude Code. They are read from its service, so only while it runs.
 
 The sessions of an account live in its OpenCode service. kindric starts it when it does not run, and leaves it running: about 370 MB of memory per OpenCode account. `kindric-accounts run <name> service stop` stops it, until kindric needs it again.
-
-- The control center shows its last steps, how full its context is and the images its last turn names, and its pane head says what it does now, as for Claude Code. They are read from its service, so only while it runs.
 
 Not yet: the limits of an OpenCode subscription (its card says `no limits`), and its task list. How it works: [OpenCode accounts](how-it-works.md#opencode-accounts).
