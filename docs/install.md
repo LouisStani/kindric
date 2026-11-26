@@ -50,7 +50,7 @@ Open kindric from the menu, or run `kindric-desktop`. Until everything is set up
 
 Run the same command again. It replaces the programs and leaves your accounts and settings alone. A kindric already running keeps the old programs until it restarts.
 
-To install a given version instead of the latest (the installers came after 1.0.0, so 1.0.0 and older cannot be installed this way):
+To install a given version instead of the latest (1.0.0 or later: older releases have no archives for the installers):
 
 ```sh
 curl -fsSL https://github.com/LouisStani/kindric/releases/latest/download/install.sh | sh -s -- --version <x.y.z>

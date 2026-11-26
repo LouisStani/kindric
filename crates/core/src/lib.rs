@@ -10,6 +10,7 @@ pub mod checks;
 pub mod claude_theme;
 pub mod codex_approval;
 pub mod codex_history;
+pub mod current_task;
 mod git;
 pub mod images;
 pub mod launcher;

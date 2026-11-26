@@ -9,6 +9,7 @@ import {
   accountCards,
   ageText,
   allView,
+  inBar,
   answersInOneClick,
   canPrompt,
   changedOf,
@@ -23,7 +24,6 @@ import {
   leftText,
   lineOf,
   nextAsking,
-  pausedText,
   permissionText,
   projectView,
   projectsOf,
@@ -36,6 +36,7 @@ import {
   summaryOf,
   taskLine,
   tasksBadge,
+  underLine,
   windowText,
 } from "./overview-board.js";
 
@@ -61,9 +62,17 @@ test("a session stands where the user sees it", () => {
   assert.equal(standing(row("a", 1, { state: "elsewhere" })), "elsewhere");
 });
 
-test("the summary counts each group, paused too, and elsewhere in none", () => {
-  const rows = [row("a", 1, asking), row("b", 1, working), row("c", 2, working), row("d", 2, done), row("e", 2), row("f", 2, paused), row("g", 2, { state: "elsewhere" })];
-  assert.deepEqual(summaryOf(rows), { need: 1, working: 2, done: 1, rest: 1, paused: 1 });
+test("the summary counts each group, and elsewhere in none", () => {
+  const rows = [row("a", 1, asking), row("b", 1, working), row("c", 2, working), row("d", 2, done), row("e", 2), row("g", 2, { state: "elsewhere" })];
+  assert.deepEqual(summaryOf(rows), { need: 1, working: 2, done: 1, rest: 1 });
+});
+
+// Decision 497: the control center shows the sessions of the bar; a paused one leaves it at once,
+// even with a question left, and a hidden one too.
+test("the control center keeps the sessions of the bar only", () => {
+  const rows = [row("rest", 2), row("working", 2, working), row("asks", 2, asking), row("just paused", 2, paused),
+    row("paused asking", 2, { ...paused, asks: true }), row("hidden", 2, { ...working, hidden: true }), row("elsewhere", 2, { state: "elsewhere" })];
+  assert.deepEqual(labels(rows.filter(inBar)), ["rest", "working", "asks", "elsewhere"]);
 });
 
 const tabs = [
@@ -74,22 +83,21 @@ const tabs = [
 ];
 
 test("the side lists all, then every tab in the bar's order, with its dots most urgent first and its needs", () => {
-  const rows = [row("rest", 2), row("stopped", 2, paused), row("asks", 2, asking), row("tests", 3, working), row("notes", 1, done)];
+  const rows = [row("rest", 2), row("asks", 2, asking), row("tests", 3, working), row("notes", 1, done)];
   const entries = projectsOf(rows, tabs);
   assert.deepEqual(entries.map((entry) => entry.name), ["all", "other", "kindric", "merkio", "suivi42"]);
-  assert.deepEqual(entries[2].standings, ["need", "rest", "paused"]);
+  assert.deepEqual(entries[2].standings, ["need", "rest"]);
   assert.deepEqual(entries.map((entry) => entry.needs), [1, 0, 1, 0, 0]);
-  assert.deepEqual(entries[0].standings, ["need", "working", "done", "rest", "paused"], "all gathers every project");
+  assert.deepEqual(entries[0].standings, ["need", "working", "done", "rest"], "all gathers every project");
   assert.deepEqual(entries[4].standings, [], "a project without sessions is still listed");
 });
 
 test("all projects: what needs you first, from any project, then a group per project in the bar's order", () => {
-  const rows = [row("rest", 2), row("api", 3, asking), row("merge", 2, asking), row("stopped", 2, paused), row("pricing", 3, working)];
+  const rows = [row("rest", 2), row("api", 3, asking), row("merge", 2, asking), row("pricing", 3, working)];
   const { needs, groups } = allView(rows, tabs);
   assert.deepEqual(labels(needs), ["api", "merge"], "the list's order among those that need you");
   assert.deepEqual(groups.map((group) => group.tab.name), ["kindric", "merkio"], "a project left with nothing is not shown");
   assert.deepEqual(labels(groups[0].rows), ["rest"]);
-  assert.deepEqual(labels(groups[0].paused), ["stopped"], "paused long ago, apart");
   assert.deepEqual(labels(groups[1].rows), ["pricing"]);
 });
 
@@ -114,52 +122,33 @@ test("the side's all counts what all shows, and every project says whether it is
   assert.deepEqual(entries.map((entry) => entry.inAll), [true, true, true, false, true]);
 });
 
-test("one project: its sessions most urgent first, the paused ones apart", () => {
-  const rows = [row("rest", 2), row("stopped", 2, paused), row("working", 2, working), row("asks", 2, asking), row("elsewhere", 3, working)];
-  const { active, paused: stopped } = projectView(rows, 2);
-  assert.deepEqual(labels(active), ["asks", "working", "rest"]);
-  assert.deepEqual(labels(stopped), ["stopped"]);
+test("one project: its sessions most urgent first", () => {
+  const rows = [row("rest", 2), row("working", 2, working), row("asks", 2, asking), row("elsewhere", 3, working)];
+  assert.deepEqual(labels(projectView(rows, 2)), ["asks", "working", "rest"]);
 });
 
-// Decision 354: what needs you, paused less than two hours ago, working, done, at rest, paused
-// long ago; the last active first in each group.
+// What needs you, working, done, at rest; the last active first in each group.
 const NOW = 1_800_000_000;
 const ago = (minutes) => ({ last_active: NOW - minutes * 60 });
 
-test("a pause of less than two hours comes right after what needs you, an older one last", () => {
+test("what needs you first, then working, done, at rest", () => {
   const rows = [
-    row("old pause", 2, { ...paused, ...ago(121) }),
     row("rest", 2, ago(1)),
     row("working an hour ago", 2, { ...working, ...ago(60) }),
     row("asks", 2, { ...asking, ...ago(300) }),
-    row("pause", 2, { ...paused, ...ago(119) }),
     row("done", 2, { ...done, ...ago(30) }),
     row("working now", 2, { ...working, ...ago(0) }),
   ];
-  const { active, paused: stopped } = projectView(rows, 2, new Map(), NOW);
-  assert.deepEqual(labels(active), ["asks", "pause", "working now", "working an hour ago", "done", "rest"]);
-  assert.deepEqual(labels(stopped), ["old pause"]);
-  const { groups } = allView(rows, tabs, new Map(), NOW);
-  assert.deepEqual(labels(groups[0].rows), ["pause", "working now", "working an hour ago", "done", "rest"]);
-  assert.deepEqual(labels(groups[0].paused), ["old pause"], "all puts those paused long ago apart too");
-});
-
-// Decision 460: a project with nothing but sessions paused long ago is still shown in all.
-test("all keeps a project whose sessions are all paused long ago, and dates each pause", () => {
-  const rows = [row("old pause", 2, { ...paused, ...ago(6000) }), row("undated", 2, paused)];
-  const { groups } = allView(rows, tabs, new Map(), NOW);
-  assert.deepEqual(groups.map((group) => [group.tab.name, labels(group.rows), labels(group.paused)]), [["kindric", [], ["old pause", "undated"]]]);
-  assert.equal(pausedText(rows[0], NOW), "paused 4 d ago");
-  assert.equal(pausedText(rows[1], NOW), "paused");
+  assert.deepEqual(labels(projectView(rows, 2)), ["asks", "working now", "working an hour ago", "done", "rest"]);
+  const { groups } = allView(rows, tabs);
+  assert.deepEqual(labels(groups[0].rows), ["working now", "working an hour ago", "done", "rest"]);
 });
 
 test("within a group, the last active first; a session without a transcript last", () => {
   const rows = [row("never", 2, working), row("an hour ago", 2, { ...working, ...ago(60) }), row("now", 2, { ...working, ...ago(0) })];
-  assert.deepEqual(labels(projectView(rows, 2, new Map(), NOW).active), ["now", "an hour ago", "never"]);
-  const pauses = [row("no transcript", 2, paused), row("hours ago", 2, { ...paused, ...ago(600) }), row("days ago", 2, { ...paused, ...ago(6000) })];
-  assert.deepEqual(labels(projectView(pauses, 2, new Map(), NOW).paused), ["hours ago", "days ago", "no transcript"], "an unknown pause is an old one");
+  assert.deepEqual(labels(projectView(rows, 2)), ["now", "an hour ago", "never"]);
   const asks = [row("asked first", 2, { ...asking, ...ago(10) }), row("asked last", 2, { ...asking, ...ago(1) })];
-  assert.deepEqual(labels(allView(asks, tabs, new Map(), NOW).needs), ["asked last", "asked first"]);
+  assert.deepEqual(labels(allView(asks, tabs).needs), ["asked last", "asked first"]);
 });
 
 test("a row says how many files its session kept and how many are new", () => {
@@ -316,6 +305,23 @@ test("a row says what the session last said, else what it waits for", () => {
   assert.equal(lineOf(row("a", 1, paused)), "paused");
 });
 
+// Decision 499: while it works, what kindric found it does comes before Claude Code's line, which
+// is often only the last prompt ("go").
+// Decision 500: on a line of its own under the row, read whole.
+test("a working row says what the session does now, on the line under it", () => {
+  const sentence = "I read their screenshots before touching the code.";
+  const busy = { ...working, progress: "go", doing: sentence };
+  assert.equal(underLine(row("a", 1, busy)), sentence);
+  assert.equal(lineOf(row("a", 1, busy)), "working", "not said twice");
+  assert.equal(underLine(row("a", 1, { ...busy, ...asking })), null, "a question on its screen first: it does not work");
+  assert.equal(lineOf(row("a", 1, { ...busy, ...asking })), "go");
+  assert.equal(underLine(row("a", 1, { ...busy, state: "waiting" })), null, "only while it works");
+  assert.equal(underLine(row("a", 1, { ...working, progress: "go", doing: null })), null);
+  assert.equal(lineOf(row("a", 1, { ...working, progress: "go", doing: null })), "go");
+  const list = { doing: "Writing the tests", about: null, done: 0, total: 2, left_seconds: null, tasks: [] };
+  assert.equal(underLine(row("a", 1, { ...busy, tasks: list })), "Writing the tests", "a list the turn changed comes first");
+});
+
 function request(id, session_id, body) {
   return { id, session_id, cwd: "/home/u/arcade", asked_at: 1, ...body };
 }
@@ -336,8 +342,8 @@ test("a session with a request needs you, even one that keeps working on a kindr
   assert.equal(lineOf(said, new Map([[said.session_id, [{ kind: "ask", question: "another?" }]]])), "UTC or local time?");
   const permission = requestsBySession([request("3-1", "s-merge", { kind: "permission", tool: "Bash", input: { command: "git merge main" } })]);
   assert.equal(lineOf(row("merge", 1, { session_id: "s-merge" }), permission), "waits for your permission");
-  assert.deepEqual(summaryOf([board, other], requests), { need: 1, working: 0, done: 0, rest: 1, paused: 0 });
-  assert.deepEqual(labels(projectView([other, board], 1, requests).active), ["leaderboard", "notes"]);
+  assert.deepEqual(summaryOf([board, other], requests), { need: 1, working: 0, done: 0, rest: 1 });
+  assert.deepEqual(labels(projectView([other, board], 1, requests)), ["leaderboard", "notes"]);
   assert.deepEqual(labels(allView([other, board], [{ id: 1, name: "arcade" }], requests).needs), ["leaderboard"]);
 });
 

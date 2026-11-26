@@ -2343,7 +2343,7 @@ input:focus, select:focus {
   white-space: nowrap;
 }
 
-.control-actions button, .row-resume {
+.control-actions button {
   padding: 6px 14px;
   border: var(--stroke) solid var(--line-strong);
   border-radius: var(--radius);
@@ -2649,37 +2649,6 @@ input:focus, select:focus {
   border-color: var(--waiting);
 }
 
-.control-row.is-paused {
-  border-style: dashed;
-  background: transparent;
-}
-
-/* A session paused long ago, on one line whatever the width (decision 460): name, since when,
-   account. The placements of the full row's narrow layouts do not apply to it. */
-.control-row.is-line {
-  padding: 5px 14px;
-}
-
-.control-row.is-line .row-line {
-  grid-template-columns: 10px minmax(0, 190px) minmax(0, 1fr) auto;
-  grid-template-areas: none;
-  row-gap: 0;
-}
-
-.control-row.is-line .row-line > * {
-  grid-area: auto;
-  margin-top: 0;
-}
-
-/* The lines of a list sit closer than the rows: the list stays short. */
-.control-row.is-line + .control-row.is-line {
-  margin-top: -6px;
-}
-
-.control-group.is-paused {
-  font-size: 12px;
-}
-
 .control-row.selected, .control-row.selected:hover {
   border-color: var(--active);
   box-shadow: 0 0 0 1px var(--active);
@@ -2800,11 +2769,6 @@ input:focus, select:focus {
   color: var(--muted);
 }
 
-.row-resume {
-  grid-column: 7;
-  padding: 4px 10px;
-}
-
 /* A narrow row: what the session does would get under 150 px on one line, so it takes a line
    of its own, under the name, with its badges and what it kept. The short columns stay on the
    first line, aligned from row to row. */
@@ -2840,13 +2804,9 @@ input:focus, select:focus {
   .row-account {
     grid-area: account;
   }
-
-  .row-resume {
-    grid-area: resume;
-  }
 }
 
-/* Narrower still: the context keeps its number, without its bar; what it kept and resume go on
+/* Narrower still: the context keeps its number, without its bar; what it kept goes on
    a third line, and "nothing kept" goes away. */
 @container row (width < 500px) {
   .row-line {
@@ -2859,7 +2819,7 @@ input:focus, select:focus {
   }
 
   /* Spaced by margins, not by the grid's gap: an empty third line takes no room. */
-  .row-doing, .row-kept, .row-resume {
+  .row-doing, .row-kept {
     margin-top: 6px;
   }
 

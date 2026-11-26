@@ -22,7 +22,6 @@ import {
   leftText,
   lineOf,
   nextAsking,
-  pausedText,
   permissionText,
   projectView,
   projectsOf,
@@ -33,8 +32,8 @@ import {
   standing,
   showsTasks,
   summaryOf,
-  taskLine,
   tasksBadge,
+  underLine,
 } from "./overview-board.js";
 
 function element(tag, className, text) {
@@ -203,7 +202,7 @@ export class Overview {
     this.redraw();
   }
 
-  // `rows` are the sessions not hidden, paused ones included; `tabs` `[{ id, name, directory }]` in
+  // `rows` are the sessions of the bar, of every tab; `tabs` `[{ id, name, directory }]` in
   // the order of the bar (directory null for "other"); `accounts` those of the registry.
   render(view, rows, tabs, accounts, newSessionKey) {
     this.last = { view, rows, tabs, accounts, newSessionKey };
@@ -420,38 +419,12 @@ export class Overview {
       const fresh = mine.reduce((sum, row) => sum + this.artifactsOf(row.session_id).length, 0);
       const note = groupNote(changedOf(mine).total, fresh);
       if (note) heading.append(element("span", "control-group-note", note));
-      body.append(heading, ...group.rows.map((row) => this.row(row, group.tab, false)), ...this.pausedLongAgo(group.paused, group.tab));
+      body.append(heading, ...group.rows.map((row) => this.row(row, group.tab, false)));
     }
   }
 
   projectBody(body, rows, tab) {
-    const { active, paused } = projectView(rows, tab.id, this.requests);
-    body.append(...active.map((row) => this.row(row, tab, false)), ...this.pausedLongAgo(paused, tab));
-  }
-
-  // The sessions of a project paused long ago, under "paused · N", a line each; the one picked
-  // shows in full (decision 460).
-  pausedLongAgo(rows, tab) {
-    if (rows.length === 0) return [];
-    const heading = element("h2", "control-group is-paused", `paused · ${rows.length}`);
-    return [heading, ...rows.map((row) => (row.session_id === this.selected ? this.row(row, tab, false) : this.pausedLine(row)))];
-  }
-
-  // A session paused long ago on one line: its name, since when, its account. A click picks it.
-  pausedLine(row) {
-    const article = element("article", "control-row is-paused is-line");
-    article.dataset.session = row.session_id;
-    article.dataset.key = `row/${row.session_id}`;
-    article.tabIndex = -1;
-    article.title = `${row.title}\n${row.directory}`;
-    const line = element("div", "row-line");
-    const since = element("span", "row-doing");
-    since.append(element("span", "row-doing-text", pausedText(row)));
-    if (row.unread > 0) since.append(element("span", "row-badge", `${row.unread} msg`));
-    line.append(element("span", "dot"), element("span", "row-name", row.label), since, element("span", "row-account", row.account));
-    article.append(line);
-    article.onclick = () => this.pick(row.session_id, false);
-    return article;
+    body.append(...projectView(rows, tab.id, this.requests).map((row) => this.row(row, tab, false)));
   }
 
   // The rows in the order shown, by session id.
@@ -487,16 +460,9 @@ export class Overview {
     // A question taken from its reply came with the end of its turn: it does not work meanwhile.
     if ((this.requests.get(row.session_id) ?? []).some((request) => request.kind === "ask" && !request.from_reply)) what.append(element("span", "row-badge keeps", "keeps working meanwhile"));
     line.append(element("span", "dot"), element("span", "row-name", row.label), what, this.kept(row, tab), this.context(row), element("span", "row-account", row.account));
-    if (id === "paused") {
-      line.append(
-        button("row-resume", "resume", (event) => {
-          event.stopPropagation();
-          this.onOpen(row);
-        }),
-      );
-    }
     article.append(line);
-    if (showsTasks(row, this.requests)) article.append(element("p", "row-task", `▸ ${taskLine(row.tasks)}`));
+    const under = underLine(row, this.requests);
+    if (under) article.append(element("p", "row-task", `▸ ${under}`));
     for (const request of this.requests.get(row.session_id) ?? []) article.append(this.request(row, request));
     if (row.session_id === this.selected) article.append(this.detailBox(row));
     if (row.session_id === this.selected && canPrompt(row)) article.append(this.promptBox(row));

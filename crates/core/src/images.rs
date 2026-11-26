@@ -61,8 +61,13 @@ fn flag(entry: &Value, name: &str) -> bool {
 /// What Louis typed: a user message of the main conversation that is not a tool result, a
 /// notification or a shell command (those start with a tag, `<task-notification>`…).
 pub(crate) fn is_prompt(entry: &Value) -> bool {
+    prompt_text(entry).is_some()
+}
+
+/// The text of `entry` when it is a prompt (see `is_prompt`).
+pub(crate) fn prompt_text(entry: &Value) -> Option<&str> {
     if entry.get("type").and_then(Value::as_str) != Some("user") || flag(entry, "isMeta") || flag(entry, "isSidechain") {
-        return false;
+        return None;
     }
     let text = match entry.pointer("/message/content") {
         Some(Value::String(text)) => Some(text.as_str()),
@@ -71,11 +76,11 @@ pub(crate) fn is_prompt(entry: &Value) -> bool {
         },
         _ => None,
     };
-    text.is_some_and(|text| !text.trim_start().starts_with('<'))
+    text.filter(|text| !text.trim_start().starts_with('<'))
 }
 
 /// The text blocks of an assistant message of the main conversation.
-fn assistant_texts(entry: &Value) -> Vec<&str> {
+pub(crate) fn assistant_texts(entry: &Value) -> Vec<&str> {
     if entry.get("type").and_then(Value::as_str) != Some("assistant") || flag(entry, "isSidechain") {
         return Vec::new();
     }

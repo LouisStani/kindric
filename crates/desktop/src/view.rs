@@ -35,8 +35,11 @@ pub struct SessionRow {
     pub session_id: String,
     /// What the session last said it is doing, if Claude Code wrote it.
     pub progress: Option<String>,
-    /// How far it is in its task list, while a task is left to do (decision 368).
+    /// How far it is in its task list, while a task is left to do and the list changed in the
+    /// current turn (decisions 368, 499).
     pub tasks: Option<kindric_core::task_list::TaskProgress>,
+    /// What it does now, while it works (decision 499).
+    pub doing: Option<String>,
     /// What the session waits for from the user while a question of Claude Code is on its
     /// screen ("permission prompt", "input needed"), in Claude Code's words.
     pub waiting_for: Option<String>,
@@ -112,6 +115,7 @@ fn row(position: usize, session: &SessionInfo, unread: usize, finished: bool) ->
         session_id: session.session_id.clone(),
         progress: session.progress.clone(),
         tasks: session.tasks.clone(),
+        doing: session.doing.clone(),
         waiting_for: session.waiting_for.clone(),
         short_id: session.short_id.clone(),
         state: session.state.label(),
@@ -383,6 +387,7 @@ mod tests {
             isolated,
             progress: None,
             tasks: None,
+            doing: None,
             waiting_for: None,
             agent: Default::default(),
         }
