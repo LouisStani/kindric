@@ -32,8 +32,8 @@ import {
   standing,
   showsTasks,
   summaryOf,
-  taskLine,
   tasksBadge,
+  underLine,
 } from "./overview-board.js";
 
 function element(tag, className, text) {
@@ -461,7 +461,8 @@ export class Overview {
     if ((this.requests.get(row.session_id) ?? []).some((request) => request.kind === "ask" && !request.from_reply)) what.append(element("span", "row-badge keeps", "keeps working meanwhile"));
     line.append(element("span", "dot"), element("span", "row-name", row.label), what, this.kept(row, tab), this.context(row), element("span", "row-account", row.account));
     article.append(line);
-    if (showsTasks(row, this.requests)) article.append(element("p", "row-task", `▸ ${taskLine(row.tasks)}`));
+    const under = underLine(row, this.requests);
+    if (under) article.append(element("p", "row-task", `▸ ${under}`));
     for (const request of this.requests.get(row.session_id) ?? []) article.append(this.request(row, request));
     if (row.session_id === this.selected) article.append(this.detailBox(row));
     if (row.session_id === this.selected && canPrompt(row)) article.append(this.promptBox(row));

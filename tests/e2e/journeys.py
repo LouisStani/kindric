@@ -482,15 +482,16 @@ def carry_messages(driver: Driver) -> None:
 
 
 class WhatASessionDoes(Journey):
-    """The row of a session at work says what it does (decision 499): the prompt that started its
-    turn, then the last sentence Claude wrote in it."""
+    """The row of a session at work says what it does (decision 499), on the line under it
+    (decision 500): the prompt that started its turn, then the last sentence Claude wrote in it."""
 
     started = [("builder", "ship it work:60 say:I_compile_the_release_build_before_packing."), ("drafter", "draft the notes work:60")]
 
     def doing(self, name: str) -> str | None:
         found = self.driver.script("""const row = [...document.querySelectorAll('article.control-row')].find(
           (row) => row.querySelector('.row-name').textContent === arguments[0]);
-          return row ? row.querySelector('.row-doing-text').textContent : null;""", name)
+          const under = row && row.querySelector('.row-task');
+          return under ? under.textContent : null;""", name)
         return None if found is None else str(found)
 
     def test_prompt_then_sentence(self) -> None:
@@ -498,8 +499,8 @@ class WhatASessionDoes(Journey):
         carry_messages(driver)
         driver.press(CONTROL, SHIFT, "0")
         wait_until("the control center", lambda: not overview_hidden(driver))
-        wait_until("the sentence on the row", lambda: self.doing("builder") == "I compile the release build before packing." or None, timeout=30)
-        self.assertEqual(self.doing("drafter"), "draft the notes work:60", "nothing said yet: the prompt")
+        wait_until("the sentence on the row", lambda: self.doing("builder") == "▸ I compile the release build before packing." or None, timeout=30)
+        self.assertEqual(self.doing("drafter"), "▸ draft the notes work:60", "nothing said yet: the prompt")
         driver.screenshot(os.path.join(OUT, "WhatASessionDoes.png"))
 
 

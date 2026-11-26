@@ -283,11 +283,19 @@ export function taskLine(tasks) {
   return tasks.about ? `${doing} · ${tasks.about}` : doing;
 }
 
-// What a row says the session does: while it works, what it does now as kindric found it
-// (decision 499: the last sentence Claude wrote in the turn, else the prompt); else what it last
-// said, else what it waits for. A question asked under the row is not said twice.
+// The line under a row, read whole (decision 500): the task in progress of a list the turn
+// changed, else, while it works, what the session does as kindric found it (decision 499: the last
+// sentence Claude wrote in the turn, else the prompt); none else.
+export function underLine(row, requests = new Map()) {
+  if (showsTasks(row, requests)) return taskLine(row.tasks);
+  return row.doing && standing(row, requests) === "working" ? row.doing : null;
+}
+
+// What a row says the session does: "working" when the line under it says what (`underLine`);
+// else what it last said, else what it waits for. A question asked under the row is not said
+// twice.
 export function lineOf(row, requests = new Map()) {
-  if (row.doing && standing(row, requests) === "working") return row.doing;
+  if (row.doing && standing(row, requests) === "working") return "working";
   const asked = (requests.get(row.session_id) ?? []).some((request) => request.kind === "ask" && request.question === row.progress);
   if (row.progress && !asked) return row.progress;
   switch (standing(row, requests)) {

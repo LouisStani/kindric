@@ -36,6 +36,7 @@ import {
   summaryOf,
   taskLine,
   tasksBadge,
+  underLine,
   windowText,
 } from "./overview-board.js";
 
@@ -306,11 +307,19 @@ test("a row says what the session last said, else what it waits for", () => {
 
 // Decision 499: while it works, what kindric found it does comes before Claude Code's line, which
 // is often only the last prompt ("go").
-test("a working row says what the session does now", () => {
-  const busy = { ...working, progress: "go", doing: "I read their screenshots before touching the code." };
-  assert.equal(lineOf(row("a", 1, busy)), "I read their screenshots before touching the code.");
-  assert.equal(lineOf(row("a", 1, { ...busy, ...asking })), "go", "a question on its screen first: it does not work");
+// Decision 500: on a line of its own under the row, read whole.
+test("a working row says what the session does now, on the line under it", () => {
+  const sentence = "I read their screenshots before touching the code.";
+  const busy = { ...working, progress: "go", doing: sentence };
+  assert.equal(underLine(row("a", 1, busy)), sentence);
+  assert.equal(lineOf(row("a", 1, busy)), "working", "not said twice");
+  assert.equal(underLine(row("a", 1, { ...busy, ...asking })), null, "a question on its screen first: it does not work");
+  assert.equal(lineOf(row("a", 1, { ...busy, ...asking })), "go");
+  assert.equal(underLine(row("a", 1, { ...busy, state: "waiting" })), null, "only while it works");
+  assert.equal(underLine(row("a", 1, { ...working, progress: "go", doing: null })), null);
   assert.equal(lineOf(row("a", 1, { ...working, progress: "go", doing: null })), "go");
+  const list = { doing: "Writing the tests", about: null, done: 0, total: 2, left_seconds: null, tasks: [] };
+  assert.equal(underLine(row("a", 1, { ...busy, tasks: list })), "Writing the tests", "a list the turn changed comes first");
 });
 
 function request(id, session_id, body) {
