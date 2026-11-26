@@ -209,6 +209,12 @@ def question_of(task):
     return match.group(1).replace("_", " ") if match else None
 
 
+def said_of(task):
+    """What Claude writes in its turn, before its tools, from "say:WHAT" ("_" for spaces)."""
+    match = re.search(r"say:(\S+)", task or "")
+    return match.group(1).replace("_", " ") if match else None
+
+
 def work_seconds(task):
     match = re.search(r"work:(\d+)", task or "")
     return int(match.group(1)) if match else 2
@@ -240,6 +246,8 @@ def turn(session_id, task):
     while time.time() < end:
         time.sleep(min(PROGRESS_EVERY, max(end - time.time(), 0)))
         step += 1
+        if step == 1 and said_of(task):
+            write_transcript(session_id, {"type": "assistant", "message": {"role": "assistant", "content": [{"type": "text", "text": said_of(task)}]}})
         if time.time() < end:
             job_progress(session_id, f"step {step} of: {task[:50]}")
     question = question_of(task)

@@ -304,6 +304,15 @@ test("a row says what the session last said, else what it waits for", () => {
   assert.equal(lineOf(row("a", 1, paused)), "paused");
 });
 
+// Decision 499: while it works, what kindric found it does comes before Claude Code's line, which
+// is often only the last prompt ("go").
+test("a working row says what the session does now", () => {
+  const busy = { ...working, progress: "go", doing: "I read their screenshots before touching the code." };
+  assert.equal(lineOf(row("a", 1, busy)), "I read their screenshots before touching the code.");
+  assert.equal(lineOf(row("a", 1, { ...busy, ...asking })), "go", "a question on its screen first: it does not work");
+  assert.equal(lineOf(row("a", 1, { ...working, progress: "go", doing: null })), "go");
+});
+
 function request(id, session_id, body) {
   return { id, session_id, cwd: "/home/u/arcade", asked_at: 1, ...body };
 }

@@ -27,6 +27,7 @@ mod tests {
             isolated: false,
             progress: None,
             tasks: None,
+            doing: None,
             waiting_for: None,
             agent: Default::default(),
         }

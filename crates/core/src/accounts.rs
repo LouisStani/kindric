@@ -13,7 +13,7 @@ use kindric_accounts::{Paths, account, codex, launch, memory, registry, status, 
 use serde::{Deserialize, Serialize};
 
 use crate::opencode;
-use crate::{codex_history, opencode_history};
+use crate::{codex_history, current_task, images, opencode_history};
 use crate::progress;
 use crate::task_list;
 
@@ -53,8 +53,11 @@ pub struct SessionInfo {
     pub isolated: bool,
     /// What the session last said it is doing (see `progress`); background sessions only.
     pub progress: Option<String>,
-    /// How far it is in its task list (see `task_list`), while a task is left to do.
+    /// How far it is in its task list (see `task_list`), while a task is left to do and the list
+    /// changed in the current turn.
     pub tasks: Option<task_list::TaskProgress>,
+    /// What it does now, while it works (see `current_task`); sessions of Claude Code only.
+    pub doing: Option<String>,
     /// What the session waits for from the user, in Claude Code's words ("permission prompt",
     /// "input needed"), while a question of Claude Code is on its screen.
     pub waiting_for: Option<String>,
@@ -146,6 +149,7 @@ fn parse_agents_with(account: &str, json: &str, session_file: impl Fn(u32) -> Se
                 isolated: false,
                 progress: None,
                 tasks: None,
+                doing: None,
                 waiting_for: file.waiting_for,
                 agent: Agent::ClaudeCode,
             }
@@ -391,10 +395,30 @@ fn account_sessions(paths: &Paths, account: &str, implicit_default: bool, includ
     let mut sessions =
         parse_agents_with(account, &json, |pid| read_session_file(&dir, pid)).map_err(io::Error::other)?;
     for session in &mut sessions {
-        session.progress = session.short_id.as_deref().and_then(|short_id| progress::progress(&dir, short_id));
-        session.tasks = task_list::progress(&dir, &session.session_id);
+        read_activity(&dir, session);
     }
     Ok(sessions)
+}
+
+/// Only the end of a transcript is read for what the session does: a turn's prompt further back
+/// leaves its start unknown, which keeps the task list as it is.
+const TURN_TAIL: u64 = 256 * 1024;
+
+/// Reads what the session of Claude Code `session`, of the account in `dir`, says of what it does:
+/// its progress line, its task list and, while it works, what it does now (decision 499). The
+/// transcript of a paused session is not read: nothing runs.
+pub(crate) fn read_activity(dir: &Path, session: &mut SessionInfo) {
+    session.progress = session.short_id.as_deref().and_then(|short_id| progress::progress(dir, short_id));
+    let turn = if session.state == SessionState::Paused {
+        current_task::Turn::default()
+    } else {
+        images::transcript_of(dir, &session.session_id)
+            .and_then(|path| images::tail_of(&path, TURN_TAIL))
+            .map(|tail| current_task::turn_of(&tail))
+            .unwrap_or_default()
+    };
+    session.tasks = task_list::progress(dir, &session.session_id, turn.started);
+    session.doing = turn.doing.filter(|_| session.state == SessionState::Working);
 }
 
 /// A session of Codex as kindric shows it. Its id serves both to attach (`codex resume`) and to
@@ -418,6 +442,7 @@ fn codex_session(account: &str, thread: codex::Thread) -> SessionInfo {
         isolated: false,
         progress: None,
         tasks: None,
+        doing: None,
         waiting_for,
         agent: Agent::Codex,
     }
@@ -452,6 +477,7 @@ fn opencode_session(account: &str, session: opencode::Session) -> SessionInfo {
         isolated: false,
         progress: None,
         tasks: None,
+        doing: None,
         waiting_for,
         agent: Agent::OpenCode,
     }
@@ -746,6 +772,48 @@ mod tests {
     fn write(path: &Path, text: &str) {
         std::fs::create_dir_all(path.parent().expect("parent")).expect("folder");
         std::fs::write(path, text).expect("write");
+    }
+
+    // Decision 499: while it works, the session says what it does; its task list counts once the
+    // turn changed it.
+    #[test]
+    fn what_a_working_session_does_is_read_from_its_transcript_and_its_task_list() {
+        use std::time::{Duration, SystemTime, UNIX_EPOCH};
+        let (root, _) = scratch_paths("activity");
+        let dir = root.join("louis");
+        // 2026-11-26T10:00:00Z (`date -u -d '2026-11-26T10:00:00Z' +%s`).
+        let typed = UNIX_EPOCH + Duration::from_secs(1_795_687_200);
+        let prompt = serde_json::json!({"type": "user", "timestamp": "2026-11-26T10:00:00.000Z", "message": {"role": "user", "content": "go"}});
+        let said = serde_json::json!({"type": "assistant", "message": {"role": "assistant", "content": [{"type": "text", "text": "I read the screenshots first."}]}});
+        write(&dir.join("projects").join("-repo").join("aaaa-1111.jsonl"), &format!("{prompt}\n{said}\n"));
+        let task = dir.join("tasks").join("aaaa-1111").join("1.json");
+        write(&task, r#"{"id": "1", "subject": "old task", "status": "in_progress"}"#);
+        let set_written = |at: SystemTime| std::fs::File::options().write(true).open(&task).expect("task").set_modified(at).expect("date");
+        set_written(typed - Duration::from_secs(3_600));
+        let mut session = SessionInfo {
+            account: "louis".into(),
+            short_id: None,
+            session_id: "aaaa-1111".into(),
+            name: String::new(),
+            cwd: "/repo".into(),
+            state: SessionState::Working,
+            isolated: false,
+            progress: None,
+            tasks: None,
+            doing: None,
+            waiting_for: None,
+            agent: Agent::ClaudeCode,
+        };
+        read_activity(&dir, &mut session);
+        assert_eq!(session.doing.as_deref(), Some("I read the screenshots first."));
+        assert_eq!(session.tasks, None, "a list left from an earlier turn");
+        set_written(typed + Duration::from_secs(10));
+        read_activity(&dir, &mut session);
+        assert_eq!(session.tasks.as_ref().map(|tasks| tasks.doing.as_deref()), Some(Some("old task")), "changed in the turn");
+        session.state = SessionState::Waiting;
+        read_activity(&dir, &mut session);
+        assert_eq!(session.doing, None, "only while it works");
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     #[test]

@@ -121,10 +121,17 @@ fn progress_of(tasks: &[(Task, u64)], started: Option<u64>) -> Option<TaskProgre
 }
 
 /// How far the session `session_id` of the account in `config_dir` is in its task list; none
-/// without a list, or once all its tasks are done.
-pub fn progress(config_dir: &Path, session_id: &str) -> Option<TaskProgress> {
+/// without a list, or once all its tasks are done. A list none of whose tasks changed since
+/// `turn_started` (Unix seconds), when the start of the turn is known, is an old one the session
+/// left: none either (decision 499).
+pub fn progress(config_dir: &Path, session_id: &str, turn_started: Option<i64>) -> Option<TaskProgress> {
     let dir = list_dir(config_dir, session_id)?;
-    progress_of(&tasks_in(&dir), seconds(&dir.join(".lock")))
+    let tasks = tasks_in(&dir);
+    let changed_in_turn = |start: i64| tasks.iter().any(|(_, at)| i64::try_from(*at).is_ok_and(|at| at >= start));
+    if turn_started.is_some_and(|start| !changed_in_turn(start)) {
+        return None;
+    }
+    progress_of(&tasks, seconds(&dir.join(".lock")))
 }
 
 /// From this many tools in one turn without a task list, the next one is refused.
@@ -279,13 +286,29 @@ mod tests {
         write_task(&dir, "1", "completed", start + Duration::from_secs(120));
         write_task(&dir, "2", "in_progress", start + Duration::from_secs(121));
         write_task(&dir, "10", "pending", start);
-        let progress = progress(&root, SESSION).unwrap();
+        let progress = progress(&root, SESSION, None).unwrap();
         assert_eq!((progress.doing.as_deref(), progress.done, progress.total), (Some("doing 2"), 1, 3));
         let order: Vec<&str> = progress.tasks.iter().map(|item| item.subject.as_str()).collect();
         assert_eq!(order, ["subject 1", "subject 2", "subject 10"], "by number, not by name");
         assert_eq!(progress.left_seconds, Some(240));
-        assert_eq!(super::progress(&root, "../x"), None);
-        assert_eq!(super::progress(&root, "bbbb-2222"), None, "no list");
+        assert_eq!(super::progress(&root, "../x", None), None);
+        assert_eq!(super::progress(&root, "bbbb-2222", None), None, "no list");
+        fs::remove_dir_all(&root).unwrap();
+    }
+
+    // Decision 499: a list the turn did not touch is an old one, left behind.
+    #[test]
+    fn a_list_no_task_of_which_changed_in_the_turn_is_left_out() {
+        let root = scratch("turn");
+        let dir = root.join("tasks").join(SESSION);
+        fs::create_dir_all(&dir).unwrap();
+        let start = SystemTime::now() - Duration::from_secs(600);
+        write_task(&dir, "1", "completed", start + Duration::from_secs(100));
+        write_task(&dir, "2", "in_progress", start + Duration::from_secs(200));
+        let at = |offset: u64| i64::try_from((start + Duration::from_secs(offset)).duration_since(UNIX_EPOCH).unwrap().as_secs()).unwrap();
+        assert!(progress(&root, SESSION, Some(at(200))).is_some(), "the last change in the turn's first second counts");
+        assert!(progress(&root, SESSION, Some(at(150))).is_some());
+        assert_eq!(progress(&root, SESSION, Some(at(201))), None, "nothing changed since the prompt");
         fs::remove_dir_all(&root).unwrap();
     }
 

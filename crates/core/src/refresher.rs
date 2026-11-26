@@ -11,8 +11,6 @@ use std::time::Duration;
 use crate::accounts::{self, Found, SessionInfo, SessionState, Snapshot};
 use crate::mailbox::{self, Mailbox};
 use crate::overview;
-use crate::progress;
-use crate::task_list;
 use crate::watcher::{self, ChangeWatcher, Wake};
 use kindric_accounts::files::create_private_dir;
 
@@ -108,16 +106,15 @@ fn to_query(change: &Change, accounts: &[String], known: &BTreeMap<String, Found
         .collect()
 }
 
-/// Reads again the progress line and the task list of the jobs `ids` among the account's
-/// `sessions`, from the account directory `dir`: Claude Code writes the job's state at each tool,
-/// TaskUpdate included. False when one of them is not a known session: a query must list it.
+/// Reads again the progress line, the task list and what the session does (see
+/// `accounts::read_activity`) of the jobs `ids` among the account's `sessions`, from the account
+/// directory `dir`: Claude Code writes the job's state at each tool, TaskUpdate included. False when one of them is not a known session: a query must list it.
 fn reread_progress(sessions: &mut [SessionInfo], dir: &Path, ids: &BTreeSet<String>) -> bool {
     for id in ids {
         let Some(session) = sessions.iter_mut().find(|session| session.short_id.as_deref() == Some(id.as_str())) else {
             return false;
         };
-        session.progress = progress::progress(dir, id);
-        session.tasks = task_list::progress(dir, &session.session_id);
+        accounts::read_activity(dir, session);
     }
     true
 }
@@ -382,6 +379,7 @@ mod tests {
             isolated: false,
             progress: None,
             tasks: None,
+            doing: None,
             waiting_for: None,
             agent: Default::default(),
         }];
@@ -422,6 +420,7 @@ mod tests {
             isolated: false,
             progress: None,
             tasks: None,
+            doing: None,
             agent: Default::default(),
             waiting_for: None,
         }

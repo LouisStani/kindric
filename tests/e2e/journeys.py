@@ -481,6 +481,28 @@ def carry_messages(driver: Driver) -> None:
     wait_until("the welcome list gone", lambda: bool(driver.script("return document.getElementById('welcome').hidden")))
 
 
+class WhatASessionDoes(Journey):
+    """The row of a session at work says what it does (decision 499): the prompt that started its
+    turn, then the last sentence Claude wrote in it."""
+
+    started = [("builder", "ship it work:60 say:I_compile_the_release_build_before_packing."), ("drafter", "draft the notes work:60")]
+
+    def doing(self, name: str) -> str | None:
+        found = self.driver.script("""const row = [...document.querySelectorAll('article.control-row')].find(
+          (row) => row.querySelector('.row-name').textContent === arguments[0]);
+          return row ? row.querySelector('.row-doing-text').textContent : null;""", name)
+        return None if found is None else str(found)
+
+    def test_prompt_then_sentence(self) -> None:
+        driver = self.driver
+        carry_messages(driver)
+        driver.press(CONTROL, SHIFT, "0")
+        wait_until("the control center", lambda: not overview_hidden(driver))
+        wait_until("the sentence on the row", lambda: self.doing("builder") == "I compile the release build before packing." or None, timeout=30)
+        self.assertEqual(self.doing("drafter"), "draft the notes work:60", "nothing said yet: the prompt")
+        driver.screenshot(os.path.join(OUT, "WhatASessionDoes.png"))
+
+
 class ControlCenter(Journey):
     """Tab 0 lists the project and the account on the side and a row per session. The session
     picked shows its last steps and takes a prompt typed in its field; the project's head counts
@@ -1160,7 +1182,8 @@ class TaskListOnThePage(Journey):
         open(os.path.join(folder, ".lock"), "w").close()
         os.utime(os.path.join(folder, ".lock"), (start, start))
         write_task(folder, 1, "Write the reader", "completed", start + 120)
-        write_task(folder, 2, "Write the statistics", "in_progress", start + 121, "hours, codes, top paths")
+        # The task in progress changed in the turn: a list none of whose tasks did is left out (499).
+        write_task(folder, 2, "Write the statistics", "in_progress", time.time(), "hours, codes, top paths")
         write_task(folder, 3, "Write the README", "pending", start)
         # Claude Code writes the job's state at each tool, which wakes kindric's list.
         os.utime(os.path.join(ACCOUNT_DIR, "jobs", session["id"], "state.json"))

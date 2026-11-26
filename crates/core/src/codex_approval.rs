@@ -108,6 +108,7 @@ mod tests {
             isolated: false,
             progress: None,
             tasks: None,
+            doing: None,
             waiting_for: waiting_for.map(String::from),
             agent,
         }
