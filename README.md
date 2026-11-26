@@ -42,7 +42,7 @@ curl -fsSL https://github.com/LouisStani/kindric/releases/latest/download/instal
 **Windows** (PowerShell):
 
 ```powershell
-irm https://github.com/LouisStani/kindric/releases/latest/download/install.ps1 | iex
+irm https://raw.githubusercontent.com/LouisStani/kindric/main/packaging/install.ps1 | iex
 ```
 
 This installs the app, `kindric` and `kindric-accounts`, puts them on your `PATH` and adds kindric to your applications menu. Run it again to update. On Linux, the app needs WebKitGTK 4.1: the installer tells you if it is missing.

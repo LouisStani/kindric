@@ -30,7 +30,7 @@ try {
     # A damaged download is refused, and nothing is installed.
     $sums = Join-Path $Dist 'SHA256SUMS'
     $good = Get-Content $sums
-    $good | ForEach-Object { '0' + $_.Substring(1) } | Set-Content $sums
+    $good | ForEach-Object { ('0' * 64) + $_.Substring(64) } | Set-Content $sums
     $failed = $false
     try { & $Installer } catch { $failed = $true; $message = "$_" }
     $good | Set-Content $sums
@@ -50,12 +50,21 @@ try {
     $link = (New-Object -ComObject WScript.Shell).CreateShortcut($shortcut)
     Check ($link.TargetPath -eq (Join-Path $bin 'kindric-desktop.exe')) 'it starts kindric-desktop'
 
-    & $Installer
+    # Run as the README runs it, through iex: it updates, and leaves the session as it was.
+    $left = & {
+        $ErrorActionPreference = 'Continue'
+        Invoke-Expression (Get-Content -Raw $Installer)
+        $ErrorActionPreference
+        [bool](Get-Command Install-Kindric -ErrorAction SilentlyContinue)
+    }
+    Check ($left[-2] -eq 'Continue') 'through iex, it leaves the preferences of the session alone'
+    Check (-not $left[-1]) 'and defines no function in it'
     $userPath = [Environment]::GetEnvironmentVariable('Path', 'User') -split ';'
     Check (@($userPath | Where-Object { $_ -eq $bin }).Count -eq 1) 'a second run updates without adding the folder twice'
 
     & $Installer -Uninstall
     Check (-not (Test-Path (Join-Path $bin 'kindric.exe'))) 'uninstall removes the programs'
+    Check (-not (Get-ChildItem $bin -Filter '*.old-*' -ErrorAction SilentlyContinue)) 'and the old ones moved aside'
     Check (-not (Test-Path $shortcut)) 'and the Start menu entry'
     $userPath = [Environment]::GetEnvironmentVariable('Path', 'User') -split ';'
     Check (-not ($userPath -contains $bin)) 'and the PATH entry'

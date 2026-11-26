@@ -78,9 +78,14 @@ jobs:
       - name: Install, run and uninstall (Linux, macOS)
         if: runner.os != 'Windows'
         run: packaging/ci/test-install.sh dist
-      - name: Install, run and uninstall (Windows)
+      - name: Install, run and uninstall (Windows, PowerShell 7)
         if: runner.os == 'Windows'
         shell: pwsh
+        run: packaging/ci/test-install.ps1 dist
+      # Windows PowerShell 5.1 is the one Windows comes with.
+      - name: Install, run and uninstall (Windows PowerShell 5.1)
+        if: runner.os == 'Windows'
+        shell: powershell
         run: packaging/ci/test-install.ps1 dist
 
   build:

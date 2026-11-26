@@ -42,6 +42,10 @@ bin_dir=${KINDRIC_INSTALL_DIR:-$HOME/.local/bin}
 data_home=${XDG_DATA_HOME:-$HOME/.local/share}
 desktop_file="$data_home/applications/kindric.desktop"
 icon_file="$data_home/icons/hicolor/256x256/apps/$bundle_id.png"
+# What this script put on the computer, one path a line, and the launcher of the Linux menu entry.
+state_dir="$data_home/kindric-installer"
+manifest="$state_dir/installed"
+launcher="$state_dir/launch"
 app_dir="$HOME/Applications/kindric.app"
 
 detect_target() {
@@ -96,11 +100,33 @@ verify() {
     [ "$actual" = "$expected" ] || fail "$2 does not match its SHA256SUMS: the download is damaged, try again"
 }
 
+installed() { [ -f "$manifest" ] && grep -qxF "$1" "$manifest"; }
+
+remember() {
+    mkdir -p "$state_dir"
+    installed "$1" || printf '%s\n' "$1" >> "$manifest"
+}
+
+# A file this script did not put there is replaced only when it is a kindric program, by its --version:
+# one from the README of kindric-accounts, say. A link, or anything else, is left alone.
+may_replace() {
+    [ -e "$1" ] || [ -L "$1" ] || return 0
+    installed "$1" && return 0
+    if [ ! -L "$1" ] && [ "$2" != "kindric-desktop" ]; then
+        case "$("$1" --version 2> /dev/null || true)" in
+            "$2 "*) return 0 ;;
+        esac
+    fi
+    fail "$1 was not installed by this script: move it away, then run this again"
+}
+
 # Replaces a program at once, so that a kindric already running keeps its own file.
 put_program() {
+    may_replace "$bin_dir/$2" "$2"
     cp "$1" "$bin_dir/.$2.new"
     chmod 755 "$bin_dir/.$2.new"
     mv -f "$bin_dir/.$2.new" "$bin_dir/$2"
+    remember "$bin_dir/$2"
 }
 
 ours_desktop_file() { [ -f "$desktop_file" ] && grep -qx "$desktop_marker" "$desktop_file"; }
@@ -111,14 +137,20 @@ install_linux_menu() {
         say "warning: $desktop_file was not made by this script: left as it is, kindric gets no menu entry"
         return
     fi
-    mkdir -p "$(dirname "$desktop_file")" "$(dirname "$icon_file")"
+    # The menu runs the launcher, which gives the app the PATH of the user's shell; the link next to it
+    # tells it where the programs are.
+    mkdir -p "$state_dir" "$(dirname "$desktop_file")" "$(dirname "$icon_file")"
+    cp "$1/kindric-launch" "$launcher.new"
+    chmod 755 "$launcher.new"
+    mv -f "$launcher.new" "$launcher"
+    ln -sfn "$bin_dir/kindric-desktop" "$state_dir/kindric-desktop"
     cp "$1/kindric.png" "$icon_file"
     cat > "$desktop_file" <<EOF
 [Desktop Entry]
 Type=Application
 Name=kindric
 Comment=Your Claude Code sessions, every account, one window
-Exec="$bin_dir/kindric-desktop"
+Exec="$launcher"
 Icon=$bundle_id
 Terminal=false
 Categories=Development;
@@ -141,7 +173,13 @@ install_macos_app() {
     mv "$app_dir.new" "$app_dir"
     # curl does not mark the file as downloaded, but a copy of the script saved by a browser might.
     xattr -dr com.apple.quarantine "$app_dir" 2> /dev/null || true
-    ln -sf "$app_dir/Contents/MacOS/kindric" "$bin_dir/kindric-desktop"
+    remember "$app_dir"
+    # kindric-desktop in a terminal starts the program of the app, by its full path.
+    may_replace "$bin_dir/kindric-desktop" kindric-desktop
+    printf '#!/bin/sh\n# Made by the kindric installer.\nexec "%s/Contents/MacOS/kindric" "$@"\n' "$app_dir" > "$bin_dir/.kindric-desktop.new"
+    chmod 755 "$bin_dir/.kindric-desktop.new"
+    mv -f "$bin_dir/.kindric-desktop.new" "$bin_dir/kindric-desktop"
+    remember "$bin_dir/kindric-desktop"
 }
 
 check_webkit() {
@@ -244,23 +282,26 @@ install() {
 }
 
 uninstall() {
+    # Only what this script put there: the programs and the app it wrote down, the menu entry with its mark.
     removed=""
-    for name in kindric kindric-accounts kindric-desktop; do
-        if [ -e "$bin_dir/$name" ] || [ -L "$bin_dir/$name" ]; then
-            rm -f "$bin_dir/$name"
-            removed="$removed $name"
-        fi
-    done
+    if [ -f "$manifest" ]; then
+        while IFS= read -r file; do
+            if [ "$file" = "$app_dir" ]; then
+                ours_app && rm -rf "$app_dir" && removed="$removed kindric.app"
+            elif [ -e "$file" ] || [ -L "$file" ]; then
+                rm -f "$file"
+                removed="$removed $(basename "$file")"
+            fi
+        done < "$manifest"
+    fi
     if ours_desktop_file; then
         rm -f "$desktop_file" "$icon_file"
         removed="$removed menu-entry"
     fi
-    if ours_app; then
-        rm -rf "$app_dir"
-        removed="$removed kindric.app"
-    fi
+    rm -f "$manifest" "$launcher" "$state_dir/kindric-desktop"
+    rmdir "$state_dir" 2> /dev/null || true
     if [ -z "$removed" ]; then
-        say "Nothing of kindric was found in $bin_dir."
+        say "Nothing installed by this script was found."
     else
         say "Removed:$removed."
     fi

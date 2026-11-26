@@ -64,6 +64,17 @@ fi
 mkdir -p "$home/.local/share/kindric"
 echo keep > "$home/.local/share/kindric/projects.json"
 
+# A program it did not install is left alone, unless it is a kindric program (from the README of
+# kindric-accounts, say).
+mkdir -p "$bin"
+ln -s /bin/sh "$bin/kindric"
+if output=$(run_installer 2>&1); then status=0; else status=$?; fi
+check '[ "$status" -ne 0 ] && grep -q "was not installed by this script" <<< "$output"' "a program it did not install is refused"
+check '[ "$(readlink "$bin/kindric")" = /bin/sh ]' "and left as it is"
+rm "$bin/kindric"
+tar -xzf "$dist"/kindric-*.tar.gz -C "$home" --strip-components 1 "$(tar -tzf "$dist"/kindric-*.tar.gz | grep '/kindric-accounts$')"
+mv "$home/kindric-accounts" "$bin/kindric-accounts"
+
 output=$(run_installer 2>&1)
 echo "$output"
 check '[ -x "$bin/kindric" ] && [ -x "$bin/kindric-accounts" ] && [ -x "$bin/kindric-desktop" ]' "the three programs are installed"
@@ -75,14 +86,24 @@ if [ "$macos" = 1 ]; then
     check '[ -x "$app/Contents/MacOS/kindric" ] && [ -x "$app/Contents/MacOS/kindric-desktop" ]' "kindric.app holds its programs"
     check 'plutil -lint "$app/Contents/Info.plist" > /dev/null' "its Info.plist is valid"
     check '[ -f "$app/Contents/Resources/kindric.icns" ]' "it has its icon"
-    check '[ "$(readlink "$bin/kindric-desktop")" = "$app/Contents/MacOS/kindric" ]' "kindric-desktop starts the app"
+    # kindric-desktop in a terminal goes through the app's launcher, which puts the programs on the PATH.
+    printf '#!/bin/sh\necho "$PATH"\n' > "$app/Contents/MacOS/kindric-desktop"
+    launched=$(env HOME="$home" PATH=/usr/bin:/bin SHELL=/bin/sh "$bin/kindric-desktop")
+    check 'case ":$launched:" in *":$bin:"*) true ;; *) false ;; esac' "kindric-desktop starts the app with the programs on its PATH"
 else
     check 'grep -qx "Name=mine" "$home/.local/share/applications/kindric.desktop"' "a menu entry not made by the installer is kept"
     check 'grep -q "was not made by this script" <<< "$output"' "and the installer says so"
     rm "$home/.local/share/applications/kindric.desktop"
     output=$(run_installer 2>&1)
     check 'grep -qx "X-Kindric-Installer=true" "$home/.local/share/applications/kindric.desktop"' "the menu entry is made"
-    check 'grep -qx "Exec=\"$bin/kindric-desktop\"" "$home/.local/share/applications/kindric.desktop"' "it starts kindric-desktop"
+    launcher="$home/.local/share/kindric-installer/launch"
+    check 'grep -qx "Exec=\"$launcher\"" "$home/.local/share/applications/kindric.desktop"' "it starts the launcher"
+    # The launcher starts kindric-desktop with the programs on its PATH, even from a bare session.
+    cp "$bin/kindric-desktop" "$home/kindric-desktop.real"
+    printf '#!/bin/sh\necho "$PATH"\n' > "$bin/kindric-desktop"
+    launched=$(env HOME="$home" PATH=/usr/bin:/bin SHELL=/bin/sh "$launcher")
+    check 'case ":$launched:" in *":$bin:"*) true ;; *) false ;; esac' "the launcher puts the programs on the PATH"
+    cp "$home/kindric-desktop.real" "$bin/kindric-desktop"
     check '[ -f "$home/.local/share/icons/hicolor/256x256/apps/io.github.louisstani.kindric.png" ]' "with its icon"
 fi
 
@@ -100,7 +121,8 @@ else
     check '[ ! -e "$home/.local/share/icons/hicolor/256x256/apps/io.github.louisstani.kindric.png" ]' "and the icon"
 fi
 check 'grep -qx keep "$home/.local/share/kindric/projects.json"' "kindric's data stays"
-check 'run_installer --uninstall 2>&1 | grep -q "Nothing of kindric"' "a second uninstall finds nothing"
+check '[ ! -e "$home/.local/share/kindric-installer" ]' "the installer's own folder goes"
+check 'run_installer --uninstall 2>&1 | grep -q "Nothing installed by this script"' "a second uninstall finds nothing"
 
 if [ "$failures" -gt 0 ]; then
     echo "$failures check(s) failed"

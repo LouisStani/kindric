@@ -39,7 +39,7 @@ make_app() {
     local app="$stage/kindric.app"
     mkdir -p "$app/Contents/MacOS" "$app/Contents/Resources"
     mv "$stage/kindric-desktop" "$app/Contents/MacOS/kindric-desktop"
-    cp "$root/packaging/macos/kindric" "$app/Contents/MacOS/kindric"
+    cp "$root/packaging/launch.sh" "$app/Contents/MacOS/kindric"
     chmod +x "$app/Contents/MacOS/kindric"
     sed "s/@VERSION@/$(version)/" "$root/packaging/macos/Info.plist" > "$app/Contents/Info.plist"
     make_icns "$app/Contents/Resources/kindric.icns"
@@ -80,6 +80,7 @@ case "$target" in
         copy_program kindric-accounts kindric-accounts
         copy_program kindric-desktop kindric-desktop
         cp "$root/crates/desktop/icons/icon.png" "$stage/kindric.png"
+        cp "$root/packaging/launch.sh" "$stage/kindric-launch"
         tar -C "$work" -czf "$out_dir/$name.tar.gz" "$name"
         echo "$out_dir/$name.tar.gz"
         ;;
