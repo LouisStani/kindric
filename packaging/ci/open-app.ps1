@@ -25,8 +25,15 @@ for ($i = 0; $i -lt 120; $i++) {
     if ($app.HasExited) { break }
     Start-Sleep -Milliseconds 500
 }
-# The page draws a moment after it says it is ready.
-Start-Sleep -Seconds 3
+# The page draws a moment after it says it is ready. Meanwhile, the processes with a window: a
+# program kindric starts must not open a console of its own.
+$windows = @{}
+for ($i = 0; $i -lt 20; $i++) {
+    Get-Process | Where-Object { $_.MainWindowHandle -ne 0 } | ForEach-Object { $windows[$_.ProcessName] = $_.MainWindowTitle }
+    Start-Sleep -Milliseconds 300
+}
+Write-Host 'processes with a window while the app ran:'
+$windows.GetEnumerator() | Sort-Object Key | ForEach-Object { Write-Host "  $($_.Key): $($_.Value)" }
 Add-Type -AssemblyName System.Windows.Forms, System.Drawing
 $bounds = [System.Windows.Forms.Screen]::PrimaryScreen.Bounds
 $bitmap = New-Object System.Drawing.Bitmap $bounds.Width, $bounds.Height
