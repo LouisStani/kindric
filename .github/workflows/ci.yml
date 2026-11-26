@@ -138,7 +138,7 @@ jobs:
           cp "target/${{ matrix.target }}/release/kindric-accounts$ext" "dist/kindric-accounts-${{ matrix.target }}$ext"
       - uses: actions/upload-artifact@v4
         with:
-          name: ${{ matrix.target }}
+          name: release-${{ matrix.target }}
           path: dist/*
 
   release:
@@ -148,8 +148,10 @@ jobs:
       contents: write
     steps:
       - uses: actions/checkout@v4
+      # Only the archives of the build job: the installers job uploads its screenshots too.
       - uses: actions/download-artifact@v4
         with:
+          pattern: release-*
           path: dist
           merge-multiple: true
       - name: Add the installers and the checksums
