@@ -42,6 +42,19 @@ run_installer() {
 }
 
 bin="$home/.local/bin"
+
+# The launcher, with kindric-desktop replaced by a script that prints its PATH: the programs are on it,
+# even from a bare session, and a startup file of the shell that hangs does not keep the app from starting.
+check_launcher() {
+    launched=$(env HOME="$home" PATH=/usr/bin:/bin SHELL=/bin/sh "$1")
+    check 'case ":$launched:" in *":$bin:"*) true ;; *) false ;; esac' "the launcher puts the programs on the PATH"
+    printf 'sleep 30\n' > "$home/.bash_profile"
+    started=$(date +%s)
+    launched=$(env HOME="$home" PATH=/usr/bin:/bin SHELL=/bin/bash "$1")
+    elapsed=$(($(date +%s) - started))
+    rm "$home/.bash_profile"
+    check '[ "$elapsed" -lt 15 ] && case ":$launched:" in *":$bin:"*) true ;; *) false ;; esac' "a shell that hangs at startup is given up after 5 s (took ${elapsed} s)"
+}
 case "$(uname -s)" in
     Darwin) macos=1 ;;
     *) macos=0 ;;
@@ -88,8 +101,7 @@ if [ "$macos" = 1 ]; then
     check '[ -f "$app/Contents/Resources/kindric.icns" ]' "it has its icon"
     # kindric-desktop in a terminal goes through the app's launcher, which puts the programs on the PATH.
     printf '#!/bin/sh\necho "$PATH"\n' > "$app/Contents/MacOS/kindric-desktop"
-    launched=$(env HOME="$home" PATH=/usr/bin:/bin SHELL=/bin/sh "$bin/kindric-desktop")
-    check 'case ":$launched:" in *":$bin:"*) true ;; *) false ;; esac' "kindric-desktop starts the app with the programs on its PATH"
+    check_launcher "$bin/kindric-desktop"
 else
     check 'grep -qx "Name=mine" "$home/.local/share/applications/kindric.desktop"' "a menu entry not made by the installer is kept"
     check 'grep -q "was not made by this script" <<< "$output"' "and the installer says so"
@@ -101,14 +113,15 @@ else
     # The launcher starts kindric-desktop with the programs on its PATH, even from a bare session.
     cp "$bin/kindric-desktop" "$home/kindric-desktop.real"
     printf '#!/bin/sh\necho "$PATH"\n' > "$bin/kindric-desktop"
-    launched=$(env HOME="$home" PATH=/usr/bin:/bin SHELL=/bin/sh "$launcher")
-    check 'case ":$launched:" in *":$bin:"*) true ;; *) false ;; esac' "the launcher puts the programs on the PATH"
+    check_launcher "$launcher"
     cp "$home/kindric-desktop.real" "$bin/kindric-desktop"
     check '[ -f "$home/.local/share/icons/hicolor/256x256/apps/io.github.louisstani.kindric.png" ]' "with its icon"
 fi
 
-# Running it again updates in place.
-check 'run_installer > /dev/null 2>&1' "a second run updates"
+# Running it again updates in place, here with the checksums written in binary mode ("hash *name").
+sed 's/  / */' "$home/SHA256SUMS.good" > "$dist/SHA256SUMS"
+check 'run_installer > /dev/null 2>&1' "a second run updates, with checksums in binary mode"
+cp "$home/SHA256SUMS.good" "$dist/SHA256SUMS"
 check '"$bin/kindric" --version > /dev/null' "kindric still runs"
 
 output=$(run_installer --uninstall 2>&1)

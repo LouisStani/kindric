@@ -22,7 +22,7 @@ out=$(mktemp "${TMPDIR:-/tmp}/kindric-path.XXXXXX" 2> /dev/null || true)
 if [ -n "$out" ]; then
     (exec "${SHELL:-/bin/sh}" -ilc 'printf "\n__kindric_path__%s\n" "$PATH"' > "$out" 2> /dev/null < /dev/null) &
     reader=$!
-    (sleep 5 && kill "$reader" 2> /dev/null) &
+    (sleep 5 && kill -KILL "$reader" 2> /dev/null) &
     watchdog=$!
     wait "$reader" 2> /dev/null || true
     kill "$watchdog" 2> /dev/null || true

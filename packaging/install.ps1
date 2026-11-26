@@ -130,7 +130,7 @@ param(
             } catch {
                 Fail "could not download from ${base}: $($_.Exception.Message)"
             }
-            $line = Get-Content (Join-Path $work 'SHA256SUMS') | Where-Object { $_ -match " $([regex]::Escape($archive))$" } | Select-Object -First 1
+            $line = Get-Content (Join-Path $work 'SHA256SUMS') | Where-Object { $_ -match " \*?$([regex]::Escape($archive))$" } | Select-Object -First 1
             if (-not $line) { Fail "$archive is not listed in the SHA256SUMS of the release" }
             $expected = ($line -split ' ')[0].ToLower()
             $actual = (Get-FileHash -Algorithm SHA256 (Join-Path $work $archive)).Hash.ToLower()
@@ -142,7 +142,7 @@ param(
             Remove-Item -Recurse -Force $work -ErrorAction SilentlyContinue
         }
 
-        $userPath = Get-UserPath
+        $userPath = @(Get-UserPath)
         if (-not ($userPath | Where-Object { Test-SameDir $_ $BinDir })) {
             Set-UserPath ($userPath + $BinDir)
         }
@@ -210,7 +210,7 @@ param(
             Remove-Item -Force $Shortcut
             $removed += 'Start menu entry'
         }
-        $userPath = Get-UserPath
+        $userPath = @(Get-UserPath)
         if ($userPath | Where-Object { Test-SameDir $_ $BinDir }) {
             Set-UserPath @($userPath | Where-Object { -not (Test-SameDir $_ $BinDir) })
             $removed += 'PATH entry'

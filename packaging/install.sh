@@ -90,7 +90,8 @@ sha256_of() {
 }
 
 verify() {
-    expected=$(grep " $2\$" "$work/SHA256SUMS" | cut -d ' ' -f 1 || true)
+    # sha256sum writes "hash  name", or "hash *name" in binary mode (Git for Windows).
+    expected=$(grep " [*]\{0,1\}$2\$" "$work/SHA256SUMS" | cut -d ' ' -f 1 || true)
     [ -n "$expected" ] || fail "$2 is not listed in the SHA256SUMS of the release"
     actual=$(sha256_of "$1")
     if [ -z "$actual" ]; then

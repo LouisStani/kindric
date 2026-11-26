@@ -14,6 +14,19 @@ function Check([bool]$Ok, [string]$What) {
     if ($Ok) { Write-Host "ok   $What" } else { Write-Host "FAIL $What"; $script:Failures++ }
 }
 
+function Get-RawUserPath {
+    $key = [Microsoft.Win32.Registry]::CurrentUser.OpenSubKey('Environment')
+    try { return $key.GetValue('Path', $null, [Microsoft.Win32.RegistryValueOptions]::DoNotExpandEnvironmentNames) } finally { $key.Close() }
+}
+
+function Set-RawUserPath($Value) {
+    $key = [Microsoft.Win32.Registry]::CurrentUser.CreateSubKey('Environment')
+    try {
+        if ($null -eq $Value) { $key.DeleteValue('Path', $false) } else { $key.SetValue('Path', $Value, [Microsoft.Win32.RegistryValueKind]::ExpandString) }
+    } finally { $key.Close() }
+}
+
+$runnerPath = Get-RawUserPath
 $server = Start-Process python -ArgumentList '-m', 'http.server', $Port, '--bind', '127.0.0.1', '--directory', $Dist -PassThru -WindowStyle Hidden
 try {
     $ready = $false
@@ -38,7 +51,11 @@ try {
     Check ($message -match 'does not match its SHA256SUMS') 'and says why'
     Check (-not (Test-Path (Join-Path $bin 'kindric.exe'))) 'and installs nothing'
 
+    # A user PATH of a single entry, written with a variable, as a fresh Windows has it.
+    $one = '%USERPROFILE%\kindric-test-one'
+    Set-RawUserPath $one
     & $Installer
+    Check ((Get-RawUserPath) -eq "$one;$bin") 'a PATH of one entry gets the folder after it, its variable kept'
     foreach ($name in 'kindric.exe', 'kindric-accounts.exe', 'kindric-desktop.exe') {
         Check (Test-Path (Join-Path $bin $name)) "$name is installed"
     }
@@ -69,6 +86,7 @@ try {
     $userPath = [Environment]::GetEnvironmentVariable('Path', 'User') -split ';'
     Check (-not ($userPath -contains $bin)) 'and the PATH entry'
 } finally {
+    Set-RawUserPath $runnerPath
     Stop-Process -Id $server.Id -Force -ErrorAction SilentlyContinue
 }
 
