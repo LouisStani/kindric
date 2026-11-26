@@ -236,10 +236,19 @@ def job_progress(session_id, detail):
     })
 
 
+MARKS = re.compile(r"\s*\b(work|touch|cd|commit|ask|image|keep|say):\S+")
+
+
+def shown(task):
+    """The task as the session's texts give it: whole, or without its marks ("work:N"…) when
+    FAKE_HIDE_MARKS is set, for a picture where they would show (tests/e2e/readme_shot.py)."""
+    return MARKS.sub("", task).strip() if os.environ.get("FAKE_HIDE_MARKS") else task
+
+
 def turn(session_id, task):
     """One turn: busy for the time the task says, then waiting for the user."""
-    set_state(session_id, "busy", "working", f"working on: {task[:60]}")
-    write_transcript(session_id, {"type": "user", "message": {"role": "user", "content": task}})
+    set_state(session_id, "busy", "working", f"working on: {shown(task)[:60]}")
+    write_transcript(session_id, {"type": "user", "message": {"role": "user", "content": shown(task)}})
     write_files(session_id, task)
     end = time.time() + work_seconds(task)
     step = 0
@@ -249,13 +258,13 @@ def turn(session_id, task):
         if step == 1 and said_of(task):
             write_transcript(session_id, {"type": "assistant", "message": {"role": "assistant", "content": [{"type": "text", "text": said_of(task)}]}})
         if time.time() < end:
-            job_progress(session_id, f"step {step} of: {task[:50]}")
+            job_progress(session_id, f"step {step} of: {shown(task)[:50]}")
     question = question_of(task)
     if question:
         # Seen on Claude Code 2.1.326: "waiting" in the process file and in agents --json.
         set_state(session_id, "waiting", "blocked", "waiting for you", question)
         return
-    answer = f"done: {task}"
+    answer = f"done: {shown(task)}"
     images = write_images(session_id, task)
     if images:
         answer += "\n\nI made " + ", ".join(f"`{name}`" for name in images) + "."

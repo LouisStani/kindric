@@ -6,7 +6,7 @@
 
 kindric shows the Claude Code sessions of all your accounts in one window, side by side. Sessions can leave each other short messages, even across accounts.
 
-<img src="assets/screenshot.png" alt="The kindric desktop app with two sessions side by side: one adds a weekly leaderboard and messages the other, which reads the message and adds the matching API route." width="100%">
+<img src="assets/screenshot.png" alt="The kindric control center: three sessions wait for an answer (a command to allow, a question with two choices, a question with its context), one says what it is writing, and the side shows each account's 5 hour and 7 day limits." width="100%">
 
 It comes with [kindric-accounts](crates/accounts/README.md), which runs each account with its own login and one shared setup. Both live in this repository.
 

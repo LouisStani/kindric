@@ -8,6 +8,7 @@
 #   tests/e2e/run.sh --rebuild ...       build the image again first (new Rust, new system libs)
 #
 #   E2E_SCRIPT=measure.py E2E_NO_TRACE=1 tests/e2e/run.sh    what the app costs (see measure.py)
+#   E2E_SCRIPT=readme_shot.py tests/e2e/run.sh              the README's picture, assets/screenshot.png
 #
 # The image is built the first time. The code of the checkout is then copied into the container
 # and compiled there, into one volume shared by every checkout: the dependencies are compiled
