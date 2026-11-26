@@ -214,7 +214,7 @@ check_path() {
         *":$bin_dir:"*) ;;
         *)
             say ""
-            say "$bin_dir is not on your PATH. Add this line to your shell's startup file (~/.bashrc, ~/.zshrc…):"
+            say "$bin_dir is not on your PATH. Add this line to your shell's startup file (~/.bashrc, ~/.zshrc, ...):"
             say "  export PATH=\"$bin_dir:\$PATH\""
             return
             ;;
@@ -249,7 +249,7 @@ install() {
     archive="kindric-$target.tar.gz"
     work=$(mktemp -d)
     trap 'rm -rf "$work"' EXIT
-    say "Downloading kindric for $target…"
+    say "Downloading kindric for ${target}..."
     download "$base/SHA256SUMS" "$work/SHA256SUMS"
     download "$base/$archive" "$work/$archive"
     verify "$work/$archive" "$archive"

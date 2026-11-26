@@ -20,6 +20,11 @@ check() {
     fi
 }
 
+# ASCII only: the /bin/sh of macOS, bash 3.2, reads the bytes of a character such as an ellipsis right
+# after "$target" as part of the name of the variable, in a locale other than UTF-8.
+non_ascii=$(cat "$installer" "$root/packaging/launch.sh" | LC_ALL=C tr -d '\000-\177' | wc -c | tr -d ' ')
+check '[ "$non_ascii" = 0 ]' "the shell scripts are ASCII only ($non_ascii other bytes)"
+
 python3 -m http.server "$port" --bind 127.0.0.1 --directory "$dist" > /dev/null 2>&1 &
 server=$!
 home=$(mktemp -d)
