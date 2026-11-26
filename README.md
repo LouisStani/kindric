@@ -31,7 +31,7 @@ Two interfaces share the same core:
 
 ## Install
 
-You need Rust, and Claude Code with background sessions (tested with 2.1.312). Codex and OpenCode are needed only for their own accounts (tested with Codex 0.171.0 and OpenCode 2.3.2). kindric is used daily on Linux; CI builds and tests it on Linux, macOS and Windows.
+You need Rust, and Claude Code with background sessions (tested with 2.1.332). Codex and OpenCode are needed only for their own accounts (tested with Codex 0.172.0 and OpenCode 2.4.1). kindric is used daily on Linux; CI builds and tests it on Linux, macOS and Windows.
 
 ```sh
 git clone https://github.com/LouisStani/kindric.git
