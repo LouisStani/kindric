@@ -140,7 +140,8 @@ else
 fi
 check 'grep -qx keep "$home/.local/share/kindric/projects.json"' "kindric's data stays"
 check '[ ! -e "$home/.local/share/kindric-installer" ]' "the installer's own folder goes"
-check 'run_installer --uninstall 2>&1 | grep -q "Nothing installed by this script"' "a second uninstall finds nothing"
+output=$(run_installer --uninstall 2>&1)
+check 'grep -q "Nothing installed by this script" <<< "$output"' "a second uninstall finds nothing"
 
 if [ "$failures" -gt 0 ]; then
     echo "$failures check(s) failed"

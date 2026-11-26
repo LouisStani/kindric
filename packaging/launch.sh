@@ -25,7 +25,8 @@ if [ -n "$out" ]; then
     (sleep 5 && kill -KILL "$reader" 2> /dev/null) &
     watchdog=$!
     wait "$reader" 2> /dev/null || true
-    kill "$watchdog" 2> /dev/null || true
+    # Waited for, so that the shell does not report the end of the watchdog (bash 3.2 does, on macOS).
+    { kill "$watchdog" && wait "$watchdog"; } 2> /dev/null || true
     found=$(sed -n 's/^__kindric_path__//p' "$out" | tail -n 1)
     rm -f "$out"
     if [ -n "$found" ]; then
