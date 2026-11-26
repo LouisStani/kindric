@@ -1,0 +1,18 @@
+#!/bin/sh
+# The program of kindric.app. Opened from the Finder or the Dock, an app gets the PATH of launchd
+# (/usr/bin:/bin:/usr/sbin:/sbin), where neither claude nor kindric-accounts is: take the PATH of the
+# user's shell, as a terminal would give it, then start kindric-desktop with it.
+here=$(cd "$(dirname "$0")" && pwd)
+shell=${SHELL:-/bin/zsh}
+# A marker, since the startup files of an interactive shell may print something of their own.
+found=$("$shell" -ilc 'printf "\n__kindric_path__%s\n" "$PATH"' 2>/dev/null < /dev/null | sed -n 's/^__kindric_path__//p' | tail -n 1)
+if [ -n "$found" ]; then
+    PATH=$found
+fi
+# Where install.sh puts kindric and kindric-accounts, in case the shell does not name it.
+case ":$PATH:" in
+    *":$HOME/.local/bin:"*) ;;
+    *) PATH="$HOME/.local/bin:$PATH" ;;
+esac
+export PATH
+exec "$here/kindric-desktop" "$@"
