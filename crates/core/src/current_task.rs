@@ -1,12 +1,13 @@
 //! What a session of Claude Code is doing now, for the line of its row (decisions 498, 499): the
 //! last sentence Claude wrote in the turn, as it says what it does before its tools ("I add a
-//! test that does not depend on timing."), else the prompt that started the turn. Read from the
-//! end of the transcript: a prompt further back leaves the start of the turn unknown.
+//! test that does not depend on timing."), else the prompt or the command typed with `!` that
+//! started the turn. Read from the end of the transcript: a prompt further back leaves the start
+//! of the turn unknown.
 
 use serde_json::Value;
 
 use crate::changes::unix_seconds;
-use crate::images::{assistant_texts, prompt_text};
+use crate::images::{assistant_texts, prompt_text, shell_command};
 use crate::progress::one_line;
 
 /// The turn at the end of a transcript.
@@ -28,9 +29,10 @@ pub fn turn_of(transcript_tail: &str) -> Turn {
     let mut said: Option<String> = None;
     let mut asked: Option<String> = None;
     for entry in transcript_tail.lines().filter_map(|line| serde_json::from_str::<Value>(line).ok()) {
-        if let Some(prompt) = prompt_text(&entry) {
+        let typed = prompt_text(&entry).map(str::to_string).or_else(|| shell_command(&entry).map(|command| format!("! {command}")));
+        if let Some(typed) = typed {
             turn.started = entry.get("timestamp").and_then(Value::as_str).and_then(unix_seconds);
-            asked = Some(prompt.to_string());
+            asked = Some(typed);
             said = None;
             continue;
         }
@@ -169,6 +171,17 @@ mod tests {
         let turn = of(&[prompt("go", "2026-11-26T10:00:00.000Z"), said("I build the image."), result(), notification]);
         assert_eq!(turn.doing.as_deref(), Some("I build the image."));
         assert_eq!(turn.started, Some(1_795_687_200));
+    }
+
+    #[test]
+    fn a_command_typed_with_an_exclamation_mark_starts_a_turn() {
+        let turn = of(&[
+            prompt("go", "2026-11-26T10:00:00.000Z"),
+            said("I wrote the notes."),
+            prompt("<bash-input>git push</bash-input>", "2026-11-26T11:00:00.000Z"),
+            tool(),
+        ]);
+        assert_eq!(turn, Turn { started: Some(1_795_690_800), doing: Some("! git push".into()) });
     }
 
     #[test]

@@ -13,7 +13,7 @@ use std::time::UNIX_EPOCH;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use crate::images::{is_prompt, tail};
+use crate::images::{is_prompt, shell_command, tail};
 use crate::mailbox::is_valid_session_id;
 
 /// How far a session is in its task list.
@@ -143,13 +143,13 @@ per step of this work, with a subject, a description and an activeForm), then ke
 to date with TaskUpdate as you go. The user follows what you do, how far you are and the time left on \
 kindric's page.";
 
-/// The tools of the last turn of a transcript's end (since the user's last prompt), and whether
-/// one of them made a task.
+/// The tools of the last turn of a transcript's end (since the user's last prompt, or the last
+/// command typed with `!`, which Claude answers too), and whether one of them made a task.
 fn turn_tools(transcript_tail: &str) -> (usize, bool) {
     let mut count = 0;
     let mut created = false;
     for entry in transcript_tail.lines().filter_map(|line| serde_json::from_str::<Value>(line).ok()) {
-        if is_prompt(&entry) {
+        if is_prompt(&entry) || shell_command(&entry).is_some() {
             (count, created) = (0, false);
             continue;
         }
@@ -333,6 +333,9 @@ mod tests {
         assert_eq!(turn_tools(&made), (2, true));
         let notified = [prompt("go"), tools(&["Bash"]), prompt("<task-notification>done</task-notification>"), tools(&["Bash"])].join("\n");
         assert_eq!(turn_tools(&notified).0, 2, "a notification is not the user's prompt");
+        // A command typed with `!` starts a turn too: Claude answers it.
+        let shell = [prompt("go"), tools(&["Bash"; 9]), prompt("<bash-input>git push</bash-input>"), tools(&["Bash"])].join("\n");
+        assert_eq!(turn_tools(&shell).0, 1, "a command typed with ! starts a turn");
     }
 
     fn pre_tool(tool: &str, transcript: &Path) -> String {

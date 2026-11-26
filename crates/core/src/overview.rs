@@ -394,8 +394,9 @@ mod tests {
         assert!(!answered_in_session(&asked, &before.join("\n")), "nothing typed after the question");
         let tool_result = entry("user", "2026-11-17T21:47:00.000Z", serde_json::json!([{ "type": "tool_result", "content": "sent" }]));
         let notification = entry("user", "2026-11-17T21:48:00.000Z", serde_json::json!("<task-notification>done</task-notification>"));
-        let not_typed = [before.join("\n"), tool_result, notification, "{broken".into()].join("\n");
-        assert!(!answered_in_session(&asked, &not_typed), "neither a tool result nor a notification is the user");
+        let shell = entry("user", "2026-11-17T21:49:00.000Z", serde_json::json!("<bash-input>git push</bash-input>"));
+        let not_typed = [before.join("\n"), tool_result, notification, shell, "{broken".into()].join("\n");
+        assert!(!answered_in_session(&asked, &not_typed), "neither a tool result, a notification nor a command typed with ! answers");
         let typed = [not_typed, entry("user", "2026-11-17T21:50:07.760Z", serde_json::json!("oui"))].join("\n");
         assert!(answered_in_session(&asked, &typed));
         assert!(!answered_in_session(&request("aaaa-1111", "1794952000000-7", 1_794_952_000, permission()), &typed), "a hook waits for the others");
