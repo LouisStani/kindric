@@ -31,18 +31,23 @@ Two interfaces share the same core:
 
 ## Install
 
-You need Rust, and Claude Code with background sessions (tested with 2.1.332). Codex and OpenCode are needed only for their own accounts (tested with Codex 0.172.0 and OpenCode 2.4.1). kindric is used daily on Linux; CI builds and tests it on Linux, macOS and Windows.
+You need Claude Code with background sessions (tested with 2.1.332). Codex and OpenCode are needed only for their own accounts (tested with Codex 0.172.0 and OpenCode 2.4.1).
+
+**Linux and macOS:**
 
 ```sh
-git clone https://github.com/LouisStani/kindric.git
-cargo install --locked --path kindric/crates/accounts
-cargo install --locked --path kindric/crates/tui
-cargo install --locked --path kindric/crates/desktop
+curl -fsSL https://github.com/LouisStani/kindric/releases/latest/download/install.sh | sh
 ```
 
-Binaries go to `~/.cargo/bin`, which must be on your `PATH`. Install `kindric` even if you only use the desktop app: it runs the messages server and the hooks that kindric-accounts gives the sessions. kindric-accounts alone can be installed without Rust: see [its README](crates/accounts/README.md#installation).
+**Windows** (PowerShell):
 
-On Linux, the desktop app needs WebKitGTK 4.1 (`webkit2gtk-4.1` on Arch, `libwebkit2gtk-4.1-dev` on Debian and Ubuntu).
+```powershell
+irm https://raw.githubusercontent.com/LouisStani/kindric/main/packaging/install.ps1 | iex
+```
+
+This installs the app, `kindric` and `kindric-accounts`, puts them on your `PATH` and adds kindric to your applications menu. Run it again to update. On Linux, the app needs WebKitGTK 4.1: the installer tells you if it is missing.
+
+The [installation guide](docs/install.md) covers what the installer does, updates, uninstalling, problems, and building from source. kindric is used daily on Linux; CI builds and tests it, and its installers, on Linux, macOS and Windows.
 
 ## Get started
 
@@ -82,6 +87,7 @@ On macOS, `Cmd` replaces `Ctrl`.
 
 | Page | What is in it |
 | --- | --- |
+| [Installation](docs/install.md) | Install, update, uninstall, problems, from source |
 | [Desktop app](docs/desktop.md) | Tabs, the control center, the session bar, panes, away mode, changed files, worktrees, artifacts, settings, all shortcuts, themes |
 | [Terminal interface](docs/terminal.md) | Keys and session states of `kindric` |
 | [Messages](docs/messages.md) | How sessions talk and keep files, isolated accounts, where messages are stored |
