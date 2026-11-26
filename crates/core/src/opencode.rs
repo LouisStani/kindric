@@ -403,6 +403,21 @@ impl Service {
             other => data_items(&other).collect(),
         })
     }
+
+    /// The size of the context window of a model, in tokens, as OpenCode knows it (`limit.context`
+    /// in `/api/model`); none for a model it does not list.
+    pub fn context_window(&self, provider: &str, model: &str) -> io::Result<Option<f64>> {
+        let answer = self.request("GET", "/api/model", None)?;
+        let models: Vec<Value> = match answer {
+            Value::Array(items) => items,
+            other => data_items(&other).collect(),
+        };
+        Ok(models
+            .iter()
+            .find(|entry| entry.get("providerID").and_then(Value::as_str) == Some(provider) && entry.get("id").and_then(Value::as_str) == Some(model))
+            .and_then(|entry| entry.pointer("/limit/context"))
+            .and_then(Value::as_f64))
+    }
 }
 
 fn create_body(directory: &Path, title: &str) -> Value {

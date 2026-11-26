@@ -817,12 +817,63 @@ pub fn prepare_hooks(codex: &Path, dir: &Path, hooks: &usage::KindricHooks) -> V
     warnings
 }
 
-/// What kindric gives the Codex account `name` in `dir` before a session: its hooks and its
-/// messages server, with the `kindric` in `PATH`. Returns what went wrong, as warnings.
+/// What kindric gives the Codex account `name` in `dir` before a session: its hooks, its messages
+/// server, with the `kindric` in `PATH`, and the overview's folder writable from the sandbox.
+/// Returns what went wrong, as warnings.
 pub fn prepare_kindric(codex: &Path, dir: &Path, name: &str, isolated: bool) -> Vec<String> {
     let mut warnings = prepare_hooks(codex, dir, &kindric_hooks(usage::kindric_hooks()));
     warnings.extend(prepare_mcp(codex, dir, name, usage::kindric_program().as_deref(), isolated));
+    let overview = crate::paths::Paths::from_env().ok().and_then(|paths| paths.kindric_data_dir()).map(|data| data.join("overview"));
+    warnings.extend(overview.map(|overview| prepare_overview(codex, dir, &overview)).unwrap_or_default());
     warnings
+}
+
+/// Remembers which folder was made writable for `kindric ask`, so that Codex is asked again only
+/// when it changes.
+fn overview_mark(dir: &Path) -> PathBuf {
+    dir.join(".kindric-overview")
+}
+
+/// The edit that adds `overview` to the folders a sandboxed session may write, after those set in
+/// `current`; none when it is there already. `config/batchWrite` replaces a list whole, even with
+/// `upsert` (Codex 0.172).
+fn writable_edit(current: &[String], overview: &Path) -> Option<Value> {
+    let overview = overview.to_string_lossy().into_owned();
+    if current.contains(&overview) {
+        return None;
+    }
+    let mut roots = current.to_vec();
+    roots.push(overview);
+    Some(json!({ "keyPath": "sandbox_workspace_write.writable_roots", "value": roots, "mergeStrategy": "replace" }))
+}
+
+/// The folders the account's configuration already makes writable from the sandbox.
+fn writable_roots(server: &mut AppServer) -> io::Result<Vec<String>> {
+    let read = server.request("config/read", json!({ "includeLayers": false }))?;
+    let roots = read.pointer("/config/sandbox_workspace_write/writable_roots").and_then(Value::as_array);
+    Ok(roots.map(|roots| roots.iter().filter_map(Value::as_str).map(String::from).collect()).unwrap_or_default())
+}
+
+/// `kindric ask` writes its question in the overview's folder, and Codex runs a session's commands in
+/// a sandbox where only the session's folder is writable: that one is added to the account's
+/// `writable_roots`, through Codex. Returns what went wrong, as warnings: a session still works,
+/// without asking from the overview.
+fn prepare_overview(codex: &Path, dir: &Path, overview: &Path) -> Vec<String> {
+    let wanted = overview.to_string_lossy().into_owned();
+    if fs::read_to_string(overview_mark(dir)).is_ok_and(|done| done == wanted) {
+        return Vec::new();
+    }
+    if let Err(error) = fs::create_dir_all(overview) {
+        return vec![format!("cannot create {}: {error}", overview.display())];
+    }
+    let added = app_server(codex, dir).and_then(|mut server| match writable_edit(&writable_roots(&mut server)?, overview) {
+        Some(edit) => server.request("config/batchWrite", json!({ "edits": [edit], "reloadUserConfig": true })).map(|_| ()),
+        None => Ok(()),
+    });
+    match added {
+        Ok(()) => files::write_atomic(&overview_mark(dir), &wanted).err().map(|error| format!("{}: {error}", overview_mark(dir).display())).into_iter().collect(),
+        Err(error) => vec![format!("kindric ask cannot write from Codex's sandbox: {error}")],
+    }
 }
 
 /// The daemon of the Codex account in `dir` when it runs, else a Codex app server started for it.
@@ -920,6 +971,18 @@ mod tests {
                 "mergeStrategy": "replace",
             }])
         );
+    }
+
+    #[test]
+    fn the_overview_is_added_to_the_writable_folders_of_the_user() {
+        let overview = Path::new("/data/kindric/overview");
+        let edit = writable_edit(&["/mine".to_string()], overview).unwrap();
+        assert_eq!(
+            edit,
+            json!({"keyPath": "sandbox_workspace_write.writable_roots", "value": ["/mine", "/data/kindric/overview"], "mergeStrategy": "replace"})
+        );
+        assert_eq!(writable_edit(&[], overview).unwrap()["value"], json!(["/data/kindric/overview"]));
+        assert_eq!(writable_edit(&["/data/kindric/overview".to_string()], overview), None, "there already");
     }
 
     #[test]

@@ -13,6 +13,7 @@ use kindric_accounts::{Paths, account, codex, launch, memory, registry, status, 
 use serde::{Deserialize, Serialize};
 
 use crate::opencode;
+use crate::{codex_history, opencode_history};
 use crate::progress;
 use crate::task_list;
 
@@ -236,11 +237,19 @@ pub struct SessionRef {
 pub fn contexts(paths: &Paths, sessions: &[SessionRef]) -> BTreeMap<String, f64> {
     sessions
         .iter()
-        .filter_map(|session| {
-            let context = usage::read_context(paths, &session.account, &session.session_id)?;
-            Some((session.session_id.clone(), context.used_percentage))
-        })
+        .filter_map(|session| Some((session.session_id.clone(), context_of(paths, session)?)))
         .collect()
+}
+
+/// How full the context window of `session` is: from the status line for Claude Code, the rollout
+/// for Codex, the service for OpenCode.
+fn context_of(paths: &Paths, session: &SessionRef) -> Option<f64> {
+    let dir = paths.account_dir(&session.account);
+    match agent::read(&dir).unwrap_or_default() {
+        Agent::ClaudeCode => usage::read_context(paths, &session.account, &session.session_id).map(|context| context.used_percentage),
+        Agent::Codex => codex_history::context(&codex_history::live_tail(&dir, &session.session_id)?),
+        Agent::OpenCode => opencode_history::context_of(&dir, &session.session_id),
+    }
 }
 
 pub fn isolated_accounts() -> io::Result<Vec<String>> {
@@ -417,7 +426,11 @@ fn codex_session(account: &str, thread: codex::Thread) -> SessionInfo {
 /// The sessions of the Codex account in `dir`, read from its daemon (see `codex::sessions`).
 fn codex_sessions(account: &str, dir: &Path, include_stopped: bool) -> io::Result<Vec<SessionInfo>> {
     let threads = codex::sessions(dir, include_stopped)?;
-    Ok(threads.into_iter().map(|thread| codex_session(account, thread)).collect())
+    let mut sessions: Vec<SessionInfo> = threads.into_iter().map(|thread| codex_session(account, thread)).collect();
+    for session in sessions.iter_mut().filter(|session| session.state != SessionState::Paused) {
+        session.progress = codex_history::live_tail(dir, &session.session_id).as_deref().and_then(codex_history::doing);
+    }
+    Ok(sessions)
 }
 
 /// A session of OpenCode as kindric shows it. Its id serves both to attach (`opencode -s`) and to
@@ -447,7 +460,11 @@ fn opencode_session(account: &str, session: opencode::Session) -> SessionInfo {
 /// The sessions of the OpenCode account in `dir`, read from its service (see `opencode::sessions`).
 fn opencode_sessions(account: &str, dir: &Path, include_stopped: bool) -> io::Result<Vec<SessionInfo>> {
     let sessions = opencode::sessions(dir, include_stopped)?;
-    Ok(sessions.into_iter().map(|session| opencode_session(account, session)).collect())
+    let mut sessions: Vec<SessionInfo> = sessions.into_iter().map(|session| opencode_session(account, session)).collect();
+    for session in sessions.iter_mut().filter(|session| session.state != SessionState::Paused) {
+        session.progress = opencode_history::messages_of(dir, &session.session_id).as_deref().and_then(opencode_history::doing);
+    }
+    Ok(sessions)
 }
 
 /// The snapshot without the sessions of Codex accounts, for the terminal interface: frozen, it

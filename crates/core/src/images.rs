@@ -37,8 +37,13 @@ pub fn transcript_of(account_dir: &Path, session_id: &str) -> Option<PathBuf> {
 
 /// The end of `path`, whole lines only.
 pub(crate) fn tail(path: &Path) -> Option<String> {
+    tail_of(path, TRANSCRIPT_TAIL)
+}
+
+/// The last `most` bytes of `path`, whole lines only.
+pub(crate) fn tail_of(path: &Path, most: u64) -> Option<String> {
     let mut file = File::open(path).ok()?;
-    let start = file.metadata().ok()?.len().saturating_sub(TRANSCRIPT_TAIL);
+    let start = file.metadata().ok()?.len().saturating_sub(most);
     file.seek(SeekFrom::Start(start)).ok()?;
     let mut bytes = Vec::new();
     file.read_to_end(&mut bytes).ok()?;
@@ -155,6 +160,19 @@ pub fn proposed(account_dir: &Path, session_id: &str, cwd: &Path, home: Option<&
         return Vec::new();
     };
     image_paths(&last_turn_text(&text), cwd, home).into_iter().map(|path| path.to_string_lossy().into_owned()).collect()
+}
+
+/// The images the last turn of a session of any agent proposed (see `steps::of_agent` for where
+/// each keeps its history).
+pub fn proposed_by(agent: crate::attach::Agent, account_dir: &Path, session_id: &str, cwd: &Path, home: Option<&Path>) -> Vec<String> {
+    let text = match agent {
+        crate::attach::Agent::ClaudeCode => return proposed(account_dir, session_id, cwd, home),
+        crate::attach::Agent::Codex => crate::codex_history::last_turn_of(account_dir, session_id),
+        crate::attach::Agent::OpenCode => crate::opencode_history::messages_of(account_dir, session_id)
+            .map(|messages| crate::opencode_history::last_turn_text(&messages))
+            .unwrap_or_default(),
+    };
+    image_paths(&text, cwd, home).into_iter().map(|path| path.to_string_lossy().into_owned()).collect()
 }
 
 #[cfg(test)]
