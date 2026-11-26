@@ -12,7 +12,7 @@ import { providerLabel, SettingsWindow } from "./settings.js";
 import { AtlasWindow } from "./atlas.js";
 import { expiresWithin, inHowLong, shortly, timeLeft } from "./expiry.js";
 import { Overview } from "./overview.js";
-import { summaryOf } from "./overview-board.js";
+import { inBar, summaryOf } from "./overview-board.js";
 import { chipState, dotSign, stateWords, tabMark } from "./chips.js";
 import { pickerItems } from "./picker.js";
 import { Typing } from "./typing.js";
@@ -72,12 +72,6 @@ function renderStatus() {
 function directoryField(formId) {
   const form = document.getElementById(formId);
   return new DirectoryField(form.elements.directory, form.querySelector(".suggestions"));
-}
-
-// A session the bar shows: not hidden, and with a process. Stopped ones (dozens, from
-// `agents --json --all`) are found with Ctrl+P only.
-function inBar(session) {
-  return !session.hidden && session.state !== "paused";
 }
 
 // The sessions of the bar: those of the visible tab, its project's or, in "other", those of
@@ -291,9 +285,10 @@ function overviewTabs() {
   }));
 }
 
-// Every session not hidden, paused ones included: the control center shows them all.
+// The sessions of the bar, of every tab: a paused one leaves the control center at once, and is
+// found with Ctrl+P (decision 497).
 function overviewRows() {
-  return lastView.sessions.filter((session) => !session.hidden);
+  return lastView.sessions.filter(inBar);
 }
 
 function renderOverview() {

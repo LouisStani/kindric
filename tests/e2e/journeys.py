@@ -1381,10 +1381,9 @@ class QuietOldMessages(Journey):
         self.assertEqual(len(os.listdir(os.path.join(MAILBOX, session_id_of("quiet-old")))), 1, "the old message is kept")
 
 
-class PausedLongAgoOnALine(Journey):
-    """In the control center, a session paused long ago takes one line under "paused · N", with
-    how long ago and its account (decision 460); one paused not long ago keeps its full row, and
-    the line picked shows the full row, with resume."""
+class PausedLeavesTheControlCenter(Journey):
+    """The control center shows the sessions of the bar (decision 497): a paused session is not on
+    it, however recent its pause, and Ctrl+P still finds it."""
 
     started = [("napping", "nap work:0"), ("dormant", "old work:0"), ("awake", "awake work:0")]
 
@@ -1393,23 +1392,17 @@ class PausedLongAgoOnALine(Journey):
         pause(["napping", "dormant"])
         age_transcript("dormant", 5)
 
-    def test_old_pause_on_a_line(self) -> None:
+    def test_paused_not_shown(self) -> None:
         driver = self.driver
         carry_messages(driver)
         driver.press(CONTROL, SHIFT, "0")
         wait_until("the control center", lambda: not overview_hidden(driver))
-        wait_until("dormant on a line", lambda: texts(driver, "article.control-row.is-line .row-name") == ["dormant"] or None)
-        self.assertEqual(texts(driver, "article.control-row.is-line .row-doing-text"), ["paused 5 d ago"])
-        self.assertEqual(texts(driver, "article.control-row.is-line .row-account"), [ACCOUNT])
-        self.assertEqual(texts(driver, "h2.control-group.is-paused"), ["paused · 1"])
-        self.assertEqual(texts(driver, "article.control-row .row-name"), ["napping", "awake", "dormant"], "the line last")
-        self.assertEqual(texts(driver, "article.control-row:not(.is-line) button.row-resume"), ["resume"], "napping keeps its full row")
-        driver.screenshot(os.path.join(OUT, "PausedLongAgoOnALine-line.png"))
-
-        click_text(driver, "article.control-row .row-name", "dormant")
-        wait_until("dormant in full", lambda: texts(driver, "article.control-row.selected:not(.is-line) .row-name") == ["dormant"] or None)
-        self.assertEqual(texts(driver, "article.control-row.selected button.row-resume"), ["resume"])
-        self.assertEqual(texts(driver, "article.control-row.is-line"), [], "no line while it is picked")
+        wait_until("awake alone", lambda: texts(driver, "article.control-row .row-name") == ["awake"] or None)
+        self.assertEqual(texts(driver, "h2.control-group.is-paused"), [], "no group of pauses")
+        driver.screenshot(os.path.join(OUT, "PausedLeavesTheControlCenter.png"))
+        driver.press(CONTROL, "p")
+        wait_until("the session finder", lambda: dialog_open(driver, "picker"))
+        wait_until("the paused ones in the finder", lambda: {"napping", "dormant"} <= {name for name, _ in picker_rows(driver)} or None)
 
 
 def picker_entries(driver: Driver) -> list[tuple[str, str]]:
@@ -2502,7 +2495,7 @@ class CodexSessionsInKindric(Journey):
 
 
 class ControlCenterKeysAndPromptAll(Journey):
-    """In the control center: a paused session's "resume" opens it in a pane, started again;
+    """In the control center: a paused session is not shown, and Ctrl+P opens it in a pane, started again;
     "prompt all" asks to confirm, then types the same message into each session of the project;
     Escape goes back to all projects, n picks the session that asks, a allows its permission,
     Enter goes into the picked row's field, o opens the picked session in a pane."""
@@ -2530,11 +2523,12 @@ class ControlCenterKeysAndPromptAll(Journey):
         add_project(driver)
         self.to_control_center()
         click_text(driver, ".control-project .control-project-name", "project")
-        wait_until("the project's rows", lambda: sorted(texts(driver, "article.control-row .row-name")) == ["alpha", "beta", "dozing"] or None)
-        # Paused not long ago, it comes right after what needs you (overview-board.js projectView).
-        self.assertEqual(texts(driver, "article.control-row .row-name")[0], "dozing")
+        wait_until("the project's rows", lambda: sorted(texts(driver, "article.control-row .row-name")) == ["alpha", "beta"] or None)
 
-        click_text(driver, "article.control-row button.row-resume", "resume")
+        # Paused, it is not on the page (decision 497): Ctrl+P opens it.
+        driver.press(CONTROL, "p")
+        wait_until("the session finder", lambda: dialog_open(driver, "picker"))
+        driver.type_into(driver.find("#picker-query"), "dozing" + ENTER)
         wait_until("dozing open in a pane", lambda: overview_hidden(driver) and (chip(driver, "dozing") or ("", False))[1] or None)
         wait_until("dozing started again", lambda: fake_running("dozing"))
 
