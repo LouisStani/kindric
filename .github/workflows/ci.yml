@@ -147,7 +147,10 @@ jobs:
           if gh release view "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
             gh release upload "$GITHUB_REF_NAME" dist/* --repo "$GITHUB_REPOSITORY" --clobber
           else
-            gh release create "$GITHUB_REF_NAME" dist/* --repo "$GITHUB_REPOSITORY" --title "$GITHUB_REF_NAME" --generate-notes
+            # A tag with a dash (v1.1.0-rc.1) is a pre-release: never "latest", which the installers download.
+            prerelease=""
+            if [[ "$GITHUB_REF_NAME" == *-* ]]; then prerelease="--prerelease"; fi
+            gh release create "$GITHUB_REF_NAME" dist/* --repo "$GITHUB_REPOSITORY" --title "$GITHUB_REF_NAME" --generate-notes $prerelease
           fi
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
