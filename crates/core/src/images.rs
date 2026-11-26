@@ -66,17 +66,28 @@ pub(crate) fn is_prompt(entry: &Value) -> bool {
 
 /// The text of `entry` when it is a prompt (see `is_prompt`).
 pub(crate) fn prompt_text(entry: &Value) -> Option<&str> {
+    user_text(entry).filter(|text| !text.trim_start().starts_with('<'))
+}
+
+/// The command of `entry` when it is a shell command typed with `!` (`<bash-input>…</bash-input>`):
+/// Claude answers it, so it starts a turn, but it answers no question.
+pub(crate) fn shell_command(entry: &Value) -> Option<&str> {
+    let text = user_text(entry)?.trim();
+    Some(text.strip_prefix("<bash-input>")?.strip_suffix("</bash-input>")?.trim())
+}
+
+/// The text of a user message of the main conversation that is not a tool result.
+fn user_text(entry: &Value) -> Option<&str> {
     if entry.get("type").and_then(Value::as_str) != Some("user") || flag(entry, "isMeta") || flag(entry, "isSidechain") {
         return None;
     }
-    let text = match entry.pointer("/message/content") {
+    match entry.pointer("/message/content") {
         Some(Value::String(text)) => Some(text.as_str()),
         Some(Value::Array(blocks)) if !blocks.iter().any(|block| block.get("type").and_then(Value::as_str) == Some("tool_result")) => {
             blocks.iter().find_map(|block| block.get("text").and_then(Value::as_str))
         },
         _ => None,
-    };
-    text.filter(|text| !text.trim_start().starts_with('<'))
+    }
 }
 
 /// The text blocks of an assistant message of the main conversation.
