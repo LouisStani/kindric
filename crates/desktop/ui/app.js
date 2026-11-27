@@ -18,6 +18,7 @@ import { pickerItems } from "./picker.js";
 import { Typing } from "./typing.js";
 import { UsageWindow } from "./usage.js";
 import { StatsWindow } from "./stats-window.js";
+import { Outbox } from "./outbox.js";
 
 const { invoke } = window.__TAURI__.core;
 const { listen } = window.__TAURI__.event;
@@ -828,7 +829,7 @@ function offerTrust(message, account, directory) {
   const trust = document.createElement("button");
   trust.type = "button";
   trust.textContent = "trust it";
-  trust.addEventListener("click", () => askTrust(account, directory, () => document.getElementById("new-form").requestSubmit()));
+  trust.addEventListener("click", () => askTrust(outbox, account, directory, () => document.getElementById("new-form").requestSubmit()));
   message.replaceChildren(`${account} has not trusted this folder yet.`, trust);
 }
 
@@ -1303,7 +1304,10 @@ const overview = new Overview(document.getElementById("overview"), {
   onSetup: openHelp,
 });
 
+// Terminal output and the list of sessions, kept by Rust until taken (outbox.rs).
+const outbox = new Outbox(() => invoke("take_outbox"), (view) => render(view));
 const panes = new Panes(document.getElementById("panes"), document.getElementById("tabs"), document.getElementById("overview"), {
+  outbox,
   keyFilter: (event) => shortcutFor(event) === null,
   onChange: () => {
     render(lastView);
@@ -1335,6 +1339,7 @@ const labelOf = (account, session) => lastView.sessions.find((row) => row.accoun
 const usageWindow = new UsageWindow(document.getElementById("usage"), { labelOf });
 const statsWindow = new StatsWindow(document.getElementById("stats"), { labelOf });
 const settingsWindow = new SettingsWindow(document.getElementById("settings"), {
+  outbox,
   shortcuts: shortcutSettings,
   onAccounts: (accounts) => (accountStatuses = accounts),
   onAtlas: () => atlasWindow.open(),
@@ -1408,7 +1413,9 @@ try {
 }
 await listen("pane-ended", (event) => panes.ended(event.payload));
 await listen("tabs", (event) => panes.render(event.payload));
-await listen("sessions", (event) => render(event.payload));
+// Rust rings once until the outbox is taken from: what it rang for before this line is taken here.
+window.kindricOutbox = () => outbox.collect();
+outbox.collect();
 // Tauri takes files dropped on the window itself and gives their paths here, at a place in
 // physical pixels.
 await listen("tauri://drag-drop", ({ payload }) => {

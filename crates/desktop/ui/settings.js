@@ -139,8 +139,9 @@ export class SettingsWindow {
   // `onAtlas()`: opens the memory atlas, once the settings are closed.
   // `onUsage()` and `onStats()`: open the usage and the stats windows, likewise.
   // `onTabs(tabs)`: the tabs after a purge, whose panes may have emptied.
-  constructor(dialog, { shortcuts, onAccounts, onAtlas, onUsage, onStats, onTabs }) {
+  constructor(dialog, { outbox, shortcuts, onAccounts, onAtlas, onUsage, onStats, onTabs }) {
     this.dialog = dialog;
+    this.outbox = outbox;
     this.onAccounts = onAccounts;
     this.onTabs = onTabs;
     this.purge = new PurgeSection(dialog.querySelector(".purge"), (tabs) => this.onTabs?.(tabs));
@@ -524,7 +525,7 @@ export class SettingsWindow {
 
   logIn(name) {
     // The login window goes over this one; the list is read again once it closes.
-    logIn(name, () => this.reload());
+    logIn(this.outbox, name, () => this.reload());
   }
 
   async forget(name) {
