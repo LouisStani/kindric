@@ -448,12 +448,36 @@ def replay(path):
             sys.stdout.buffer.flush()
 
 
+def novel():
+    """Text never seen before, scrolling ten lines a second, as a long answer streams in
+    (FAKE_NOVEL): words of random letters, accents and symbols, in a color of their own each line.
+    FAKE_NOVEL=letters keeps one color, FAKE_NOVEL=colors keeps one sentence."""
+    import random
+    letters = "abcdefghijklmnopqrstuvwxyzéèàçùâêîôûäëïöü─│┌┐└┘├┤•→✓✗"
+    kind = os.environ.get("FAKE_NOVEL")
+    pause = 0.1 / float(SPEED or 1)
+    while True:
+        if kind == "colors":
+            text = "the keeper climbed the stairs and lit the lamp again"
+        else:
+            text = " ".join("".join(random.choice(letters) for _ in range(random.randint(2, 9))) for _ in range(14))
+        if kind == "letters":
+            red, green, blue = 200, 200, 200
+        else:
+            red, green, blue = random.randint(80, 255), random.randint(80, 255), random.randint(80, 255)
+        print(f"\x1b[38;2;{red};{green};{blue}m{text}\x1b[0m", flush=True)
+        time.sleep(pause)
+
+
 def chatter():
     """What Claude Code sends while it works (measured on 2026-11-26: about 100 bytes ten times a
     second), its spinner and status redrawn in place, FAKE_SPEED times as often (leak.py).
     With FAKE_REPLAY, the output of a real Claude Code played back instead (replay)."""
     if os.environ.get("FAKE_REPLAY"):
         replay(os.environ["FAKE_REPLAY"])
+        return
+    if os.environ.get("FAKE_NOVEL"):
+        novel()
         return
     frames = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"
     pause = 0.1 / float(SPEED or 1)
