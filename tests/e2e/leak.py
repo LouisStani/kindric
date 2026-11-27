@@ -9,7 +9,11 @@ MEASURE_IDLE seconds (default 600) with:
 LEAK_PAUSED=N adds N sessions stopped before the app starts, as the paused rows of a long-used account.
 LEAK_OUTPUT=1: the working sessions write in their panes as Claude Code does while it works (the
 fake claude's chatter). FAKE_SPEED=N: each working session N times faster, in its steps (a tool
-call in the transcript every 10/N s) and in its output.
+call in the transcript every 10/N s) and in its output. FAKE_REPLAY=/src/tests/e2e/claude-output.rec
+plays back a real Claude Code instead of the chatter (a path inside the container, /src being this
+checkout); FAKE_NOVEL=1 writes text never seen before instead (=letters one color, =colors one
+sentence). On a real desktop only new text showed the page's growth: output played again and again
+hid it.
 LEAK_ACTIONS=1: what a user does, N times faster too: every 60/N s, in turn, the control center
 and back, Ctrl+P opened and closed, the other pane focused.
 LEAK_KEYS=1: down then up twice a second (a redraw of the control center each time), during the
@@ -34,7 +38,7 @@ PAUSED = int(os.environ.get("LEAK_PAUSED", "0"))
 BUSY = int(os.environ.get("LEAK_BUSY", "2"))
 KEYS = os.environ.get("LEAK_KEYS") == "1"
 ACTIONS = os.environ.get("LEAK_ACTIONS") == "1"
-SPEED = float(os.environ.get("FAKE_SPEED") or 1)
+SPEED = float(os.environ.get("FAKE_SPEED") or 1) or 1.0
 # The fake claude chatters in the panes of the sessions whose name starts with "chatty".
 BUSY_PREFIX = "chatty" if os.environ.get("LEAK_OUTPUT") == "1" else "busy"
 ARROW_UP = ""

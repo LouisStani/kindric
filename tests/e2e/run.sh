@@ -47,7 +47,7 @@ mkdir -p "$out"
 # keep-id: the tester of the image is this user, so the screenshots belong to them.
 exec podman run --rm --userns=keep-id \
     -e E2E_OUT=/out -e E2E_SCRIPT -e E2E_NO_TRACE -e MEASURE_IDLE -e MEASURE_PANES -e E2E_BUILD="$build" \
-    -e LEAK_VIEW -e LEAK_PAUSED -e LEAK_BUSY -e LEAK_KEYS -e LEAK_KEYS_FOR -e LEAK_OUTPUT -e LEAK_ACTIONS -e FAKE_SPEED -e FAKE_REPLAY \
+    -e LEAK_VIEW -e LEAK_PAUSED -e LEAK_BUSY -e LEAK_KEYS -e LEAK_KEYS_FOR -e LEAK_OUTPUT -e LEAK_ACTIONS -e FAKE_SPEED -e FAKE_REPLAY -e FAKE_NOVEL \
     -v "$root:/src:ro,Z" \
     -v "$target:/home/tester/target" \
     -v "$out:/out:Z" \

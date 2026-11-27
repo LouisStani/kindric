@@ -226,7 +226,7 @@ def work_seconds(task):
 PROGRESS_EVERY = 10
 # FAKE_SPEED=N (leak.py): a session lived N times faster, its steps N times closer, each one a
 # tool call in the transcript as Claude Code writes it.
-SPEED = os.environ.get("FAKE_SPEED")
+SPEED = os.environ.get("FAKE_SPEED") if os.environ.get("FAKE_SPEED", "") not in ("", "0") else None
 
 
 def job_progress(session_id, detail):
