@@ -46,6 +46,8 @@ The page in `crates/desktop/ui/` has no build step.
 - [xterm.js](https://xtermjs.org) 6.0.0 and its fit (0.11.0), WebGL (0.19.0), Unicode 11 (0.9.0) and serialize (0.14.0) addons are copied from npm into `ui/vendor/`, each with its MIT license. Unicode 11 gives emojis two cells, as Claude Code counts them in its tables. Serialize turns a pane's screen into terminal sequences, kept to show while its session attaches again; its npm package has no license file, so `LICENSE.addon-serialize` is the xterm.js MIT license with the copyright line of the addon's source.
 - The font, [JetBrains Mono](https://www.jetbrains.com/lp/mono/) 2.304 (regular and bold, from the official release), sits next to them with its OFL license, so the app looks the same on every system.
 - Colors and font are CSS variables at the top of `style.css`. Themes only replace those variables.
+- What Rust sends the page often, terminal output and the list of sessions, goes through `src/outbox.rs`. Rust rings the page with a script that is always the same, and the page takes what waits with the command `take_outbox`. A Tauri channel or `app.emit` runs a new script in the page for each message, and WebKitGTK keeps memory for every new script it runs: the page grew by megabytes a minute that way. Send nothing frequent through them.
+- The CSP in `tauri.conf.json` must allow `ipc:` and `http://ipc.localhost` in `connect-src`. Without them Tauri cannot fetch its commands and answers each one with a new script as well. A test in `src/page.rs` checks it.
 
 ## Tracing delays
 
