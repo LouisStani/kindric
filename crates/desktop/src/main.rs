@@ -1849,6 +1849,19 @@ fn open_trace(errors: &mut Vec<String>) -> Trace {
     }
 }
 
+/// WebKitGTK draws the page without accelerated compositing. With it, on a Wayland desktop with a
+/// graphics card (WebKitGTK 2.54.3, 2026-11-27), the page kept memory each time a terminal drew its
+/// output while the machine was busy, never given back: about 5 MB a minute with three busy panes,
+/// 1.4 GB after a few hours. Without it, the same panes under the same load level off; the page
+/// uses more processor time to draw instead (83 ms a second against 46, three busy panes).
+#[cfg(target_os = "linux")]
+fn draw_without_compositing(webview: tauri::webview::PlatformWebview) {
+    use webkit2gtk::{HardwareAccelerationPolicy, SettingsExt, WebViewExt};
+    if let Some(settings) = WebViewExt::settings(&webview.inner()) {
+        settings.set_hardware_acceleration_policy(HardwareAccelerationPolicy::Never);
+    }
+}
+
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
     if let Some(action) = signal::parse(&args) {
@@ -1975,6 +1988,10 @@ fn main() -> ExitCode {
             close_helper
         ])
         .setup(|app| {
+            #[cfg(target_os = "linux")]
+            if let Some(window) = app.get_webview_window("main") {
+                window.with_webview(draw_without_compositing)?;
+            }
             let handle = app.handle().clone();
             // Stopped sessions too: Ctrl+P finds them and opening one starts it again.
             refresher::spawn(true, move |update| publish(&handle, update));

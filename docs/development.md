@@ -46,6 +46,7 @@ The page in `crates/desktop/ui/` has no build step.
 - [xterm.js](https://xtermjs.org) 6.0.0 and its fit (0.11.0), WebGL (0.19.0), Unicode 11 (0.9.0) and serialize (0.14.0) addons are copied from npm into `ui/vendor/`, each with its MIT license. Unicode 11 gives emojis two cells, as Claude Code counts them in its tables. Serialize turns a pane's screen into terminal sequences, kept to show while its session attaches again; its npm package has no license file, so `LICENSE.addon-serialize` is the xterm.js MIT license with the copyright line of the addon's source.
 - The font, [JetBrains Mono](https://www.jetbrains.com/lp/mono/) 2.304 (regular and bold, from the official release), sits next to them with its OFL license, so the app looks the same on every system.
 - Colors and font are CSS variables at the top of `style.css`. Themes only replace those variables.
+- On Linux the main window is drawn without WebKit's accelerated compositing (`draw_without_compositing` in `main.rs`). With it, WebKitGTK 2.54.3 on a Wayland desktop kept memory each time a terminal drew its output while the machine was busy, about 5 MB a minute with three busy panes; without it the page levels off and uses more processor time. `E2E_SCRIPT=leak.py tests/e2e/run.sh` follows the page's memory, but the container (no graphics card, X11) never showed this leak: it was found and checked on a real desktop, with the fake claude playing back a real Claude Code (`FAKE_REPLAY`, `tests/e2e/record.py`) and every core kept busy.
 
 ## Tracing delays
 

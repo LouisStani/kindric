@@ -20,6 +20,8 @@ tauri-plugin-dialog = "2.8"
 smithay-client-toolkit = { version = "0.21", default-features = false }
 # The signal's message: letters drawn from a system font, in pure Rust.
 fontdue = "0.9"
+# The page's WebKit settings (draw_without_compositing): the same crate Tauri's wry already builds.
+webkit2gtk = { version = "2.0", features = ["v2_16"] }
 
 [build-dependencies]
 tauri-build = "2.7"
