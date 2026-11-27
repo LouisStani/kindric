@@ -5,7 +5,7 @@ import { mark, note, traced } from "./trace.js";
 import { ScreenPhotos, fits } from "./photos.js";
 import { dotSign } from "./chips.js";
 
-const { invoke, Channel } = window.__TAURI__.core;
+const { invoke } = window.__TAURI__.core;
 
 function element(tag, className, text) {
   const node = document.createElement(tag);
@@ -297,7 +297,8 @@ function leaves(node, found = []) {
 export class Panes {
   // `overview` is the page shown instead of the tabs at number 0; `needsOf()` how many sessions
   // need the user there.
-  constructor(container, bar, overview, { keyFilter, onChange, onError, titleOf, isFinished, markOf, needsOf, progressOf, changedOf, awayOf, onChangedClick, imagesOf, colorsOf }) {
+  constructor(container, bar, overview, { outbox, keyFilter, onChange, onError, titleOf, isFinished, markOf, needsOf, progressOf, changedOf, awayOf, onChangedClick, imagesOf, colorsOf }) {
+    this.outbox = outbox;
     this.container = container;
     this.bar = bar;
     this.overview = overview;
@@ -457,6 +458,7 @@ export class Panes {
     const ids = new Set(this.allLeaves().map((leaf) => leaf.id));
     for (const [id, view] of this.views) {
       if (!ids.has(id)) {
+        if (view.current) this.outbox.close(view.current.output);
         view.dispose();
         this.views.delete(id);
       }
@@ -697,24 +699,24 @@ export class Panes {
       rows: view.terminal.rows,
     };
     if (this.shows(session)) {
-      const opened = await invoke("open_session", { ...request, output: new Channel() });
+      const opened = await invoke("open_session", { ...request, output: 0 });
       this.render(opened.tabs);
       return;
     }
     const photo = this.photoOf(session, view.terminal.cols);
     const leaving = view.photo();
     if (view.shown !== null && leaving !== null) this.photos.keep(view.shown, leaving);
-    const output = new Channel();
+    if (view.current) this.outbox.close(view.current.output);
+    let shown = false;
+    const output = this.outbox.open((bytes) => {
+      if (view.current !== opening) return;
+      view.connected();
+      view.terminal.write(bytes, shown ? undefined : () => mark("first output shown", start));
+      shown = true;
+    });
     const opening = { output, generation: null, ended: false };
     view.current = opening;
     view.used = true;
-    let shown = false;
-    output.onmessage = (bytes) => {
-      if (view.current !== opening) return;
-      view.connected();
-      view.terminal.write(new Uint8Array(bytes), shown ? undefined : () => mark("first output shown", start));
-      shown = true;
-    };
     view.terminal.reset();
     if (photo === null) view.connecting(this.titleOf(session));
     else {
@@ -732,6 +734,7 @@ export class Panes {
     }
     // Null: another pane showed it already (this page had not seen it yet) and has the focus.
     if (opened.generation === null && view.current === opening) {
+      this.outbox.close(output);
       view.current = null;
       view.connected();
     }

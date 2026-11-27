@@ -9,6 +9,7 @@
 #
 #   E2E_SCRIPT=measure.py E2E_NO_TRACE=1 tests/e2e/run.sh    what the app costs (see measure.py)
 #   E2E_SCRIPT=readme_shot.py tests/e2e/run.sh              the README's picture, assets/screenshot.png
+#   E2E_SCRIPT=leak.py FAKE_SPEED=10 tests/e2e/run.sh        whether the page leaks (see leak.py)
 #
 # The image is built the first time. The code of the checkout is then copied into the container
 # and compiled there, into one volume shared by every checkout: the dependencies are compiled
@@ -46,6 +47,7 @@ mkdir -p "$out"
 # keep-id: the tester of the image is this user, so the screenshots belong to them.
 exec podman run --rm --userns=keep-id \
     -e E2E_OUT=/out -e E2E_SCRIPT -e E2E_NO_TRACE -e MEASURE_IDLE -e MEASURE_PANES -e E2E_BUILD="$build" \
+    -e LEAK_VIEW -e LEAK_PAUSED -e LEAK_BUSY -e LEAK_KEYS -e LEAK_KEYS_FOR -e LEAK_OUTPUT -e LEAK_ACTIONS -e FAKE_SPEED -e FAKE_REPLAY -e FAKE_NOVEL \
     -v "$root:/src:ro,Z" \
     -v "$target:/home/tester/target" \
     -v "$out:/out:Z" \

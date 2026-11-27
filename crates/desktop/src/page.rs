@@ -72,3 +72,15 @@ fn every_terminal_counts_emojis_as_claude_code_does() {
     }
     assert_eq!(terminals, 2, "the panes and the helper window");
 }
+
+/// Without it Tauri cannot fetch its own commands and falls back to answering each one with a
+/// new script, and WebKitGTK keeps memory for every such script (outbox.rs).
+#[test]
+fn the_page_may_fetch_tauris_commands() {
+    let config: serde_json::Value = serde_json::from_str(include_str!("../tauri.conf.json")).unwrap();
+    let csp = config["app"]["security"]["csp"].as_str().unwrap();
+    let connect = csp.split(';').map(str::trim).find(|directive| directive.starts_with("connect-src")).unwrap();
+    for source in ["ipc:", "http://ipc.localhost"] {
+        assert!(connect.split_whitespace().any(|allowed| allowed == source), "{connect}");
+    }
+}

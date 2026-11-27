@@ -3,6 +3,7 @@
 mod claim;
 mod layout;
 mod messages;
+mod outbox;
 mod pane;
 #[cfg(test)]
 mod page;
@@ -33,7 +34,7 @@ use kindric_core::artifacts::{self, Kind};
 use kindric_core::{account_limits, accounts, activity, attach, atlas, codex_approval, opencode, opencode_request, away, changes, checks, claude_theme, images, mailbox, origins, overview, refresher, steps, worktrees};
 use serde::Serialize;
 use serde::de::DeserializeOwned;
-use tauri::ipc::{Channel, InvokeResponseBody, Response};
+use tauri::ipc::Response;
 use tauri::{AppHandle, Emitter, Manager, RunEvent, State};
 use tauri_plugin_dialog::DialogExt;
 
@@ -94,6 +95,8 @@ struct Shared {
     /// Held while the statistics are read: two calls wait for each other instead of reading the
     /// same transcripts and writing the same cache at once.
     stats_reading: Mutex<()>,
+    /// Terminal output and the list of sessions until the page takes them.
+    outbox: outbox::Outbox,
 }
 
 /// The Claude Code shown in a terminal over a dialog: asking whether a folder is trusted, or
@@ -516,7 +519,7 @@ fn respond(app: &AppHandle, shared: &Shared, workspace: MutexGuard<'_, Workspace
             view::seen(&mut view, key).then(|| view.clone())
         };
         if let Some(view) = changed {
-            let _ = app.emit("sessions", &view);
+            let _ = post_sessions(app, &view);
         }
     }
     tabs
@@ -580,7 +583,7 @@ fn reassign(app: &AppHandle, shared: &Shared, tabs: &Tabs) {
         view::assign(&mut view, tabs, &prefs);
         view.clone()
     };
-    let _ = app.emit("sessions", &view);
+    let _ = post_sessions(app, &view);
 }
 
 /// Whether `account` is Claude Code's own configuration rather than an account of
@@ -804,6 +807,37 @@ fn go_tab(app: AppHandle, shared: State<'_, Shared>, number: usize) -> Tabs {
     respond(&app, &shared, workspace)
 }
 
+/// Keeps a terminal's output for the page, numbered `output` by the page.
+fn post_output(app: &AppHandle, output: u32, bytes: &[u8]) {
+    if app.state::<Shared>().outbox.post_output(output, bytes) {
+        ring(app);
+    }
+}
+
+/// Keeps the list of sessions for the page, in place of an older one it has not taken.
+fn post_sessions(app: &AppHandle, view: &ListView) -> bool {
+    let Ok(json) = serde_json::to_string(view) else {
+        return false;
+    };
+    if app.state::<Shared>().outbox.post_sessions(json) {
+        ring(app);
+    }
+    true
+}
+
+/// Tells the page something waits in the outbox (`outbox::RING`).
+fn ring(app: &AppHandle) {
+    for window in app.webview_windows().values() {
+        let _ = window.eval(outbox::RING);
+    }
+}
+
+/// What waits for the page (`Outbox::take`).
+#[tauri::command]
+fn take_outbox(shared: State<'_, Shared>) -> Response {
+    Response::new(shared.outbox.take())
+}
+
 /// A session ended by itself: its pane is emptied, unless another session was opened there since.
 fn end_session(app: &AppHandle, pane: PaneId, generation: u64) {
     let shared = app.state::<Shared>();
@@ -833,7 +867,7 @@ fn open_session(
     short_id: String,
     columns: u16,
     rows: u16,
-    output: Channel<InvokeResponseBody>,
+    output: u32,
 ) -> Result<Opened, String> {
     let _span = shared.trace.span("open_session");
     shared.trace.record(&format!("attach {short_id} in pane {pane} at {columns}x{rows}"), Duration::ZERO);
@@ -866,6 +900,7 @@ fn open_session(
     let generation = workspace.generation;
     let ended = app.clone();
     let traced = app.clone();
+    let posted = app.clone();
     let mut first_output = Some((Instant::now(), format!("attach {short_id} first output")));
     let opened = Pane::open(
         &command,
@@ -875,8 +910,7 @@ fn open_session(
             if let Some((start, what)) = first_output.take() {
                 traced.state::<Shared>().trace.record(&what, start.elapsed());
             }
-            // Fails only once the page has dropped this channel for a newer session.
-            let _ = output.send(InvokeResponseBody::Raw(bytes.to_vec()));
+            post_output(&posted, output, bytes);
         },
         // Waits for the lock held here, so it always sees this attach recorded.
         move || end_session(&ended, pane, generation),
@@ -1342,7 +1376,7 @@ fn publish(app: &AppHandle, update: refresher::Update) -> bool {
     }
     let emitted = match view {
         Some(view) => {
-            let emitted = app.emit("sessions", &view).is_ok();
+            let emitted = post_sessions(app, &view);
             shared.trace.record(&format!("list published ({} sessions)", view.sessions.len()), start.elapsed());
             emitted
         },
@@ -1439,7 +1473,7 @@ fn set_away(app: AppHandle, shared: State<'_, Shared>, session_id: String, minut
         mark_away(&mut view);
         view.clone()
     };
-    let _ = app.emit("sessions", &view);
+    let _ = post_sessions(&app, &view);
     Ok(Away { until, words: away::user_words(&session_id, minutes) })
 }
 
@@ -1610,7 +1644,7 @@ fn count_changes(app: &AppHandle, to_count: &[SessionInfo], implicit_default: bo
         view::set_changed(&mut current, &counted).then(|| current.clone())
     };
     if let Some(view) = view {
-        let _ = app.emit("sessions", &view);
+        let _ = post_sessions(app, &view);
     }
 }
 
@@ -1713,7 +1747,7 @@ fn start_helper(
     command: &AttachCommand,
     columns: u16,
     rows: u16,
-    output: Channel<InvokeResponseBody>,
+    output: u32,
 ) -> std::io::Result<u64> {
     let mut helper = shared.helper();
     if let Some(previous) = helper.running.take() {
@@ -1722,13 +1756,12 @@ fn start_helper(
     helper.generation += 1;
     let generation = helper.generation;
     let ended = app.clone();
+    let posted = app.clone();
     let running = Pane::open(
         command,
         columns,
         rows,
-        move |bytes| {
-            let _ = output.send(InvokeResponseBody::Raw(bytes.to_vec()));
-        },
+        move |bytes| post_output(&posted, output, bytes),
         // Waits for the lock held here, so it always sees this one recorded.
         move || end_helper(&ended, generation),
     )?;
@@ -1746,7 +1779,7 @@ fn open_trust(
     directory: String,
     columns: u16,
     rows: u16,
-    output: Channel<InvokeResponseBody>,
+    output: u32,
 ) -> Result<u64, String> {
     let home = std::env::home_dir().ok_or("HOME is not set")?;
     let directory = resolve_directory(&directory, &home)?;
@@ -1764,7 +1797,7 @@ fn open_login(
     account: String,
     columns: u16,
     rows: u16,
-    output: Channel<InvokeResponseBody>,
+    output: u32,
 ) -> Result<u64, String> {
     let codex = accounts::is_codex(&accounts::paths().map_err(|error| error.to_string())?, &account);
     start_helper(&app, &shared, &login_command(&account, codex), columns, rows, output)
@@ -1885,12 +1918,14 @@ fn main() -> ExitCode {
         opencode_seen: Mutex::new(HashMap::new()),
         account_limits: account_limits::AccountLimits::default(),
         stats_reading: Mutex::new(()),
+        outbox: outbox::Outbox::default(),
     };
     let built = tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .manage(shared)
         .invoke_handler(tauri::generate_handler![
             current_list,
+            take_outbox,
             filter_sessions,
             new_session,
             welcome_checks,
