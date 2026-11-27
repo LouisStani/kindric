@@ -47,6 +47,7 @@ import signal
 import struct
 import subprocess
 import sys
+import threading
 import time
 import uuid
 import zlib
@@ -223,6 +224,9 @@ def work_seconds(task):
 # While it works, Claude Code rewrites its job file every few steps, and only that file: its
 # process file changes at the start and the end of the turn (seen on 2.1.323).
 PROGRESS_EVERY = 10
+# FAKE_SPEED=N (leak.py): a session lived N times faster, its steps N times closer, each one a
+# tool call in the transcript as Claude Code writes it.
+SPEED = os.environ.get("FAKE_SPEED")
 
 
 def job_progress(session_id, detail):
@@ -245,6 +249,16 @@ def shown(task):
     return MARKS.sub("", task).strip() if os.environ.get("FAKE_HIDE_MARKS") else task
 
 
+def tool_call(session_id, step):
+    """A Bash call and its result, the two lines Claude Code adds to its transcript for a tool."""
+    call = f"toolu_fake_{step}"
+    write_transcript(session_id, {"type": "assistant", "message": {"role": "assistant", "content": [
+        {"type": "text", "text": f"Step {step}: checking the build."},
+        {"type": "tool_use", "id": call, "name": "Bash", "input": {"command": f"cargo test step_{step}"}}]}})
+    write_transcript(session_id, {"type": "user", "message": {"role": "user", "content": [
+        {"type": "tool_result", "tool_use_id": call, "content": f"test result: ok. {step} passed"}]}})
+
+
 def turn(session_id, task):
     """One turn: busy for the time the task says, then waiting for the user."""
     set_state(session_id, "busy", "working", f"working on: {shown(task)[:60]}")
@@ -253,8 +267,10 @@ def turn(session_id, task):
     end = time.time() + work_seconds(task)
     step = 0
     while time.time() < end:
-        time.sleep(min(PROGRESS_EVERY, max(end - time.time(), 0)))
+        time.sleep(min(PROGRESS_EVERY / float(SPEED or 1), max(end - time.time(), 0)))
         step += 1
+        if SPEED:
+            tool_call(session_id, step)
         if step == 1 and said_of(task):
             write_transcript(session_id, {"type": "assistant", "message": {"role": "assistant", "content": [{"type": "text", "text": said_of(task)}]}})
         if time.time() < end:
@@ -410,6 +426,45 @@ BRACKETED_PASTE_ON = "\x1b[?2004h"
 PASTE_MARKS = re.compile("\x1b\\[20[01]~")
 
 
+def replay(path):
+    """Plays back, again and again, what a real program wrote to its terminal (tests/e2e/record.py),
+    with its pauses FAKE_SPEED times shorter."""
+    with open(path, "rb") as recording:
+        data = recording.read()
+    writes = []
+    position = 0
+    while position < len(data):
+        at, length = struct.unpack_from("<dI", data, position)
+        position += 12
+        writes.append((at, data[position:position + length]))
+        position += length
+    speed = float(SPEED or 1)
+    while True:
+        before = writes[0][0]
+        for at, chunk in writes:
+            time.sleep(max(0.0, at - before) / speed)
+            before = at
+            sys.stdout.buffer.write(chunk)
+            sys.stdout.buffer.flush()
+
+
+def chatter():
+    """What Claude Code sends while it works (measured on 2026-11-26: about 100 bytes ten times a
+    second), its spinner and status redrawn in place, FAKE_SPEED times as often (leak.py).
+    With FAKE_REPLAY, the output of a real Claude Code played back instead (replay)."""
+    if os.environ.get("FAKE_REPLAY"):
+        replay(os.environ["FAKE_REPLAY"])
+        return
+    frames = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"
+    pause = 0.1 / float(SPEED or 1)
+    count = 0
+    while True:
+        count += 1
+        line = f"{frames[count % len(frames)]} Working… ({count} ticks · esc to interrupt)"
+        print(f"\x1b7\x1b[3;1H\x1b[2K\x1b[38;5;208m{line.ljust(70)}\x1b[0m\x1b8", end="", flush=True)
+        time.sleep(pause)
+
+
 def attach(wanted):
     session = find(load(), wanted)
     if session is None:
@@ -422,6 +477,8 @@ def attach(wanted):
     # Like Claude Code once its prompt reads input: bracketed paste on (what kindric waits for
     # before typing an answer), and a pasted block read without its markers.
     print(f"{BRACKETED_PASTE_ON}❯ ", end="", flush=True)
+    if (session.get("name") or "").startswith("chatty"):
+        threading.Thread(target=chatter, daemon=True).start()
     for line in sys.stdin:
         line = PASTE_MARKS.sub("", line).strip()
         if line:
