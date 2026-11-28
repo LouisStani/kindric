@@ -355,7 +355,7 @@ export class AtlasWindow {
     this.focus = { project, system: system ?? (project && !project.galaxy ? project.systems[0] : null), planet };
     this.selected = -1;
     this.flight = { from: { target: { ...this.camera.target }, dist: this.camera.dist }, goal: this.goal(), start: performance.now() };
-    if (planet) this.showNote(planet.note);
+    if (planet) this.showNote(planet.note, planet);
     else this.reader.hidden = true;
     this.say();
   }
@@ -628,7 +628,7 @@ export class AtlasWindow {
 
   // ----- Reading -----
 
-  async showNote(note) {
+  async showNote(note, planet = null) {
     const head = document.createElement("header");
     const title = document.createElement("h2");
     title.textContent = note.description;
@@ -636,6 +636,7 @@ export class AtlasWindow {
     where.className = "muted";
     where.textContent = `${note.date ?? ""} · ${note.path}`;
     head.append(title, where);
+    if (note.lost) head.append(this.repairButton(note, planet));
     const body = document.createElement("pre");
     body.textContent = "reading…";
     this.reader.replaceChildren(head, body);
@@ -646,6 +647,32 @@ export class AtlasWindow {
     } catch (error) {
       body.textContent = `${error}`;
     }
+  }
+
+  // A note its project's INDEX.md does not name (decision 337): one click adds its line there.
+  repairButton(note, planet) {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = "atlas-repair";
+    button.textContent = "not in INDEX.md: add it";
+    button.addEventListener("click", async () => {
+      button.disabled = true;
+      let line;
+      try {
+        line = await invoke("memory_index_note", { path: note.path });
+      } catch (error) {
+        button.disabled = false;
+        this.say(`${error}`);
+        return;
+      }
+      note.lost = false;
+      if (planet) planet.lost = false;
+      const added = document.createElement("p");
+      added.className = "muted atlas-repaired";
+      added.textContent = `added to INDEX.md: ${line}`;
+      button.replaceWith(added);
+    });
+    return button;
   }
 
   // ----- Searching: what is found stays lit, the rest goes dark -----

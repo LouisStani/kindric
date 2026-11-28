@@ -3210,6 +3210,49 @@ class AtlasKeysAndSearch(Journey):
         shutil.rmtree(MEMORY, ignore_errors=True)
 
 
+class AtlasRepairsALostNote(Journey):
+    """A note its project's INDEX.md does not name, found in the atlas: the reader offers to add
+    it, and a click adds its line at the end of INDEX.md, the rest of the file kept (decision 337)."""
+
+    INDEX = "- status/demo.md : where demo is\n- decisions/2026-11-01-001.md : first choice\n"
+
+    @classmethod
+    def prepare(cls) -> None:
+        AtlasZoomWithCtrlWheel.prepare()
+        note("projets/demo/knowledge/ports.md", "---\ndescription: which port each service takes\nupdated: 2026-11-03\n---\n\n- the zebra port\n")
+
+    key = AtlasKeysAndSearch.key
+
+    def text_of(self, selector: str) -> str:
+        return str(self.driver.script("const found = document.querySelector(arguments[0]); return found ? found.textContent : '';", selector))
+
+    def test_add_to_the_index(self) -> None:
+        driver = self.driver
+        driver.press(CONTROL, ",")
+        wait_until("the settings", lambda: dialog_open(driver, "settings"))
+        click_text(driver, "#settings .settings-categories li", "memory")
+        driver.click(driver.find("#settings .memory-atlas-open"))
+        wait_until("the atlas", lambda: dialog_open(driver, "atlas"))
+        wait_until("the memory read", lambda: "3 files" in self.text_of("#atlas .atlas-cartouche-count") or None)
+        for letter in "zebra":
+            self.key(letter)
+        wait_until("the lost note found", lambda: "1 files hold" in self.text_of("#atlas .atlas-caption") or None)
+        self.key("Enter", "#atlas .atlas-search")
+        wait_until("the note shown", lambda: "zebra port" in self.text_of("#atlas .atlas-note") or None)
+        self.assertEqual(self.text_of("#atlas .atlas-repair"), "not in INDEX.md: add it")
+        driver.screenshot(os.path.join(OUT, "AtlasRepairsALostNote-offered.png"))
+        driver.script("document.querySelector('#atlas .atlas-repair').click()")
+        wait_until("the line added", lambda: "added to INDEX.md" in self.text_of("#atlas .atlas-note") or None)
+        with open(os.path.join(MEMORY, "projets/demo/INDEX.md")) as index:
+            self.assertEqual(index.read(), self.INDEX + "- knowledge/ports.md : which port each service takes\n")
+        self.assertEqual(self.text_of("#atlas .atlas-repair"), "", "no button once repaired")
+
+    @classmethod
+    def tearDownClass(cls) -> None:
+        super().tearDownClass()
+        shutil.rmtree(MEMORY, ignore_errors=True)
+
+
 class SignalWithoutLayerShell(Journey):
     """`kindric-desktop signal` on a screen without Wayland's layer shell (X here): `on` says it
     cannot and exits with 1, `off` with nothing shown does nothing and exits with 0, a wrong

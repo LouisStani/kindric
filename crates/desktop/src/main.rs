@@ -445,6 +445,13 @@ fn memory_search(shared: State<'_, Shared>, query: String) -> Result<Vec<String>
     Ok(atlas::search(&atlas::default_root()?, &query))
 }
 
+/// Repairs a lost note of the atlas: its line added to its project's `INDEX.md`, given back.
+#[tauri::command(async)]
+fn memory_index_note(shared: State<'_, Shared>, path: String) -> Result<String, String> {
+    let _span = shared.trace.span("memory_index_note");
+    atlas::index_note(&atlas::default_root()?, &path)
+}
+
 /// The folders a directory field offers before anything is typed.
 #[tauri::command(async)]
 fn known_directories(shared: State<'_, Shared>) -> Vec<String> {
@@ -1966,6 +1973,7 @@ fn main() -> ExitCode {
             memory_atlas,
             memory_note,
             memory_search,
+            memory_index_note,
             artifacts_view,
             new_artifacts,
             artifacts_seen,

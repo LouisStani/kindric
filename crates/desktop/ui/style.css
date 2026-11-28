@@ -2013,6 +2013,7 @@ input:focus, select:focus {
 .atlas-note[hidden] { display: none; }
 .atlas-note h2 { margin: 0 0 4px; font-size: 14px; color: var(--waiting); }
 .atlas-note header p { margin: 0 0 12px; font-size: 11px; }
+.atlas-note .atlas-repair { margin: 0 0 12px; font-size: 11px; cursor: pointer; }
 .atlas-note pre {
   margin: 0;
   white-space: pre-wrap;
