@@ -302,6 +302,16 @@ mod tests {
     }
 
     #[test]
+    fn opencode_messages_are_asked_to_the_service() {
+        let body = r#"{"data":[{"type":"assistant","time":{"created":2000},"content":[{"type":"text","text":"the logo is drawn"}]},
+            {"type":"user","time":{"created":1000},"text":"draw the logo"}]}"#;
+        let (port, _) = crate::opencode::fake::service(vec![("/api/session/ses_1/message", body)]);
+        let messages = crate::opencode::Service::on_port(port).messages("ses_1").unwrap();
+        let found = search_messages(&messages, &words_of("logo")).unwrap();
+        assert_eq!((found.matches, found.excerpt.as_str(), found.at), (2, "the logo is drawn", Some(2)));
+    }
+
+    #[test]
     fn case_and_accents_do_not_matter() {
         let path = file("accents", &[json!({"type": "user", "message": {"content": "Réglage de l'ÉCRAN, \"quoted\" word"}})]);
         assert_eq!(search(&path, Agent::ClaudeCode, &words_of("écran RÉGLAGE"), &never).unwrap().matches, 1);

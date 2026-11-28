@@ -2,12 +2,14 @@
 //! `kindric_core::history`), the last match first. Their files are read on a few threads; a newer
 //! search makes an older one stop (`Searches`).
 
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use kindric_core::attach::Agent;
 use kindric_core::history::{self, Found};
-use kindric_core::{codex_history, images, opencode_history};
+use kindric_core::opencode::Service;
+use kindric_core::{codex_history, images};
 use serde::Serialize;
 
 use crate::view::SessionRow;
@@ -45,15 +47,30 @@ impl Searches {
     }
 }
 
+/// The OpenCode services that run, by account, for the OpenCode sessions of `sessions`: each is
+/// asked once whether it runs, never started; `None` when the search is no longer wanted.
+fn running_services(sessions: &[(SessionRow, PathBuf)], stop: &dyn Fn() -> bool) -> Option<HashMap<String, Service>> {
+    let mut asked: HashMap<&str, Option<Service>> = HashMap::new();
+    for (row, dir) in sessions.iter().filter(|(row, _)| row.info.agent == Agent::OpenCode) {
+        if asked.contains_key(row.account.as_str()) {
+            continue;
+        }
+        if stop() {
+            return None;
+        }
+        asked.insert(&row.account, Service::running(dir).ok().flatten());
+    }
+    Some(asked.into_iter().filter_map(|(account, service)| Some((account.to_string(), service?))).collect())
+}
+
 /// What the session of `row`, of the account in `account_dir`, said that holds every word:
-/// from its transcript, its rollout, or its OpenCode service while it runs (it is not started for
-/// a search).
-fn found_in(account_dir: &Path, row: &SessionRow, words: &[String], stop: &(dyn Fn() -> bool + Sync)) -> Option<Found> {
+/// from its transcript, its rollout, or its account's OpenCode service in `services` if it runs.
+fn found_in(account_dir: &Path, row: &SessionRow, services: &HashMap<String, Service>, words: &[String], stop: &(dyn Fn() -> bool + Sync)) -> Option<Found> {
     let id = &row.info.session_id;
     match row.info.agent {
         Agent::ClaudeCode => history::search(&images::transcript_of(account_dir, id)?, Agent::ClaudeCode, words, stop),
         Agent::Codex => history::search(&codex_history::rollout_of(account_dir, id)?, Agent::Codex, words, stop),
-        Agent::OpenCode => history::search_messages(&opencode_history::messages_of(account_dir, id)?, words),
+        Agent::OpenCode => history::search_messages(&services.get(&row.account)?.messages(id).ok()?, words),
     }
 }
 
@@ -66,6 +83,10 @@ pub fn search(rows: Vec<SessionRow>, query: &str, dir_of: &dyn Fn(&str) -> Optio
         return Vec::new();
     }
     let sessions: Vec<(SessionRow, PathBuf)> = rows.into_iter().filter_map(|row| dir_of(&row.account).map(|dir| (row, dir))).collect();
+    let Some(services) = running_services(&sessions, stop) else {
+        return Vec::new();
+    };
+    let services = &services;
     let chunk = sessions.len().div_ceil(THREADS).max(1);
     let mut hits: Vec<Hit> = std::thread::scope(|scope| {
         let workers: Vec<_> = sessions
@@ -78,7 +99,7 @@ pub fn search(rows: Vec<SessionRow>, query: &str, dir_of: &dyn Fn(&str) -> Optio
                     part.iter()
                         .take_while(|_| !stop())
                         .filter_map(|(row, dir)| {
-                            let Found { matches, excerpt, at } = found_in(dir, row, words, stop)?;
+                            let Found { matches, excerpt, at } = found_in(dir, row, services, words, stop)?;
                             Some(Hit { row: row.clone(), matches, excerpt, at })
                         })
                         .collect::<Vec<_>>()
@@ -157,6 +178,15 @@ mod tests {
         assert!(search(view.sessions.clone(), "logo", &dir_of, &|| true).is_empty(), "a search no longer wanted");
         assert!(search(view.sessions, " ", &dir_of, &|| false).is_empty(), "no word");
         std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn a_match_without_a_time_comes_last() {
+        let view = apply(&ListView::default(), Ok((Snapshot { sessions: vec![session("louis", "a", Agent::ClaudeCode)], ..Snapshot::default() }, HashMap::new())), None);
+        let hit = |at: Option<i64>| Hit { row: view.sessions[0].clone(), matches: 1, excerpt: String::new(), at };
+        let mut hits = vec![hit(Some(5)), hit(None), hit(Some(9))];
+        order(&mut hits);
+        assert_eq!(hits.iter().map(|hit| hit.at).collect::<Vec<_>>(), [Some(9), Some(5), None]);
     }
 
     #[test]
