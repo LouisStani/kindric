@@ -1144,6 +1144,7 @@ const SHORTCUTS = [
   { group: "tabs", id: "overview", keys: "ctrl+shift+0", help: "overview: every session, what needs you", run: () => panes.goTab(0) },
   { group: "app", id: "artifacts", keys: "ctrl+shift+a", help: "artifacts of this project", run: openArtifacts },
   { group: "app", id: "worktrees", keys: "ctrl+shift+b", help: "worktrees of this project: merged or not, remove", run: openWorktrees },
+  { group: "app", id: "atlas", keys: "ctrl+shift+o", help: "atlas of the memory", run: () => atlasWindow.open() },
   { group: "app", id: "settings", keys: "ctrl+comma", help: "settings: accounts, memory, sessions, shortcuts", run: openSettings },
   { group: "app", id: "usage", keys: "f3", help: "usage: weekly limits, tokens by project and session", run: openUsage },
   { group: "app", id: "stats", keys: "f4", help: "stats: big numbers, graphs, records", run: openStats },

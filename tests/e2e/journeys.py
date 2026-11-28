@@ -3205,6 +3205,26 @@ class MessagesFromTheChipBadge(Journey):
         self.assertEqual(chip_badge(driver, "reader"), "1", "the message marked read")
 
 
+class AtlasWithCtrlShiftO(Journey):
+    """Ctrl+Shift+O opens the memory atlas without going through the settings."""
+
+    @classmethod
+    def prepare(cls) -> None:
+        AtlasZoomWithCtrlWheel.prepare()
+
+    def test_open_and_close(self) -> None:
+        driver = self.driver
+        driver.press(CONTROL, SHIFT, "o")
+        wait_until("the atlas", lambda: dialog_open(driver, "atlas"))
+        wait_until("the memory read", lambda: "2 files" in str(driver.script("return document.querySelector('#atlas .atlas-cartouche-count').textContent")) or None)
+        self.assertFalse(dialog_open(driver, "settings"), "the atlas alone, not the settings")
+
+    @classmethod
+    def tearDownClass(cls) -> None:
+        super().tearDownClass()
+        shutil.rmtree(MEMORY, ignore_errors=True)
+
+
 class AtlasKeysAndSearch(Journey):
     """The memory atlas by the keyboard: an arrow picks the project, Enter goes in, Escape comes
     back; typed letters search the memory, Enter goes to the first file found and shows it, and
