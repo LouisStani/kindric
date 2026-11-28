@@ -165,7 +165,7 @@ function shade(context, x, y, radius, ux, uy, planet) {
 // ----- The window -----
 
 export class AtlasWindow {
-  constructor(dialog, { onError, titleOf = () => null }) {
+  constructor(dialog, { onError }) {
     this.dialog = dialog;
     this.canvas = dialog.querySelector(".atlas-map");
     this.context = this.canvas.getContext("2d");
@@ -175,7 +175,7 @@ export class AtlasWindow {
     this.search = dialog.querySelector(".atlas-search");
     this.onError = onError;
     // The title of a session the user knows, from the app's list: (account, session id) → title.
-    this.titleOf = titleOf;
+    this.titleOf = () => null;
     // Note path → the sessions that read or wrote it in the last day (`memory_uses`).
     this.uses = new Map();
     this.still = matchMedia("(prefers-reduced-motion: reduce)").matches;
@@ -266,7 +266,9 @@ export class AtlasWindow {
     });
   }
 
-  async open() {
+  // `titleOf` names the sessions that used a note: (account, session id) → its title, or null.
+  async open(titleOf = () => null) {
+    this.titleOf = titleOf;
     this.resetState();
     this.scene = null;
     this.reader.hidden = true;

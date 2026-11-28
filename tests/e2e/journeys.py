@@ -3255,26 +3255,35 @@ class AtlasRepairsALostNote(Journey):
 
 class AtlasShowsWhoUsedANote(Journey):
     """A note a session read and one of its agents wrote in the last hour: its planet gets a small
-    moon, and its reader says who did what (decision 337), from the account's transcripts."""
+    moon, and its reader says who did what (decision 337), from the account's transcripts. A
+    session of the app's list is named by its title; one it does not know by its id."""
 
-    SESSION = "6f1c2a40-0000-4000-8000-00000000a5a5"
+    started = [("notes reader", "work:0")]
+    UNKNOWN = "6f1c2a40-0000-4000-8000-00000000a5a5"
 
     @classmethod
     def prepare(cls) -> None:
         AtlasZoomWithCtrlWheel.prepare()
+
+    @classmethod
+    def before_app(cls) -> None:
         decision = os.path.join(MEMORY, "projets/demo/decisions/2026-11-01-001.md")
         now = time.strftime("%Y-%m-%dT%H:%M:%S.000Z", time.gmtime())
 
         def tool(name: str, tool_input: dict[str, Any]) -> str:
             return json.dumps({"type": "assistant", "timestamp": now, "message": {"role": "assistant", "content": [
-                {"type": "tool_use", "id": "t1", "name": name, "input": tool_input}]}}, separators=(",", ":"))
+                {"type": "tool_use", "id": "t1", "name": name, "input": tool_input}]}}, separators=(",", ":")) + "\n"
 
+        wait_until("the session started", lambda: fake_sessions() or None)
+        known = fake_sessions()[0]["sessionId"]
         folder = os.path.join(ACCOUNT_DIR, "projects", "-home-tester-project")
-        os.makedirs(os.path.join(folder, cls.SESSION, "subagents"), exist_ok=True)
-        with open(os.path.join(folder, f"{cls.SESSION}.jsonl"), "w") as out:
-            out.write(tool("Read", {"file_path": decision}) + "\n")
-        with open(os.path.join(folder, cls.SESSION, "subagents", "agent-a1.jsonl"), "w") as out:
-            out.write(tool("Edit", {"file_path": decision, "old_string": "we", "new_string": "we"}) + "\n")
+        os.makedirs(os.path.join(folder, known, "subagents"), exist_ok=True)
+        with open(os.path.join(folder, f"{known}.jsonl"), "a") as out:
+            out.write(tool("Read", {"file_path": decision}))
+        with open(os.path.join(folder, known, "subagents", "agent-a1.jsonl"), "w") as out:
+            out.write(tool("Edit", {"file_path": decision, "old_string": "we", "new_string": "we"}))
+        with open(os.path.join(folder, f"{cls.UNKNOWN}.jsonl"), "w") as out:
+            out.write(tool("Bash", {"command": f"cat {decision}"}))
 
     key = AtlasKeysAndSearch.key
     text_of = AtlasRepairsALostNote.text_of
@@ -3293,9 +3302,9 @@ class AtlasShowsWhoUsedANote(Journey):
         self.key("Enter", "#atlas .atlas-search")
         wait_until("who used it", lambda: self.text_of("#atlas .atlas-uses") or None)
         uses = str(driver.script("return [...document.querySelectorAll('#atlas .atlas-uses li')].map((line) => line.textContent)"))
-        short = self.SESSION[:8]
-        self.assertIn(f"{short} (an agent of it) · {ACCOUNT} · wrote ", uses)
-        self.assertIn(f"{short} · {ACCOUNT} · read ", uses)
+        self.assertIn(f"notes reader (an agent of it) · {ACCOUNT} · wrote ", uses)
+        self.assertIn(f"notes reader · {ACCOUNT} · read ", uses)
+        self.assertIn(f"{self.UNKNOWN[:8]} · {ACCOUNT} · read ", uses)
         driver.screenshot(os.path.join(OUT, "AtlasShowsWhoUsedANote-reader.png"))
 
     @classmethod

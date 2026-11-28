@@ -1333,10 +1333,7 @@ const panes = new Panes(document.getElementById("panes"), document.getElementByI
 const artifactsWindow = new ArtifactsWindow(document.getElementById("artifacts"), { onError: setStatus });
 const changesWindow = new ChangesWindow(document.getElementById("changes"));
 const worktreesWindow = new WorktreesWindow(document.getElementById("worktrees"));
-const atlasWindow = new AtlasWindow(document.getElementById("atlas"), {
-  onError: setStatus,
-  titleOf: (account, id) => lastView?.sessions.find((row) => row.account === account && row.session_id === id)?.title ?? null,
-});
+const atlasWindow = new AtlasWindow(document.getElementById("atlas"), { onError: setStatus });
 // The name of a session of the list, null for one that is not there any more.
 const labelOf = (account, session) => lastView.sessions.find((row) => row.account === account && row.session_id === session)?.label ?? null;
 const usageWindow = new UsageWindow(document.getElementById("usage"), { labelOf });
@@ -1345,7 +1342,7 @@ const settingsWindow = new SettingsWindow(document.getElementById("settings"), {
   outbox,
   shortcuts: shortcutSettings,
   onAccounts: (accounts) => (accountStatuses = accounts),
-  onAtlas: () => atlasWindow.open(),
+  onAtlas: () => atlasWindow.open((account, id) => lastView.sessions.find((row) => row.account === account && row.session_id === id)?.title ?? null),
   onUsage: openUsage,
   onStats: openStats,
   onTabs: (tabs) => panes.render(tabs),
