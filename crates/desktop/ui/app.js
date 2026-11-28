@@ -1342,7 +1342,7 @@ const settingsWindow = new SettingsWindow(document.getElementById("settings"), {
   outbox,
   shortcuts: shortcutSettings,
   onAccounts: (accounts) => (accountStatuses = accounts),
-  onAtlas: () => atlasWindow.open(),
+  onAtlas: () => atlasWindow.open((account, id) => lastView.sessions.find((row) => row.account === account && row.session_id === id)?.title ?? null),
   onUsage: openUsage,
   onStats: openStats,
   onTabs: (tabs) => panes.render(tabs),

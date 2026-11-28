@@ -31,6 +31,8 @@ import {
 } from "./atlas-scene.js";
 
 const { invoke } = window.__TAURI__.core;
+// The moon of a note a session used in the last day; the legend says so.
+const USED = "#7dffa8";
 
 const SEARCH_MS = 200;
 const FLIGHT_MS = 1600;
@@ -172,6 +174,10 @@ export class AtlasWindow {
     this.title = dialog.querySelector(".atlas-cartouche-count");
     this.search = dialog.querySelector(".atlas-search");
     this.onError = onError;
+    // The title of a session the user knows, from the app's list: (account, session id) → title.
+    this.titleOf = () => null;
+    // Note path → the sessions that read or wrote it in the last day (`memory_uses`).
+    this.uses = new Map();
     this.still = matchMedia("(prefers-reduced-motion: reduce)").matches;
     this.scene = null;
     this.loop = 0;
@@ -197,6 +203,7 @@ export class AtlasWindow {
     this.pointer = { down: false, moved: false, x: 0, y: 0, touches: new Map(), pinch: 0 };
     this.gesture = { active: false, startDist: 0, x: 0, y: 0, timer: 0 };
     this.found = null;
+    this.uses = new Map();
     this.searchRequest = 0;
     this.drawn = [];
     this.hovered = null;
@@ -259,7 +266,9 @@ export class AtlasWindow {
     });
   }
 
-  async open() {
+  // `titleOf` names the sessions that used a note: (account, session id) → its title, or null.
+  async open(titleOf = () => null) {
+    this.titleOf = titleOf;
     this.resetState();
     this.scene = null;
     this.reader.hidden = true;
@@ -285,6 +294,7 @@ export class AtlasWindow {
     const files = this.scene.systems.reduce((sum, system) => sum + system.planets.length + (system.status?.length ?? 0), 0);
     this.title.textContent = `${files} files · ${atlas.systems.length} projects${atlas.warnings.length > 0 ? ` · not read: ${atlas.warnings.join(" · ")}` : ""}`;
     this.say();
+    this.loadUses();
     let last = performance.now();
     const step = (now) => {
       const seconds = Math.min(0.05, (now - last) / 1000);
@@ -293,6 +303,23 @@ export class AtlasWindow {
       this.loop = requestAnimationFrame(step);
     };
     this.loop = requestAnimationFrame(step);
+  }
+
+  // Which sessions used each note lately: drawn once read, without holding the map back. Nothing is
+  // drawn when they cannot be read.
+  async loadUses() {
+    let uses;
+    try {
+      uses = await invoke("memory_uses");
+    } catch {
+      return;
+    }
+    const byPath = new Map();
+    for (const use of uses) {
+      if (!byPath.has(use.path)) byPath.set(use.path, []);
+      byPath.get(use.path).push(use);
+    }
+    this.uses = byPath;
   }
 
   fitCanvas() {
@@ -355,7 +382,7 @@ export class AtlasWindow {
     this.focus = { project, system: system ?? (project && !project.galaxy ? project.systems[0] : null), planet };
     this.selected = -1;
     this.flight = { from: { target: { ...this.camera.target }, dist: this.camera.dist }, goal: this.goal(), start: performance.now() };
-    if (planet) this.showNote(planet.note);
+    if (planet) this.showNote(planet.note, planet);
     else this.reader.hidden = true;
     this.say();
   }
@@ -628,7 +655,7 @@ export class AtlasWindow {
 
   // ----- Reading -----
 
-  async showNote(note) {
+  async showNote(note, planet = null) {
     const head = document.createElement("header");
     const title = document.createElement("h2");
     title.textContent = note.description;
@@ -636,6 +663,9 @@ export class AtlasWindow {
     where.className = "muted";
     where.textContent = `${note.date ?? ""} · ${note.path}`;
     head.append(title, where);
+    if (note.lost) head.append(this.repairButton(note, planet));
+    const uses = this.uses.get(note.path);
+    if (uses) head.append(this.usesList(uses));
     const body = document.createElement("pre");
     body.textContent = "reading…";
     this.reader.replaceChildren(head, body);
@@ -646,6 +676,47 @@ export class AtlasWindow {
     } catch (error) {
       body.textContent = `${error}`;
     }
+  }
+
+  // Who read or wrote the note in the last day (decision 337), newest first.
+  usesList(uses) {
+    const list = document.createElement("ul");
+    list.className = "atlas-uses";
+    const time = (at) => new Date(at * 1000).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+    for (const use of uses) {
+      const who = this.titleOf(use.account, use.session) ?? `${use.session.slice(0, 8)}`;
+      const did = [use.written_at ? `wrote ${time(use.written_at)}` : "", use.read_at ? `read ${time(use.read_at)}` : ""].filter(Boolean).join(" · ");
+      const line = document.createElement("li");
+      line.textContent = `${who}${use.by_agent ? " (an agent of it)" : ""} · ${use.account} · ${did}`;
+      list.append(line);
+    }
+    return list;
+  }
+
+  // A note its project's INDEX.md does not name (decision 337): one click adds its line there.
+  repairButton(note, planet) {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = "atlas-repair";
+    button.textContent = "not in INDEX.md: add it";
+    button.addEventListener("click", async () => {
+      button.disabled = true;
+      let line;
+      try {
+        line = await invoke("memory_index_note", { path: note.path });
+      } catch (error) {
+        button.disabled = false;
+        this.say(`${error}`);
+        return;
+      }
+      note.lost = false;
+      if (planet) planet.lost = false;
+      const added = document.createElement("p");
+      added.className = "muted atlas-repaired";
+      added.textContent = `added to INDEX.md: ${line}`;
+      button.replaceWith(added);
+    });
+    return button;
   }
 
   // ----- Searching: what is found stays lit, the rest goes dark -----
@@ -927,6 +998,17 @@ export class AtlasWindow {
         context.beginPath();
         context.arc(body.sx, body.sy, Math.max(5, body.pr * 1.8) + pulse * 3, 0, TAU);
         context.stroke();
+      }
+      if (this.uses.has(planet.note.path) && body.pr > 0.3) {
+        // A small moon: a session read or wrote this note in the last day.
+        const angle = this.clock * 1.4 + planet.phase;
+        const orbit = Math.max(6, body.pr * 1.9);
+        context.globalAlpha = fog;
+        context.fillStyle = USED;
+        context.beginPath();
+        context.arc(body.sx + Math.cos(angle) * orbit, body.sy + Math.sin(angle) * orbit * 0.6, Math.max(1.6, body.pr * 0.25), 0, TAU);
+        context.fill();
+        context.globalAlpha = 1;
       }
       if (this.found && lit && body.pr > 0.3) {
         context.strokeStyle = "rgba(232,163,60,0.95)";

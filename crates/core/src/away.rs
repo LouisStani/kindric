@@ -5,16 +5,19 @@
 //! `kindric away blocked <session id> <what it needs>`: its need goes to the overview and
 //! `away/<session id>.waiting` names that request; until it is answered, the session may stop.
 //! A session relaunched by the hook that then runs no tool may stop too, its last words going to
-//! the overview the same way: a session left idle must not be relaunched in a loop.
+//! the overview the same way: a session left idle must not be relaunched in a loop. A session that
+//! waits on a command, an agent or a Monitor it started in the background may stop too: Claude
+//! Code wakes it when that ends (see `background`).
 
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use kindric_accounts::files::{create_private_dir, write_atomic};
 use serde_json::Value;
 
+use crate::background::waits_on_background;
 use crate::images::{last_turn_text, tail};
 use crate::mailbox::{data_dir, is_valid_session_id};
 use crate::overview::{self, Body, Request};
@@ -22,6 +25,14 @@ use crate::turn_question::context_of;
 
 /// The extension of the file that names the request a session waits on.
 const WAITING: &str = "waiting";
+
+/// The extension of the file that holds when to wake a session that stopped to wait for its
+/// background work (Unix seconds).
+const BACKGROUND: &str = "background";
+
+/// How long a session sleeps on its background work before `kindric wait-message` wakes it to
+/// look: a server that logs never ends, and nothing else would wake it.
+const BACKGROUND_WAKE_SECONDS: i64 = 30 * 60;
 
 /// How the Stop hook's refusal starts: it marks the hook's relaunch in a transcript.
 const RELAUNCH: &str = "The user is away for ";
@@ -70,10 +81,68 @@ fn remove(path: &Path) -> io::Result<()> {
     }
 }
 
+fn background_file(root: &Path, session: &str) -> io::Result<PathBuf> {
+    Ok(file(root, session)?.with_extension(BACKGROUND))
+}
+
 /// The user is back, or the session is done: it may stop again. Nothing to clear is no error.
 pub fn clear(root: &Path, session: &str) -> io::Result<()> {
     remove(&file(root, session)?)?;
-    remove(&waiting_file(root, session)?)
+    remove(&waiting_file(root, session)?)?;
+    remove(&background_file(root, session)?)
+}
+
+/// How long Stop waits for the claim of `kindric wait-message`, which Claude Code starts at the
+/// same time, and how often it looks.
+const WAKER_PATIENCE: Duration = Duration::from_secs(2);
+const WAKER_LOOK: Duration = Duration::from_millis(100);
+
+/// Whether `kindric wait-message` waits for `session`: its claim is in `wait`, beside `away` in
+/// kindric's data, written or touched within two heartbeats. Without it (an isolated account has
+/// no such hook, or the wait died), nothing would wake a session that stops to wait for its
+/// background work. The wait of this turn starts with this hook and may claim a moment later.
+fn has_a_waker(root: &Path, session: &str) -> bool {
+    let Some(waits) = root.parent().map(|data| data.join("wait")) else {
+        return false;
+    };
+    if !waits.is_dir() {
+        return false;
+    }
+    let claim = waits.join(session);
+    let fresh = || {
+        let touched = fs::metadata(&claim).and_then(|meta| meta.modified()).ok();
+        touched.and_then(|touched| SystemTime::now().duration_since(touched).ok()).is_some_and(|age| age < crate::wake::HEARTBEAT * 2)
+    };
+    let started = Instant::now();
+    loop {
+        if fresh() {
+            return true;
+        }
+        if started.elapsed() >= WAKER_PATIENCE {
+            return false;
+        }
+        std::thread::sleep(WAKER_LOOK);
+    }
+}
+
+/// Run by `kindric wait-message` while it waits: the notice that wakes `session` once it slept
+/// `BACKGROUND_WAKE_SECONDS` on its background work while the user is still away. Its Stop then
+/// lets it sleep again if that work still runs.
+pub fn background_wake(root: &Path, session: &str, now: i64) -> Option<String> {
+    let path = background_file(root, session).ok()?;
+    let due: i64 = fs::read_to_string(&path).ok()?.trim().parse().ok()?;
+    if due > now {
+        return None;
+    }
+    let _ = remove(&path);
+    let until = until(root, session).filter(|until| *until > now)?;
+    let minutes = (until - now + 59) / 60;
+    Some(format!(
+        "{RELAUNCH}{minutes} more minute{s}. You ended your turn {wait} minutes ago to wait for work you started in the background, and it still runs. \
+         Look at it: if it is a server or a watcher that keeps running, go on with the task instead of waiting for it.",
+        s = if minutes == 1 { "" } else { "s" },
+        wait = BACKGROUND_WAKE_SECONDS / 60,
+    ))
 }
 
 fn is_away(root: &Path, session: &str, now: i64) -> bool {
@@ -192,6 +261,13 @@ fn idle_since_relaunch(transcript_tail: &str) -> bool {
         }
     }
     idle
+}
+
+/// Whether the session that sends `input`, a Stop, ends its turn to wait for a command, an agent
+/// or a Monitor it started in the background: Claude Code wakes it when that ends.
+fn waits_on_its_own_work(input: &Value, now: i64) -> bool {
+    let transcript = input.get("transcript_path").and_then(Value::as_str).and_then(|path| tail(Path::new(path)));
+    transcript.is_some_and(|transcript| waits_on_background(&transcript, now))
 }
 
 /// The request for the overview when `input`, a Stop relaunched by a hook, ends a turn in which
@@ -554,7 +630,7 @@ fn away_session<'a>(root: &Path, input: &'a serde_json::Value, now: i64) -> Opti
 /// while the user is away from its session; nothing otherwise, so that the session goes on as
 /// usual. `overview_root` holds the requests for the user.
 /// - Stop: a refusal to end the turn, with what to do instead. Not while the session waits on a
-///   request of `kindric away blocked`, nor when it ran no tool since the last refusal: that turn
+///   request of `kindric away blocked` or on background work it started, nor when it ran no tool since the last refusal: that turn
 ///   goes to the overview and the session stops.
 /// - PreToolUse (shell commands, in every permission mode): a refusal of what waits for the user.
 /// - PermissionRequest (a question Claude Code would ask): yes, unless it waits for the user.
@@ -567,6 +643,20 @@ pub fn hook_answer(root: &Path, overview_root: &Path, input: &str, now: i64) -> 
         "Stop" => {
             if waits_on_the_user(root, overview_root, session) {
                 return None;
+            }
+            if waits_on_its_own_work(&input, now) && has_a_waker(root, session) {
+                // The first stop sets the time; a later one does not push it back, unless that
+                // time is past (the session was woken by a message meanwhile).
+                if let Ok(path) = background_file(root, session) {
+                    let due = fs::read_to_string(&path).ok().and_then(|due| due.trim().parse::<i64>().ok());
+                    if due.is_none_or(|due| due <= now) {
+                        let _ = write_atomic(&path, &(now + BACKGROUND_WAKE_SECONDS).to_string());
+                    }
+                }
+                return None;
+            }
+            if let Ok(path) = background_file(root, session) {
+                let _ = remove(&path);
             }
             if let Some(request) = idle_request(&input, session, now) {
                 match wait_on(root, overview_root, &request) {
@@ -946,6 +1036,73 @@ mod tests {
         assert_eq!(relaunch(&[opencode_user("go"), opencode_said("done")], 1_700), None, "the absence ended");
         assert_eq!(until(&root, "ses_x"), None);
         fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn a_session_that_waits_on_its_background_command_may_stop_until_it_ends() {
+        let data = temp_root("background");
+        let root = data.join("away");
+        let overview_root = data.join("overview");
+        set(&root, "aaaa-1111", i64::MAX).unwrap();
+        let now = now();
+        let started = crate::changes::iso(now - 60);
+        let launch = serde_json::json!({ "type": "user", "timestamp": started,
+            "toolUseResult": { "backgroundTaskId": "b1", "stdout": "" } }).to_string();
+        let first = relaunched_stop(&root, "aaaa-1111", &[CLAUDE_TOOL, &launch, CLAUDE_TEXT], serde_json::json!({ "stop_hook_active": false }));
+        assert!(blocks(&root, &first), "no wait-message hook to wake it: kept working");
+        create_private_dir(&data.join("wait")).unwrap();
+        fs::write(data.join("wait").join("aaaa-1111"), "token").unwrap();
+        assert_eq!(hook_answer(&root, &overview_root, &first, now), None, "it waits on b1");
+        assert_eq!(background_wake(&root, "aaaa-1111", now + BACKGROUND_WAKE_SECONDS - 1), None, "not yet");
+        assert_eq!(hook_answer(&root, &overview_root, &first, now + 60), None);
+        let wake = background_wake(&root, "aaaa-1111", now + BACKGROUND_WAKE_SECONDS).unwrap();
+        assert!(wake.contains("You ended your turn 30 minutes ago"), "a later stop did not move the time: {wake}");
+        assert_eq!(background_wake(&root, "aaaa-1111", now + BACKGROUND_WAKE_SECONDS + 1), None, "once");
+        let relaunched = relaunched_stop(&root, "aaaa-1111", &[CLAUDE_TOOL, &launch, CLAUDE_RELAUNCH, CLAUDE_TEXT], serde_json::json!({}));
+        assert_eq!(hook_answer(&root, &overview_root, &relaunched, now), None);
+        assert!(overview::pending(&overview_root).is_empty(), "waiting on its work is not idle");
+        assert!(background_file(&root, "aaaa-1111").unwrap().exists(), "asleep again, to be woken");
+        let done = serde_json::json!({ "type": "queue-operation", "operation": "enqueue", "timestamp": started,
+            "content": "<task-notification>\n<task-id>b1</task-id>\n<status>completed</status>\n</task-notification>" }).to_string();
+        let after = relaunched_stop(&root, "aaaa-1111", &[CLAUDE_TOOL, &launch, CLAUDE_TEXT, &done, CLAUDE_TOOL], serde_json::json!({ "stop_hook_active": false }));
+        assert!(blocks(&root, &after), "b1 ended: kept working");
+        assert!(!background_file(&root, "aaaa-1111").unwrap().exists(), "nothing left to wake it for");
+        fs::remove_dir_all(data).unwrap();
+    }
+
+    #[test]
+    fn a_claim_left_by_a_wait_that_died_wakes_nobody() {
+        let data = temp_root("stale-claim");
+        let root = data.join("away");
+        assert!(!has_a_waker(&root, "aaaa-1111"), "no wait at all");
+        create_private_dir(&data.join("wait")).unwrap();
+        let claim = data.join("wait").join("aaaa-1111");
+        fs::write(&claim, "token").unwrap();
+        assert!(has_a_waker(&root, "aaaa-1111"));
+        let old = SystemTime::now() - crate::wake::HEARTBEAT * 3;
+        fs::File::options().write(true).open(&claim).unwrap().set_modified(old).unwrap();
+        let started = Instant::now();
+        assert!(!has_a_waker(&root, "aaaa-1111"), "not touched for three heartbeats");
+        assert!(started.elapsed() >= WAKER_PATIENCE, "it waited for the wait of this turn");
+        fs::remove_dir_all(data).unwrap();
+    }
+
+    #[test]
+    fn a_background_wake_is_for_a_session_still_away() {
+        let root = temp_root("background-back");
+        set(&root, "aaaa-1111", 1_000).unwrap();
+        write_atomic(&background_file(&root, "aaaa-1111").unwrap(), "500").unwrap();
+        assert_eq!(background_wake(&root, "aaaa-1111", 1_200), None, "the user is back");
+        assert!(!background_file(&root, "aaaa-1111").unwrap().exists());
+        write_atomic(&background_file(&root, "aaaa-1111").unwrap(), "500").unwrap();
+        clear(&root, "aaaa-1111").unwrap();
+        assert!(!background_file(&root, "aaaa-1111").unwrap().exists(), "done clears it");
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn away_and_wait_are_side_by_side_in_kindrics_data() {
+        assert_eq!(default_root().unwrap().parent(), crate::wake::default_root().unwrap().parent());
     }
 
     #[test]

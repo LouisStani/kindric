@@ -3,7 +3,8 @@
 //! knowledge, its lessons, and its decisions in runs of `PART_SIZE`, in order. A project with more
 //! than `GALAXY_FROM` notes is drawn as a galaxy of those parts. A center holds what belongs to no
 //! project. Each signal is read from the files alone: a status older than the last decision, a
-//! lesson learned more than once, a note its zone's `INDEX.md` does not mention.
+//! lesson learned more than once, a note its zone's `INDEX.md` does not mention. That last one is
+//! repaired from the atlas: `index_note` adds its line to the index.
 
 use std::fs;
 use std::io;
@@ -326,18 +327,65 @@ pub fn search(root: &Path, query: &str) -> Vec<String> {
 
 /// The text of the note at `path`, from the memory's root. Only a `.md` file inside the root.
 pub fn read_note(root: &Path, path: &str) -> Result<String, String> {
+    let real = note_file(root, path)?;
+    fs::read_to_string(&real).map_err(|error| format!("{path}: {error}"))
+}
+
+/// The file of the note at `path`, from the memory's root: a `.md` file inside the root, links
+/// followed.
+fn note_file(root: &Path, path: &str) -> Result<PathBuf, String> {
     let inside = Path::new(path);
     let plain = inside.components().all(|part| matches!(part, Component::Normal(_)));
     if !plain || inside.extension().is_none_or(|extension| extension != "md") {
         return Err(format!("{path}: not a note of the memory"));
     }
-    let full = root.join(inside);
     let real_root = fs::canonicalize(root).map_err(|error| format!("{}: {error}", root.display()))?;
-    let real = fs::canonicalize(&full).map_err(|error| format!("{path}: {error}"))?;
+    let real = fs::canonicalize(root.join(inside)).map_err(|error| format!("{path}: {error}"))?;
     if !real.starts_with(&real_root) {
         return Err(format!("{path}: outside the memory"));
     }
-    fs::read_to_string(&real).map_err(|error| format!("{path}: {error}"))
+    Ok(real)
+}
+
+/// Repairs a lost note (decision 337): puts the note at `path`, from the memory's root, in its
+/// project's `INDEX.md`, as the memory's rule asks of a new note: the line
+/// `- <path from the zone> : <description>` added at the end, the rest of the file left as it is
+/// (a missing index is created). Gives that line. Refused for a note outside a project, for the
+/// files of a zone that are not notes, and for a note the index already names.
+pub fn index_note(root: &Path, path: &str) -> Result<String, String> {
+    let mut parts = path.splitn(3, '/');
+    let (Some(PROJECTS), Some(zone), Some(from_zone)) = (parts.next(), parts.next(), parts.next()) else {
+        return Err(format!("{path}: not a note of a project"));
+    };
+    if ZONE_FILES.contains(&from_zone) || from_zone.rsplit('/').next() == Some(INDEX) {
+        return Err(format!("{path}: not a note"));
+    }
+    let text = fs::read_to_string(note_file(root, path)?).map_err(|error| format!("{path}: {error}"))?;
+    let index_file = root.join(PROJECTS).join(zone).join(INDEX);
+    // The index is written to: a link could lead out of the memory.
+    if fs::symlink_metadata(&index_file).is_ok_and(|meta| meta.file_type().is_symlink()) {
+        return Err(format!("{PROJECTS}/{zone}/{INDEX} is a link: kindric does not write through it"));
+    }
+    let index = match fs::read_to_string(&index_file) {
+        Ok(index) => index,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => String::new(),
+        Err(error) => return Err(format!("{PROJECTS}/{zone}/{INDEX}: {error}")),
+    };
+    if is_indexed(from_zone, &index) {
+        return Err(format!("{path}: already in {PROJECTS}/{zone}/{INDEX}"));
+    }
+    let description = field(header_of(&text), "description").unwrap_or_else(|| from_zone.rsplit('/').next().unwrap_or(from_zone).to_owned());
+    let line = format!("- {from_zone} : {description}");
+    let start = if index.is_empty() || index.ends_with('\n') { "" } else { "\n" };
+    append(&index_file, &format!("{start}{line}\n")).map_err(|error| format!("{PROJECTS}/{zone}/{INDEX}: {error}"))?;
+    Ok(line)
+}
+
+/// Adds `text` at the end of `file`, which is created if missing: what sessions wrote meanwhile
+/// is kept.
+fn append(file: &Path, text: &str) -> io::Result<()> {
+    let mut opened = fs::OpenOptions::new().append(true).create(true).open(file)?;
+    io::Write::write_all(&mut opened, text.as_bytes())
 }
 
 #[cfg(test)]
@@ -501,6 +549,59 @@ mod tests {
         assert!(read_note(&root, "/etc/passwd.md").is_err());
         assert!(read_note(&root, "global/secret.txt").is_err());
         assert!(read_note(&root, "global/missing.md").is_err());
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn a_lost_note_is_added_at_the_end_of_its_index() {
+        let root = scratch("index-note");
+        let index = "# Memory of app\n\n- status/app.md : where it is";
+        write(&root, "projets/app/INDEX.md", index);
+        write(&root, "projets/app/knowledge/ports.md", &format!("{}the ports", header("which port each service takes", "2026-11-20")));
+        write(&root, "projets/app/notes.md", "no header");
+        assert!(read(&root).systems[0].parts.iter().flat_map(|part| &part.notes).all(|note| note.lost));
+        assert_eq!(index_note(&root, "projets/app/knowledge/ports.md"), Ok("- knowledge/ports.md : which port each service takes".to_owned()));
+        assert_eq!(index_note(&root, "projets/app/notes.md"), Ok("- notes.md : notes.md".to_owned()), "no description: its name");
+        let written = fs::read_to_string(root.join("projets/app/INDEX.md")).unwrap();
+        assert_eq!(written, format!("{index}\n- knowledge/ports.md : which port each service takes\n- notes.md : notes.md\n"), "the rest kept");
+        assert!(read(&root).systems[0].parts.iter().flat_map(|part| &part.notes).all(|note| !note.lost), "repaired");
+        let again = index_note(&root, "projets/app/knowledge/ports.md").unwrap_err();
+        assert!(again.contains("already in projets/app/INDEX.md"), "{again}");
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn a_zone_without_an_index_gets_one() {
+        let root = scratch("index-new");
+        write(&root, "projets/app/knowledge/ports.md", &header("ports", "2026-11-20"));
+        assert!(index_note(&root, "projets/app/knowledge/ports.md").is_ok());
+        assert_eq!(fs::read_to_string(root.join("projets/app/INDEX.md")).unwrap(), "- knowledge/ports.md : ports\n");
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn an_index_that_is_a_link_is_not_written_through() {
+        let root = scratch("index-link");
+        write(&root, "outside.md", "kept");
+        write(&root, "projets/app/knowledge/ports.md", &header("ports", "2026-11-20"));
+        std::os::unix::fs::symlink(root.join("outside.md"), root.join("projets/app/INDEX.md")).unwrap();
+        assert!(index_note(&root, "projets/app/knowledge/ports.md").unwrap_err().contains("is a link"));
+        assert_eq!(fs::read_to_string(root.join("outside.md")).unwrap(), "kept");
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn only_a_note_of_a_project_is_indexed() {
+        let root = scratch("index-refused");
+        write(&root, "global/rules.md", "rules");
+        write(&root, "projets/app/INDEX.md", "- x\n");
+        write(&root, "projets/app/claude.md", "given to sessions");
+        write(&root, "projets/app/knowledge/INDEX.md", "a folder's index");
+        for path in ["global/rules.md", "projets/app/claude.md", "projets/app/INDEX.md", "projets/app/knowledge/INDEX.md", "projets/app/../app/claude.md", "projets/app/missing.md", "projets/app"] {
+            assert!(index_note(&root, path).is_err(), "{path}");
+        }
+        assert_eq!(fs::read_to_string(root.join("projets/app/INDEX.md")).unwrap(), "- x\n", "untouched");
         fs::remove_dir_all(root).unwrap();
     }
 }

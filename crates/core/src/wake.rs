@@ -3,19 +3,25 @@
 //! such a message, then exits with code 2, and its error output goes to the session, which starts
 //! a turn. The hook starts again at the end of every turn and each time the session starts:
 //! `wait/<session id>` in kindric's data holds the token of the latest wait, and an older one ends
-//! without a word.
+//! without a word. It also wakes a session that the user is away from and that stopped to wait for
+//! work it started in the background, once that wait is long (`away::background_wake`).
 
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use kindric_accounts::files::{create_private_dir, write_atomic};
 
+use crate::away;
 use crate::mailbox::{self, Mailbox, data_dir, is_valid_session_id};
 
 /// How often a wait looks at the inbox.
 const POLL: Duration = Duration::from_secs(2);
+
+/// How often a wait touches its claim, so that a claim left by a wait that died is seen as old
+/// (`away` lets a session sleep on its background work only while a wait is alive to wake it).
+pub const HEARTBEAT: Duration = Duration::from_secs(60);
 
 /// `wait` in the data directory.
 pub fn default_root() -> io::Result<PathBuf> {
@@ -39,16 +45,22 @@ fn claim_file(root: &Path, session: &str) -> io::Result<PathBuf> {
 }
 
 /// Waits for a message that wakes `session`: claims the wait with `token`, then looks at the
-/// claim and the inbox, with a `pause` between two looks.
-pub fn wait(mailbox: &Mailbox, root: &Path, session: &str, token: &str, mut pause: impl FnMut()) -> io::Result<Woken> {
+/// claim, the inbox and `due` (another reason to wake it, with its notice), with a `pause`
+/// between two looks.
+pub fn wait(mailbox: &Mailbox, root: &Path, session: &str, token: &str, mut due: impl FnMut() -> Option<String>, mut pause: impl FnMut()) -> io::Result<Woken> {
     let claim = claim_file(root, session)?;
     create_private_dir(root)?;
     write_atomic(&claim, token)?;
+    let mut beat = Instant::now();
     loop {
         if fs::read_to_string(&claim).ok().as_deref() != Some(token) {
             return Ok(Woken::Replaced);
         }
-        if let Some(notice) = mailbox.wake_notice(session)? {
+        if beat.elapsed() >= HEARTBEAT {
+            beat = Instant::now();
+            let _ = fs::File::options().write(true).open(&claim).and_then(|file| file.set_modified(SystemTime::now()));
+        }
+        if let Some(notice) = mailbox.wake_notice(session)?.or_else(&mut due) {
             let _ = fs::remove_file(&claim);
             return Ok(Woken::Message(notice));
         }
@@ -78,7 +90,9 @@ pub fn run_wait_hook() -> Option<String> {
     let root = default_root().ok()?;
     let started = SystemTime::now().duration_since(UNIX_EPOCH).map_or(0, |elapsed| elapsed.as_nanos());
     let token = format!("{}-{started}", std::process::id());
-    match wait(&mailbox, &root, &session, &token, || std::thread::sleep(POLL)) {
+    let away_root = away::default_root().ok()?;
+    let due = || away::background_wake(&away_root, &session, away::now());
+    match wait(&mailbox, &root, &session, &token, due, || std::thread::sleep(POLL)) {
         Ok(Woken::Message(notice)) => Some(notice),
         Ok(Woken::Replaced) | Err(_) => None,
     }
@@ -104,7 +118,7 @@ mod tests {
         let root = temp_root("woken");
         let mailbox = Mailbox::new(root.join("mailbox"));
         let mut pauses = 0;
-        let woken = wait(&mailbox, &root.join("wait"), "bbbb-2222", "t1", || {
+        let woken = wait(&mailbox, &root.join("wait"), "bbbb-2222", "t1", || None, || {
             pauses += 1;
             if pauses == 2 {
                 mailbox.send("bbbb-2222", &message("run the tests", true)).unwrap();
@@ -125,7 +139,7 @@ mod tests {
         let claim = root.join("wait").join("bbbb-2222");
         mailbox.send("bbbb-2222", &message("Combat.deal takes 3 args now", false)).unwrap();
         let mut pauses = 0;
-        let woken = wait(&mailbox, &root.join("wait"), "bbbb-2222", "t1", || {
+        let woken = wait(&mailbox, &root.join("wait"), "bbbb-2222", "t1", || None, || {
             pauses += 1;
             if pauses == 3 {
                 fs::write(&claim, "t2").unwrap();
@@ -138,11 +152,25 @@ mod tests {
     }
 
     #[test]
+    fn another_reason_to_wake_ends_the_wait_with_its_notice() {
+        let root = temp_root("due");
+        let mailbox = Mailbox::new(root.join("mailbox"));
+        let mut looks = 0;
+        let due = || {
+            looks += 1;
+            (looks == 3).then(|| "look at your background work".to_string())
+        };
+        let woken = wait(&mailbox, &root.join("wait"), "bbbb-2222", "t1", due, || {}).unwrap();
+        assert_eq!(woken, Woken::Message("look at your background work".into()));
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
     fn a_newer_wait_of_the_session_takes_over_and_the_older_ends() {
         let root = temp_root("replaced");
         let mailbox = Mailbox::new(root.join("mailbox"));
         let waits = root.join("wait");
-        let woken = wait(&mailbox, &waits, "bbbb-2222", "older", || write_atomic(&waits.join("bbbb-2222"), "newer").unwrap()).unwrap();
+        let woken = wait(&mailbox, &waits, "bbbb-2222", "older", || None, || write_atomic(&waits.join("bbbb-2222"), "newer").unwrap()).unwrap();
         assert_eq!(woken, Woken::Replaced);
         assert_eq!(fs::read_to_string(waits.join("bbbb-2222")).unwrap(), "newer", "the newer claim stays");
         fs::remove_dir_all(root).unwrap();
@@ -163,7 +191,7 @@ mod tests {
     fn a_malformed_id_is_refused() {
         let root = temp_root("malformed");
         let mailbox = Mailbox::new(root.join("mailbox"));
-        assert!(wait(&mailbox, &root.join("wait"), "../x", "t1", || {}).is_err());
+        assert!(wait(&mailbox, &root.join("wait"), "../x", "t1", || None, || {}).is_err());
         assert!(!root.exists());
     }
 }
