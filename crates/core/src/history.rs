@@ -108,10 +108,10 @@ fn typed(text: &str) -> bool {
 
 fn claude_said(entry: &Value) -> Vec<String> {
     let kind = entry.get("type").and_then(Value::as_str);
-    if !matches!(kind, Some("user" | "assistant"))
-        || entry.get("isSidechain").and_then(Value::as_bool) == Some(true)
-        || entry.get("isMeta").and_then(Value::as_bool) == Some(true)
-    {
+    let flagged = |name: &str| entry.get(name).and_then(Value::as_bool) == Some(true);
+    // `isCompactSummary` (with `isVisibleInTranscriptOnly`): the summary Claude Code writes after
+    // a compaction, as a user message. Seen on Claude Code 2.1.332.
+    if !matches!(kind, Some("user" | "assistant")) || ["isSidechain", "isMeta", "isCompactSummary", "isVisibleInTranscriptOnly"].into_iter().any(flagged) {
         return Vec::new();
     }
     let texts: Vec<&str> = match entry.pointer("/message/content") {
@@ -202,6 +202,8 @@ mod tests {
             json!({"type": "assistant", "isSidechain": true, "message": {"content": [{"type": "text", "text": "logo shop in a subagent"}]}}),
             json!({"type": "user", "isMeta": true, "message": {"content": "logo shop from a hook"}}),
             json!({"type": "user", "message": {"content": "<task-notification>logo shop</task-notification>"}}),
+            json!({"type": "user", "isVisibleInTranscriptOnly": true, "isCompactSummary": true, "timestamp": "2026-11-27T12:00:00.000Z",
+                "message": {"content": "This session is being continued: the logo of the shop"}}),
             json!({"type": "user", "timestamp": "2026-11-27T11:00:00.000Z", "message": {"content": [{"type": "text", "text": "the logo is fine, now the SHOP page"}]}}),
         ]
     }
@@ -210,7 +212,7 @@ mod tests {
     fn only_what_the_user_and_claude_wrote_counts() {
         let path = file("claude", &claude());
         let found = search(&path, Agent::ClaudeCode, &words_of("shop LOGO"), &never).unwrap();
-        assert_eq!(found.matches, 2, "the prompt and the last one, not tools, subagents, hooks or notifications");
+        assert_eq!(found.matches, 2, "the prompt and the last one, not tools, subagents, hooks, notifications or a summary");
         assert_eq!(found.excerpt, "the logo is fine, now the SHOP page");
         assert_eq!(found.at.as_deref(), Some("2026-11-27T11:00:00.000Z"));
         assert_eq!(search(&path, Agent::ClaudeCode, &words_of("svg"), &never).unwrap().excerpt, "I will draw the logo in SVG.");

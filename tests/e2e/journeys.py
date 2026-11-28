@@ -1481,6 +1481,16 @@ class SearchHistoryWithCtrlShiftF(Journey):
         driver.press(ESCAPE)
         wait_until("the search closed", lambda: not dialog_open(driver, "history"))
 
+        # Enter at once after new words opens what they find, not a row of the words before.
+        rows = self.search("logo")
+        self.assertEqual([name for name, *_ in rows], ["logo-maker"], rows)
+        field = driver.find("#history .history-query")
+        driver.clear(field)
+        driver.type_into(field, "parser" + ENTER)
+        wait_until("the search closed", lambda: not dialog_open(driver, "history"))
+        wait_until("parser open in a pane", lambda: (chip(driver, "parser") or ("", False))[1])
+        self.assertFalse((chip(driver, "logo-maker") or ("", True))[1], "logo-maker no longer in the pane")
+
 
 class PickerByDay(Journey):
     """Ctrl+P lists the sessions by day of last activity (decision 376): today first, then

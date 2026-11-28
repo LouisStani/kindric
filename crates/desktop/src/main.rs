@@ -139,11 +139,11 @@ fn filter_sessions(shared: State<'_, Shared>, tab: PaneId, query: String) -> Vec
 
 /// Ctrl+Shift+F: the sessions of `tab` (all of them with none, from the overview), hidden ones
 /// too, whose conversation holds every word of `query`. Reads their transcripts: off the window's
-/// thread, and given up for a newer search.
+/// thread, and given up for a newer search: `search` numbers them, the newest the highest.
 #[tauri::command(async)]
-fn search_history(shared: State<'_, Shared>, tab: Option<PaneId>, query: String) -> Result<Vec<history::Hit>, String> {
+fn search_history(shared: State<'_, Shared>, tab: Option<PaneId>, query: String, search: u64) -> Result<Vec<history::Hit>, String> {
     let _span = shared.trace.span("search_history");
-    let search = shared.searches.start();
+    shared.searches.start(search);
     let rows: Vec<SessionRow> = {
         let view = shared.view.lock().unwrap_or_else(PoisonError::into_inner);
         view.sessions.iter().filter(|row| tab.is_none_or(|tab| row.tab == tab)).cloned().collect()

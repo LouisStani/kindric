@@ -28,18 +28,19 @@ pub struct Hit {
     pub at: Option<String>,
 }
 
-/// The number of the last search asked for: an older one sees it changed and stops.
+/// The number of the last search the page asked for: an older one sees it changed and stops.
+/// The page numbers its searches: two calls may run in another order than they were sent.
 #[derive(Default)]
 pub struct Searches(AtomicU64);
 
 impl Searches {
-    /// A new search, which makes the one before stop.
-    pub fn start(&self) -> u64 {
-        self.0.fetch_add(1, Ordering::SeqCst) + 1
+    /// Search `number` starts: those with a lower number stop.
+    pub fn start(&self, number: u64) {
+        self.0.fetch_max(number, Ordering::SeqCst);
     }
 
-    pub fn is_current(&self, search: u64) -> bool {
-        self.0.load(Ordering::SeqCst) == search
+    pub fn is_current(&self, number: u64) -> bool {
+        self.0.load(Ordering::SeqCst) == number
     }
 }
 
@@ -61,17 +62,21 @@ pub fn search(rows: Vec<SessionRow>, query: &str, dir_of: &dyn Fn(&str) -> Optio
     if words.is_empty() {
         return Vec::new();
     }
-    let files: Vec<(SessionRow, PathBuf)> = rows.into_iter().filter_map(|row| file_of(&dir_of(&row.account)?, &row).map(|file| (row, file))).collect();
-    let chunk = files.len().div_ceil(THREADS).max(1);
+    let sessions: Vec<(SessionRow, PathBuf)> = rows.into_iter().filter_map(|row| dir_of(&row.account).map(|dir| (row, dir))).collect();
+    let chunk = sessions.len().div_ceil(THREADS).max(1);
     let mut hits: Vec<Hit> = std::thread::scope(|scope| {
-        let workers: Vec<_> = files
+        let workers: Vec<_> = sessions
             .chunks(chunk)
             .map(|part| {
                 let words = &words;
                 scope.spawn(move || {
+                    // Finding a Codex rollout walks the account's days: in the threads too, and
+                    // given up with the search.
                     part.iter()
-                        .filter_map(|(row, file)| {
-                            let Found { matches, excerpt, at } = history::search(file, row.info.agent, words, stop)?;
+                        .take_while(|_| !stop())
+                        .filter_map(|(row, dir)| {
+                            let file = file_of(dir, row)?;
+                            let Found { matches, excerpt, at } = history::search(&file, row.info.agent, words, stop)?;
                             Some(Hit { row: row.clone(), matches, excerpt, at })
                         })
                         .collect::<Vec<_>>()
@@ -156,10 +161,13 @@ mod tests {
     #[test]
     fn a_newer_search_makes_the_older_one_stop() {
         let searches = Searches::default();
-        let first = searches.start();
-        assert!(searches.is_current(first));
-        let second = searches.start();
-        assert!(!searches.is_current(first));
-        assert!(searches.is_current(second));
+        searches.start(1);
+        assert!(searches.is_current(1));
+        searches.start(2);
+        assert!(!searches.is_current(1));
+        assert!(searches.is_current(2));
+        searches.start(1);
+        assert!(searches.is_current(2), "an older search that starts late does not stop the newer");
+        assert!(!searches.is_current(1));
     }
 }

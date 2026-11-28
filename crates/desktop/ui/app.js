@@ -1343,7 +1343,7 @@ const worktreesWindow = new WorktreesWindow(document.getElementById("worktrees")
 const atlasWindow = new AtlasWindow(document.getElementById("atlas"), { onError: setStatus });
 // From the overview, every session is searched; from a tab, its sessions.
 const historyWindow = new HistoryWindow(document.getElementById("history"), {
-  search: (query) => invoke("search_history", { tab: panes.state === null || panes.state.overview ? null : panes.state.active, query }),
+  search: (query, search) => invoke("search_history", { tab: panes.state === null || panes.state.overview ? null : panes.state.active, query, search }),
   sessionItem,
   choose,
 });

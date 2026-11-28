@@ -48,8 +48,9 @@ function element(tag, className, text) {
 }
 
 export class HistoryWindow {
-  // `search(query)` gives the rows found; `sessionItem(row, when)` draws a session as Ctrl+P
-  // does; `choose(row)` opens it.
+  // `search(query, number)` gives the rows found, `number` higher for a newer search, which makes
+  // an older one stop; `sessionItem(row, when)` draws a session as Ctrl+P does; `choose(row)`
+  // opens it.
   constructor(dialog, { search, sessionItem, choose }) {
     this.dialog = dialog;
     this.search = search;
@@ -60,15 +61,19 @@ export class HistoryWindow {
     this.hint = dialog.querySelector(".history-hint");
     this.rows = [];
     this.selected = 0;
-    // Answers can come back out of order: only the last asked counts.
+    // Counts the searches: an answer to one that is not the last asked is dropped.
     this.asked = 0;
     this.timer = null;
+    // The rows shown are not those of the words in the field: typing goes on.
+    this.stale = false;
     this.query.addEventListener("input", () => this.later());
     this.query.addEventListener("keydown", (event) => this.onKey(event));
+    dialog.addEventListener("close", () => this.forget());
   }
 
   // `where` says what is searched: "this tab" or "every session".
   open(where) {
+    this.forget();
     this.query.value = "";
     this.query.placeholder = `search what was said, ${where}`;
     this.rows = [];
@@ -78,31 +83,46 @@ export class HistoryWindow {
     this.query.focus();
   }
 
-  later() {
+  // No search waits or runs any more: what it would answer is dropped.
+  forget() {
     clearTimeout(this.timer);
+    this.timer = null;
+    this.asked += 1;
+  }
+
+  later() {
+    this.forget();
+    this.stale = true;
     this.timer = setTimeout(() => this.run(), PAUSE);
   }
 
+  // Searches the words in the field; true once its rows are shown, false when a newer search or
+  // the window's closing made it pointless.
   async run() {
+    clearTimeout(this.timer);
+    this.timer = null;
     const query = this.query.value;
     const asked = ++this.asked;
     if (wordsOf(query).length === 0) {
       this.rows = [];
+      this.stale = false;
       this.say("type words: every one must be in the same message");
-      return;
+      return true;
     }
     this.hint.textContent = "searching…";
     let rows;
     try {
-      rows = await this.search(query);
+      rows = await this.search(query, asked);
     } catch (error) {
       if (asked === this.asked) this.say(`${error}`);
-      return;
+      return false;
     }
-    if (asked !== this.asked) return;
+    if (asked !== this.asked) return false;
     this.rows = rows;
     this.selected = 0;
+    this.stale = false;
     this.render(wordsOf(query));
+    return true;
   }
 
   say(text) {
@@ -138,17 +158,19 @@ export class HistoryWindow {
     this.choose(row);
   }
 
-  onKey(event) {
+  async onKey(event) {
     if (event.key === "ArrowDown" || event.key === "ArrowUp") {
       event.preventDefault();
+      if (this.stale) return;
       const step = event.key === "ArrowDown" ? 1 : -1;
       this.selected = Math.min(Math.max(this.selected + step, 0), Math.max(this.rows.length - 1, 0));
       this.render(wordsOf(this.query.value));
     } else if (event.key === "Enter") {
       event.preventDefault();
+      // Rows of words no longer in the field are not opened: the search of these first.
+      if (this.stale && !(await this.run())) return;
       const row = this.rows[this.selected];
       if (row) this.pick(row);
-      else this.run();
     }
   }
 }
