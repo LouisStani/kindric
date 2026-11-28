@@ -1437,6 +1437,51 @@ def picker_entries(driver: Driver) -> list[tuple[str, str]]:
     return [(str(first), str(second)) for first, second in found]
 
 
+def history_rows(driver: Driver) -> list[tuple[str, str, list[str], str]]:
+    """What Ctrl+Shift+F lists: (name, excerpt, its marked words, count) for each session."""
+    rows: list[list[Any]] = driver.script("""return [...document.querySelectorAll('#history .history-results li.session')].map((row) => [
+      row.querySelector('.name').textContent, row.querySelector('.history-excerpt').textContent,
+      [...row.querySelectorAll('.history-excerpt mark')].map((mark) => mark.textContent), row.querySelector('.history-count').textContent]);""")
+    return [(str(name), str(excerpt), [str(word) for word in marked], str(count)) for name, excerpt, marked, count in rows]
+
+
+class SearchHistoryWithCtrlShiftF(Journey):
+    """Ctrl+Shift+F finds the sessions whose conversation holds every word typed, with an excerpt
+    and the words marked; Enter opens the one chosen in a pane. From the overview, every session
+    is searched."""
+
+    started = [("logo-maker", "say:drew_the_shop_logo work:0"), ("parser", "say:fixed_the_parser work:0")]
+
+    def search(self, words: str) -> list[tuple[str, str, list[str], str]]:
+        driver = self.driver
+        driver.press(CONTROL, SHIFT, "f")
+        wait_until("the history search", lambda: dialog_open(driver, "history"))
+        driver.type_into(driver.find("#history .history-query"), words)
+        return wait_until(f"sessions found for {words}", lambda: history_rows(driver) or None)
+
+    def test_find_then_open(self) -> None:
+        driver = self.driver
+        wait_until("the turns over", lambda: all((fake_detail(name) or "working").startswith("working") is False for name, _ in self.started))
+        rows = self.search("LOGO shop")
+        driver.screenshot(os.path.join(OUT, "SearchHistoryWithCtrlShiftF-found.png"))
+        self.assertEqual([name for name, *_ in rows], ["logo-maker"], rows)
+        _, excerpt, marked, count = rows[0]
+        self.assertEqual(excerpt, "done: say:drew_the_shop_logo work:0", "the last message: the fake claude ends its turn so")
+        self.assertEqual([word.lower() for word in marked], ["shop", "logo"], rows)
+        self.assertEqual(count, "2 messages", "the prompt and how the turn ended: with work:0, the fake claude says nothing between")
+
+        driver.type_into(driver.find("#history .history-query"), ENTER)
+        wait_until("the search closed", lambda: not dialog_open(driver, "history"))
+        wait_until("the session open in a pane", lambda: (chip(driver, "logo-maker") or ("", False))[1])
+
+        driver.press(CONTROL, SHIFT, "0")
+        wait_until("the overview", lambda: not overview_hidden(driver))
+        rows = self.search("parser")
+        self.assertEqual([name for name, *_ in rows], ["parser"], rows)
+        driver.press(ESCAPE)
+        wait_until("the search closed", lambda: not dialog_open(driver, "history"))
+
+
 class PickerByDay(Journey):
     """Ctrl+P lists the sessions by day of last activity (decision 376): today first, then
     yesterday, then older days, each under its head with its time; the hidden ones last, under

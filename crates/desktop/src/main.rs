@@ -1,6 +1,7 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod claim;
+mod history;
 mod layout;
 mod messages;
 mod outbox;
@@ -97,6 +98,8 @@ struct Shared {
     stats_reading: Mutex<()>,
     /// Terminal output and the list of sessions until the page takes them.
     outbox: outbox::Outbox,
+    /// The searches of Ctrl+Shift+F: a newer one makes the older stop.
+    searches: history::Searches,
 }
 
 /// The Claude Code shown in a terminal over a dialog: asking whether a folder is trusted, or
@@ -132,6 +135,22 @@ fn current_list(shared: State<'_, Shared>) -> ListView {
 fn filter_sessions(shared: State<'_, Shared>, tab: PaneId, query: String) -> Vec<SessionRow> {
     let _span = shared.trace.span("filter_sessions");
     view::filter(&shared.view.lock().unwrap_or_else(PoisonError::into_inner), tab, &query)
+}
+
+/// Ctrl+Shift+F: the sessions of `tab` (all of them with none, from the overview), hidden ones
+/// too, whose conversation holds every word of `query`. Reads their transcripts: off the window's
+/// thread, and given up for a newer search.
+#[tauri::command(async)]
+fn search_history(shared: State<'_, Shared>, tab: Option<PaneId>, query: String) -> Result<Vec<history::Hit>, String> {
+    let _span = shared.trace.span("search_history");
+    let search = shared.searches.start();
+    let rows: Vec<SessionRow> = {
+        let view = shared.view.lock().unwrap_or_else(PoisonError::into_inner);
+        view.sessions.iter().filter(|row| tab.is_none_or(|tab| row.tab == tab)).cloned().collect()
+    };
+    let paths = accounts::paths().map_err(|error| error.to_string())?;
+    let dir_of = |account: &str| accounts::is_implicit(&paths, account).ok().map(|implicit| accounts::dir_of(&paths, account, implicit));
+    Ok(history::search(rows, &query, &dir_of, &|| !shared.searches.is_current(search)))
 }
 
 #[derive(Serialize)]
@@ -1945,6 +1964,7 @@ fn main() -> ExitCode {
         account_limits: account_limits::AccountLimits::default(),
         stats_reading: Mutex::new(()),
         outbox: outbox::Outbox::default(),
+        searches: history::Searches::default(),
     };
     let built = tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
@@ -1953,6 +1973,7 @@ fn main() -> ExitCode {
             current_list,
             take_outbox,
             filter_sessions,
+            search_history,
             new_session,
             welcome_checks,
             add_messages_server,

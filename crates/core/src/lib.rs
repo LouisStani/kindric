@@ -13,6 +13,7 @@ pub mod codex_approval;
 pub mod codex_history;
 pub mod current_task;
 mod git;
+pub mod history;
 pub mod images;
 pub mod launcher;
 pub mod mailbox;

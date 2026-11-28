@@ -110,6 +110,8 @@ Clicking a chip opens the session in the active pane of its project's tab, movin
 
 **Find.** `Ctrl+P` searches the sessions of the visible tab by title, short name, account or directory, hidden sessions included. They are listed by day of last activity, the most recent first, under the heads "today", "yesterday", then the date, each with its time. A session not used yet counts as today. Hidden sessions come last, under "hidden", each with its day.
 
+**Search what was said.** `Ctrl+Shift+F` searches the conversations of the sessions of the visible tab, hidden sessions included; from the overview, of every session. A session is found when one of its messages, the user's or the agent's, holds every word typed, in any case; what tools printed does not count. Each session found shows how many messages hold the words and an excerpt of the last one, the words marked; the session whose last match is the most recent comes first, 50 at most. `Enter` or a click opens it, as `Ctrl+P` does. Claude Code and Codex sessions are searched, from their transcript and rollout; OpenCode sessions are not yet, as their messages live in the service.
+
 **Name.** `F2` gives a short name to the session of the active pane, for this app only. An empty name removes it. Without one, the bar shows Claude Code's name, cut after the last whole word within 24 characters.
 
 **Hide.** `Ctrl+Shift+K`, once confirmed, stops the session of the active pane (`claude stop`, its conversation is kept) and hides it from the bar. `Ctrl+P` still lists hidden sessions, last. Choosing one shows it again and starts it.
@@ -196,6 +198,7 @@ The figures are those of [Usage](#usage). Tokens of Claude Code count as its `/s
 | **Sessions** | |
 | `Ctrl+N` | Start a new session |
 | `Ctrl+P` | Find a session of this tab |
+| `Ctrl+Shift+F` | Search what was said in the sessions of this tab |
 | `Alt+1` … `Alt+9` | Open chip n of the bar |
 | `Alt+H` / `Alt+L` | Open the previous / next chip (wraps around, skips sessions in another terminal) |
 | `F2` | Give a short name |

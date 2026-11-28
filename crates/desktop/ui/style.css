@@ -3037,3 +3037,36 @@ input:focus, select:focus {
   background: var(--on-active);
   color: var(--active);
 }
+
+/* Ctrl+Shift+F: what was said in the sessions, an excerpt of the last message found. */
+#history {
+  width: min(640px, 90vw);
+}
+
+.history-query {
+  width: 100%;
+}
+
+.history-results {
+  margin-top: 8px;
+  max-height: 55vh;
+  overflow-y: auto;
+}
+
+.history-excerpt {
+  overflow-wrap: anywhere;
+}
+
+.history-excerpt mark {
+  color: var(--text-strong);
+  background: none;
+  font-weight: 700;
+  text-decoration: underline;
+  text-decoration-color: var(--active);
+  text-underline-offset: 2px;
+}
+
+.history-hint {
+  margin-top: 8px;
+  font-size: 11px;
+}
