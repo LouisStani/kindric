@@ -15,6 +15,7 @@ import { Overview } from "./overview.js";
 import { inBar, summaryOf } from "./overview-board.js";
 import { chipState, dotSign, stateWords, tabMark } from "./chips.js";
 import { pickerItems } from "./picker.js";
+import { HistoryWindow } from "./history.js";
 import { Typing } from "./typing.js";
 import { UsageWindow } from "./usage.js";
 import { StatsWindow } from "./stats-window.js";
@@ -1005,6 +1006,10 @@ async function filterPicker() {
   renderPicker();
 }
 
+function openHistory() {
+  historyWindow.open(panes.state === null || panes.state.overview ? "every session" : "this tab");
+}
+
 function openPicker() {
   document.getElementById("picker-query").value = "";
   document.getElementById("picker").showModal();
@@ -1116,6 +1121,7 @@ const MAC =/Mac/.test(navigator.platform || navigator.userAgent);
 const SHORTCUTS = [
   { group: "sessions", id: "new-session", keys: "ctrl+n", help: "start a new session", run: openNewSession },
   { group: "sessions", id: "find-session", keys: "ctrl+p", help: "find a session of this tab", run: openPicker },
+  { group: "sessions", id: "search-history", keys: "ctrl+shift+f", help: "search what was said in the sessions of this tab", run: openHistory },
   { group: "sessions", id: "open-chip", keys: "alt+#", help: "open chip n of the bar", run: (digit) => showNumber(digit) },
   { group: "sessions", id: "previous-chip", keys: "alt+h", help: "open the previous chip", run: () => stepSession(-1) },
   { group: "sessions", id: "next-chip", keys: "alt+l", help: "open the next chip", run: () => stepSession(1) },
@@ -1138,6 +1144,7 @@ const SHORTCUTS = [
   { group: "tabs", id: "overview", keys: "ctrl+shift+0", help: "overview: every session, what needs you", run: () => panes.goTab(0) },
   { group: "app", id: "artifacts", keys: "ctrl+shift+a", help: "artifacts of this project", run: openArtifacts },
   { group: "app", id: "worktrees", keys: "ctrl+shift+b", help: "worktrees of this project: merged or not, remove", run: openWorktrees },
+  { group: "app", id: "atlas", keys: "ctrl+shift+o", help: "atlas of the memory", run: () => atlasWindow.open() },
   { group: "app", id: "settings", keys: "ctrl+comma", help: "settings: accounts, memory, sessions, shortcuts", run: openSettings },
   { group: "app", id: "usage", keys: "f3", help: "usage: weekly limits, tokens by project and session", run: openUsage },
   { group: "app", id: "stats", keys: "f4", help: "stats: big numbers, graphs, records", run: openStats },
@@ -1334,6 +1341,12 @@ const artifactsWindow = new ArtifactsWindow(document.getElementById("artifacts")
 const changesWindow = new ChangesWindow(document.getElementById("changes"));
 const worktreesWindow = new WorktreesWindow(document.getElementById("worktrees"));
 const atlasWindow = new AtlasWindow(document.getElementById("atlas"), { onError: setStatus });
+// From the overview, every session is searched; from a tab, its sessions.
+const historyWindow = new HistoryWindow(document.getElementById("history"), {
+  search: (query, search) => invoke("search_history", { tab: panes.state === null || panes.state.overview ? null : panes.state.active, query, search }),
+  sessionItem,
+  choose,
+});
 // The name of a session of the list, null for one that is not there any more.
 const labelOf = (account, session) => lastView.sessions.find((row) => row.account === account && row.session_id === session)?.label ?? null;
 const usageWindow = new UsageWindow(document.getElementById("usage"), { labelOf });
