@@ -37,6 +37,7 @@ pub struct NoteUse {
 /// `accounts` (name, folder), newest first. Transcripts not written since are not opened.
 pub fn since(memory: &Path, accounts: &[(String, PathBuf)], since: i64) -> Vec<NoteUse> {
     let needles = needles(memory);
+    let raw = raw_needles(&needles);
     let mut uses: BTreeMap<(String, String, String, bool), NoteUse> = BTreeMap::new();
     for (account, dir) in accounts {
         for (file, session, by_agent) in transcripts(dir, since) {
@@ -47,7 +48,7 @@ pub fn since(memory: &Path, accounts: &[(String, PathBuf)], since: i64) -> Vec<N
             // as well as it can be.
             for bytes in io::BufReader::new(opened).split(b'\n').map_while(Result::ok) {
                 let line = String::from_utf8_lossy(&bytes);
-                if !needles.iter().any(|needle| line.contains(needle.as_str())) {
+                if !raw.iter().any(|needle| line.contains(needle.as_str())) {
                     continue;
                 }
                 let Ok(entry) = serde_json::from_str::<Value>(&line) else {
@@ -99,6 +100,20 @@ fn needles(memory: &Path) -> Vec<String> {
         }
     }
     found
+}
+
+/// What a raw line of a transcript holds where it names the memory's folder, to choose the
+/// lines worth parsing: the needles, and the folder with `\` as JSON writes a path of Windows
+/// (`C:\\Users\\…`), without its last separator, as a path may go on with `/`.
+fn raw_needles(needles: &[String]) -> Vec<String> {
+    let mut raw = needles.to_vec();
+    for needle in needles {
+        let escaped = needle.trim_end_matches('/').replace('/', "\\\\");
+        if !raw.contains(&escaped) {
+            raw.push(escaped);
+        }
+    }
+    raw
 }
 
 /// The transcripts of the account in `dir` written since `since`: each with its session, and
@@ -252,6 +267,18 @@ mod tests {
         assert!(since(&memory, &[("louis".to_string(), account.clone())], now - 3_600).is_empty());
         assert_eq!(since(&memory, &[("louis".to_string(), account)], now - 8_000).len(), 1);
         fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn a_path_of_windows_is_found_in_the_json_of_a_line() {
+        let needles = vec!["C:/Users/u/.kindric/memory/".to_string()];
+        let raw = raw_needles(&needles);
+        for file in ["C:\\Users\\u\\.kindric\\memory\\projets\\a\\INDEX.md", "C:\\Users\\u\\.kindric\\memory/projets/a/INDEX.md"] {
+            let line = tool(0, "Read", serde_json::json!({ "file_path": file }));
+            assert!(raw.iter().any(|needle| line.contains(needle.as_str())), "{line}");
+            let entry: Value = serde_json::from_str(&line).unwrap();
+            assert_eq!(notes_used(&entry, &needles), [("projets/a/INDEX.md".to_string(), false)], "{file}");
+        }
     }
 
     #[test]
