@@ -1985,6 +1985,7 @@ input:focus, select:focus {
 .atlas-legend .planet::before { color: #6bd3ff; }
 .atlas-legend .again::before { color: #ff3b30; }
 .atlas-legend .rock::before { content: "◆ "; color: #949494; }
+.atlas-legend .used::before { color: #7dffa8; }
 
 .atlas-caption {
   position: absolute;
@@ -2014,6 +2015,8 @@ input:focus, select:focus {
 .atlas-note h2 { margin: 0 0 4px; font-size: 14px; color: var(--waiting); }
 .atlas-note header p { margin: 0 0 12px; font-size: 11px; }
 .atlas-note .atlas-repair { margin: 0 0 12px; font-size: 11px; cursor: pointer; }
+.atlas-uses { margin: 0 0 12px; padding: 0; list-style: none; font-size: 11px; color: var(--muted); }
+.atlas-uses li::before { content: "● "; color: #7dffa8; }
 .atlas-note pre {
   margin: 0;
   white-space: pre-wrap;

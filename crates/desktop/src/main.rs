@@ -31,7 +31,7 @@ use kindric_core::launcher::{self, Request, resolve_directory};
 use kindric_core::mailbox::Mailbox;
 use kindric_core::accounts::SessionInfo;
 use kindric_core::artifacts::{self, Kind};
-use kindric_core::{account_limits, accounts, activity, attach, atlas, codex_approval, opencode, opencode_request, away, changes, checks, claude_theme, images, mailbox, origins, overview, refresher, steps, worktrees};
+use kindric_core::{account_limits, accounts, activity, attach, atlas, codex_approval, note_uses, opencode, opencode_request, away, changes, checks, claude_theme, images, mailbox, origins, overview, refresher, steps, worktrees};
 use serde::Serialize;
 use serde::de::DeserializeOwned;
 use tauri::ipc::Response;
@@ -450,6 +450,25 @@ fn memory_search(shared: State<'_, Shared>, query: String) -> Result<Vec<String>
 fn memory_index_note(shared: State<'_, Shared>, path: String) -> Result<String, String> {
     let _span = shared.trace.span("memory_index_note");
     atlas::index_note(&atlas::default_root()?, &path)
+}
+
+/// How far back the atlas looks for the sessions that used a note.
+const NOTE_USES_SECONDS: i64 = 24 * 3600;
+
+/// Which sessions read or wrote a note of the memory in the last day, for the atlas: Claude Code
+/// accounts only, isolated ones left out.
+#[tauri::command(async)]
+fn memory_uses(shared: State<'_, Shared>) -> Result<Vec<note_uses::NoteUse>, String> {
+    let _span = shared.trace.span("memory_uses");
+    let paths = accounts::paths().map_err(|error| format!("cannot find the accounts: {error}"))?;
+    let (registry, isolated) = accounts::registered(&paths).map_err(|error| format!("cannot read the accounts: {error}"))?;
+    let (names, implicit) = accounts::with_default(registry, accounts::default_logged_in());
+    let readable: Vec<(String, PathBuf)> = statistics::sources(&names, &isolated, &[], |account| accounts::dir_of(&paths, account, implicit))
+        .into_iter()
+        .filter(|source| source.agent == Agent::ClaudeCode)
+        .map(|source| (source.account, source.dir))
+        .collect();
+    Ok(note_uses::since(&atlas::default_root()?, &readable, away::now() - NOTE_USES_SECONDS))
 }
 
 /// The folders a directory field offers before anything is typed.
@@ -1974,6 +1993,7 @@ fn main() -> ExitCode {
             memory_note,
             memory_search,
             memory_index_note,
+            memory_uses,
             artifacts_view,
             new_artifacts,
             artifacts_seen,
