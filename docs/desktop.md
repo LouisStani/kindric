@@ -123,7 +123,7 @@ Clicking a chip opens the session in the active pane of its project's tab, movin
 - A session that has finished its task says so with `kindric away done <session id>` and stops.
 - A session that cannot go on without you first has an agent review its work. Then it runs `kindric away blocked <session id> "<what it needs>"`, which puts what it needs in the control center, and stops. Once you answer, it works again, and it is kept working until you are back.
 - A session told to keep working that then runs nothing stops too, its last words in the control center. It is relaunched once at most for nothing.
-- A Claude session that waits for a command, an agent or a Monitor it started in the background may stop: Claude Code wakes it when that ends. A task that showed no sign of life for 30 minutes (no new output, no Monitor event) no longer counts, so a server left running does not keep the session asleep.
+- A Claude session that waits for a command, an agent or a Monitor it started in the background may stop: Claude Code wakes it when that ends. A task that showed no sign of life for 30 minutes (no new output, no Monitor event) no longer counts. A session asleep for 30 minutes on a task that still runs is woken to look at it, since a server that keeps logging never ends. Waking it needs the hook of messages between sessions: an isolated account has none, and its sessions are kept working as before.
 - Only sessions started after kindric was installed have the hook.
 
 ## Changed files

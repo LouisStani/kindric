@@ -357,11 +357,15 @@ pub fn index_note(root: &Path, path: &str) -> Result<String, String> {
     let (Some(PROJECTS), Some(zone), Some(from_zone)) = (parts.next(), parts.next(), parts.next()) else {
         return Err(format!("{path}: not a note of a project"));
     };
-    if ZONE_FILES.contains(&from_zone) {
+    if ZONE_FILES.contains(&from_zone) || from_zone.rsplit('/').next() == Some(INDEX) {
         return Err(format!("{path}: not a note"));
     }
     let text = fs::read_to_string(note_file(root, path)?).map_err(|error| format!("{path}: {error}"))?;
     let index_file = root.join(PROJECTS).join(zone).join(INDEX);
+    // The index is written to: a link could lead out of the memory.
+    if fs::symlink_metadata(&index_file).is_ok_and(|meta| meta.file_type().is_symlink()) {
+        return Err(format!("{PROJECTS}/{zone}/{INDEX} is a link: kindric does not write through it"));
+    }
     let index = match fs::read_to_string(&index_file) {
         Ok(index) => index,
         Err(error) if error.kind() == io::ErrorKind::NotFound => String::new(),
@@ -575,13 +579,26 @@ mod tests {
         fs::remove_dir_all(root).unwrap();
     }
 
+    #[cfg(unix)]
+    #[test]
+    fn an_index_that_is_a_link_is_not_written_through() {
+        let root = scratch("index-link");
+        write(&root, "outside.md", "kept");
+        write(&root, "projets/app/knowledge/ports.md", &header("ports", "2026-11-20"));
+        std::os::unix::fs::symlink(root.join("outside.md"), root.join("projets/app/INDEX.md")).unwrap();
+        assert!(index_note(&root, "projets/app/knowledge/ports.md").unwrap_err().contains("is a link"));
+        assert_eq!(fs::read_to_string(root.join("outside.md")).unwrap(), "kept");
+        fs::remove_dir_all(root).unwrap();
+    }
+
     #[test]
     fn only_a_note_of_a_project_is_indexed() {
         let root = scratch("index-refused");
         write(&root, "global/rules.md", "rules");
         write(&root, "projets/app/INDEX.md", "- x\n");
         write(&root, "projets/app/claude.md", "given to sessions");
-        for path in ["global/rules.md", "projets/app/claude.md", "projets/app/INDEX.md", "projets/app/../app/claude.md", "projets/app/missing.md", "projets/app"] {
+        write(&root, "projets/app/knowledge/INDEX.md", "a folder's index");
+        for path in ["global/rules.md", "projets/app/claude.md", "projets/app/INDEX.md", "projets/app/knowledge/INDEX.md", "projets/app/../app/claude.md", "projets/app/missing.md", "projets/app"] {
             assert!(index_note(&root, path).is_err(), "{path}");
         }
         assert_eq!(fs::read_to_string(root.join("projets/app/INDEX.md")).unwrap(), "- x\n", "untouched");

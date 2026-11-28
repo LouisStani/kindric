@@ -7,6 +7,7 @@
 
 use std::collections::BTreeMap;
 use std::fs;
+use std::io::{self, BufRead};
 use std::path::{Component, Path, PathBuf};
 use std::time::{Duration, UNIX_EPOCH};
 
@@ -39,11 +40,17 @@ pub fn since(memory: &Path, accounts: &[(String, PathBuf)], since: i64) -> Vec<N
     let mut uses: BTreeMap<(String, String, String, bool), NoteUse> = BTreeMap::new();
     for (account, dir) in accounts {
         for (file, session, by_agent) in transcripts(dir, since) {
-            let Ok(text) = fs::read_to_string(&file) else {
+            let Ok(opened) = fs::File::open(&file) else {
                 continue;
             };
-            for line in text.lines().filter(|line| needles.iter().any(|needle| line.contains(needle.as_str()))) {
-                let Ok(entry) = serde_json::from_str::<Value>(line) else {
+            // Line by line: a transcript can weigh hundreds of MB. A line that is not UTF-8 is read
+            // as well as it can be.
+            for bytes in io::BufReader::new(opened).split(b'\n').map_while(Result::ok) {
+                let line = String::from_utf8_lossy(&bytes);
+                if !needles.iter().any(|needle| line.contains(needle.as_str())) {
+                    continue;
+                }
+                let Ok(entry) = serde_json::from_str::<Value>(&line) else {
                     continue;
                 };
                 let Some(at) = entry.get("timestamp").and_then(Value::as_str).and_then(unix_seconds).filter(|at| *at >= since) else {
