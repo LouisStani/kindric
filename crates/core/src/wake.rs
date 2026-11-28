@@ -9,7 +9,7 @@
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use kindric_accounts::files::{create_private_dir, write_atomic};
 
@@ -18,6 +18,10 @@ use crate::mailbox::{self, Mailbox, data_dir, is_valid_session_id};
 
 /// How often a wait looks at the inbox.
 const POLL: Duration = Duration::from_secs(2);
+
+/// How often a wait touches its claim, so that a claim left by a wait that died is seen as old
+/// (`away` lets a session sleep on its background work only while a wait is alive to wake it).
+pub const HEARTBEAT: Duration = Duration::from_secs(60);
 
 /// `wait` in the data directory.
 pub fn default_root() -> io::Result<PathBuf> {
@@ -47,9 +51,14 @@ pub fn wait(mailbox: &Mailbox, root: &Path, session: &str, token: &str, mut due:
     let claim = claim_file(root, session)?;
     create_private_dir(root)?;
     write_atomic(&claim, token)?;
+    let mut beat = Instant::now();
     loop {
         if fs::read_to_string(&claim).ok().as_deref() != Some(token) {
             return Ok(Woken::Replaced);
+        }
+        if beat.elapsed() >= HEARTBEAT {
+            beat = Instant::now();
+            let _ = fs::File::options().write(true).open(&claim).and_then(|file| file.set_modified(SystemTime::now()));
         }
         if let Some(notice) = mailbox.wake_notice(session)?.or_else(&mut due) {
             let _ = fs::remove_file(&claim);

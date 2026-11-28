@@ -12,7 +12,7 @@
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use kindric_accounts::files::{create_private_dir, write_atomic};
 use serde_json::Value;
@@ -92,11 +92,37 @@ pub fn clear(root: &Path, session: &str) -> io::Result<()> {
     remove(&background_file(root, session)?)
 }
 
+/// How long Stop waits for the claim of `kindric wait-message`, which Claude Code starts at the
+/// same time, and how often it looks.
+const WAKER_PATIENCE: Duration = Duration::from_secs(2);
+const WAKER_LOOK: Duration = Duration::from_millis(100);
+
 /// Whether `kindric wait-message` waits for `session`: its claim is in `wait`, beside `away` in
-/// kindric's data. Without it (an isolated account has no such hook), nothing would wake a
-/// session that stops to wait for its background work.
+/// kindric's data, written or touched within two heartbeats. Without it (an isolated account has
+/// no such hook, or the wait died), nothing would wake a session that stops to wait for its
+/// background work. The wait of this turn starts with this hook and may claim a moment later.
 fn has_a_waker(root: &Path, session: &str) -> bool {
-    root.parent().is_some_and(|data| data.join("wait").join(session).is_file())
+    let Some(waits) = root.parent().map(|data| data.join("wait")) else {
+        return false;
+    };
+    if !waits.is_dir() {
+        return false;
+    }
+    let claim = waits.join(session);
+    let fresh = || {
+        let touched = fs::metadata(&claim).and_then(|meta| meta.modified()).ok();
+        touched.and_then(|touched| SystemTime::now().duration_since(touched).ok()).is_some_and(|age| age < crate::wake::HEARTBEAT * 2)
+    };
+    let started = Instant::now();
+    loop {
+        if fresh() {
+            return true;
+        }
+        if started.elapsed() >= WAKER_PATIENCE {
+            return false;
+        }
+        std::thread::sleep(WAKER_LOOK);
+    }
 }
 
 /// Run by `kindric wait-message` while it waits: the notice that wakes `session` once it slept
@@ -618,12 +644,14 @@ pub fn hook_answer(root: &Path, overview_root: &Path, input: &str, now: i64) -> 
             if waits_on_the_user(root, overview_root, session) {
                 return None;
             }
-            if has_a_waker(root, session) && waits_on_its_own_work(&input, now) {
-                // The first stop sets the time; a later one does not push it back.
-                if let Ok(path) = background_file(root, session)
-                    && fs::metadata(&path).is_err()
-                {
-                    let _ = write_atomic(&path, &(now + BACKGROUND_WAKE_SECONDS).to_string());
+            if waits_on_its_own_work(&input, now) && has_a_waker(root, session) {
+                // The first stop sets the time; a later one does not push it back, unless that
+                // time is past (the session was woken by a message meanwhile).
+                if let Ok(path) = background_file(root, session) {
+                    let due = fs::read_to_string(&path).ok().and_then(|due| due.trim().parse::<i64>().ok());
+                    if due.is_none_or(|due| due <= now) {
+                        let _ = write_atomic(&path, &(now + BACKGROUND_WAKE_SECONDS).to_string());
+                    }
                 }
                 return None;
             }
@@ -1039,6 +1067,23 @@ mod tests {
         let after = relaunched_stop(&root, "aaaa-1111", &[CLAUDE_TOOL, &launch, CLAUDE_TEXT, &done, CLAUDE_TOOL], serde_json::json!({ "stop_hook_active": false }));
         assert!(blocks(&root, &after), "b1 ended: kept working");
         assert!(!background_file(&root, "aaaa-1111").unwrap().exists(), "nothing left to wake it for");
+        fs::remove_dir_all(data).unwrap();
+    }
+
+    #[test]
+    fn a_claim_left_by_a_wait_that_died_wakes_nobody() {
+        let data = temp_root("stale-claim");
+        let root = data.join("away");
+        assert!(!has_a_waker(&root, "aaaa-1111"), "no wait at all");
+        create_private_dir(&data.join("wait")).unwrap();
+        let claim = data.join("wait").join("aaaa-1111");
+        fs::write(&claim, "token").unwrap();
+        assert!(has_a_waker(&root, "aaaa-1111"));
+        let old = SystemTime::now() - crate::wake::HEARTBEAT * 3;
+        fs::File::options().write(true).open(&claim).unwrap().set_modified(old).unwrap();
+        let started = Instant::now();
+        assert!(!has_a_waker(&root, "aaaa-1111"), "not touched for three heartbeats");
+        assert!(started.elapsed() >= WAKER_PATIENCE, "it waited for the wait of this turn");
         fs::remove_dir_all(data).unwrap();
     }
 
