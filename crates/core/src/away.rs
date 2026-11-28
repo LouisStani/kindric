@@ -5,7 +5,9 @@
 //! `kindric away blocked <session id> <what it needs>`: its need goes to the overview and
 //! `away/<session id>.waiting` names that request; until it is answered, the session may stop.
 //! A session relaunched by the hook that then runs no tool may stop too, its last words going to
-//! the overview the same way: a session left idle must not be relaunched in a loop.
+//! the overview the same way: a session left idle must not be relaunched in a loop. A session that
+//! waits on a command, an agent or a Monitor it started in the background may stop too: Claude
+//! Code wakes it when that ends (see `background`).
 
 use std::fs;
 use std::io;
@@ -15,6 +17,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use kindric_accounts::files::{create_private_dir, write_atomic};
 use serde_json::Value;
 
+use crate::background::waits_on_background;
 use crate::images::{last_turn_text, tail};
 use crate::mailbox::{data_dir, is_valid_session_id};
 use crate::overview::{self, Body, Request};
@@ -192,6 +195,13 @@ fn idle_since_relaunch(transcript_tail: &str) -> bool {
         }
     }
     idle
+}
+
+/// Whether the session that sends `input`, a Stop, ends its turn to wait for a command, an agent
+/// or a Monitor it started in the background: Claude Code wakes it when that ends.
+fn waits_on_its_own_work(input: &Value, now: i64) -> bool {
+    let transcript = input.get("transcript_path").and_then(Value::as_str).and_then(|path| tail(Path::new(path)));
+    transcript.is_some_and(|transcript| waits_on_background(&transcript, now))
 }
 
 /// The request for the overview when `input`, a Stop relaunched by a hook, ends a turn in which
@@ -554,7 +564,7 @@ fn away_session<'a>(root: &Path, input: &'a serde_json::Value, now: i64) -> Opti
 /// while the user is away from its session; nothing otherwise, so that the session goes on as
 /// usual. `overview_root` holds the requests for the user.
 /// - Stop: a refusal to end the turn, with what to do instead. Not while the session waits on a
-///   request of `kindric away blocked`, nor when it ran no tool since the last refusal: that turn
+///   request of `kindric away blocked` or on background work it started, nor when it ran no tool since the last refusal: that turn
 ///   goes to the overview and the session stops.
 /// - PreToolUse (shell commands, in every permission mode): a refusal of what waits for the user.
 /// - PermissionRequest (a question Claude Code would ask): yes, unless it waits for the user.
@@ -565,7 +575,7 @@ pub fn hook_answer(root: &Path, overview_root: &Path, input: &str, now: i64) -> 
     let command = || input.get("tool_input")?.get("command")?.as_str();
     let answer = match event {
         "Stop" => {
-            if waits_on_the_user(root, overview_root, session) {
+            if waits_on_the_user(root, overview_root, session) || waits_on_its_own_work(&input, now) {
                 return None;
             }
             if let Some(request) = idle_request(&input, session, now) {
@@ -945,6 +955,27 @@ mod tests {
 
         assert_eq!(relaunch(&[opencode_user("go"), opencode_said("done")], 1_700), None, "the absence ended");
         assert_eq!(until(&root, "ses_x"), None);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn a_session_that_waits_on_its_background_command_may_stop_until_it_ends() {
+        let root = temp_root("background");
+        let overview_root = root.join("overview");
+        set(&root, "aaaa-1111", i64::MAX).unwrap();
+        let now = now();
+        let started = crate::changes::iso(now - 60);
+        let launch = serde_json::json!({ "type": "user", "timestamp": started,
+            "toolUseResult": { "backgroundTaskId": "b1", "stdout": "" } }).to_string();
+        let first = relaunched_stop(&root, "aaaa-1111", &[CLAUDE_TOOL, &launch, CLAUDE_TEXT], serde_json::json!({ "stop_hook_active": false }));
+        assert_eq!(hook_answer(&root, &overview_root, &first, now), None, "it waits on b1");
+        let relaunched = relaunched_stop(&root, "aaaa-1111", &[CLAUDE_TOOL, &launch, CLAUDE_RELAUNCH, CLAUDE_TEXT], serde_json::json!({}));
+        assert_eq!(hook_answer(&root, &overview_root, &relaunched, now), None);
+        assert!(overview::pending(&overview_root).is_empty(), "waiting on its work is not idle");
+        let done = serde_json::json!({ "type": "queue-operation", "operation": "enqueue", "timestamp": started,
+            "content": "<task-notification>\n<task-id>b1</task-id>\n<status>completed</status>\n</task-notification>" }).to_string();
+        let after = relaunched_stop(&root, "aaaa-1111", &[CLAUDE_TOOL, &launch, CLAUDE_TEXT, &done, CLAUDE_TOOL], serde_json::json!({ "stop_hook_active": false }));
+        assert!(blocks(&root, &after), "b1 ended: kept working");
         fs::remove_dir_all(root).unwrap();
     }
 

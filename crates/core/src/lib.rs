@@ -5,6 +5,7 @@ pub mod artifacts;
 pub mod atlas;
 pub mod attach;
 pub mod away;
+mod background;
 pub mod changes;
 pub mod checks;
 pub mod claude_theme;
