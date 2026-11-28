@@ -1,6 +1,6 @@
 //! Search in what was said in a session: the words of a query in the messages of its transcript
-//! (Claude Code, `<account>/projects/*/<session id>.jsonl`) or of its rollout (Codex), the user's
-//! and the agent's, not the tools' output. Ctrl+Shift+F of the window shows, for each session, how
+//! (Claude Code, `<account>/projects/*/<session id>.jsonl`), of its rollout (Codex) or of its
+//! service (OpenCode), the user's and the agent's, not the tools' output. Ctrl+Shift+F of the window shows, for each session, how
 //! many messages hold every word and an excerpt of the last one. These files are not documented:
 //! a line that cannot be read is skipped, never an error.
 
@@ -11,6 +11,7 @@ use std::path::Path;
 use serde_json::Value;
 
 use crate::attach::Agent;
+use crate::changes::unix_seconds;
 
 /// Characters of an excerpt before the first word found.
 const BEFORE: usize = 60;
@@ -28,8 +29,8 @@ pub struct Found {
     pub matches: usize,
     /// The last of them around its first word, on one line.
     pub excerpt: String,
-    /// When it was written, as the file gives it (ISO 8601 for both agents), if it does.
-    pub at: Option<String>,
+    /// When it was written, in Unix seconds, if the agent says.
+    pub at: Option<i64>,
 }
 
 /// The words of `query`, lower case: a message must hold all of them, anywhere, in any case.
@@ -61,9 +62,42 @@ pub fn search(path: &Path, agent: Agent, words: &[String], stop: &dyn Fn() -> bo
             if !words.iter().all(|word| lower.contains(word.as_str())) {
                 continue;
             }
-            let at = entry.get("timestamp").and_then(Value::as_str).map(str::to_string);
+            let at = entry.get("timestamp").and_then(Value::as_str).and_then(unix_seconds);
             let matches = found.as_ref().map_or(0, |found| found.matches) + 1;
             found = Some(Found { matches, excerpt: excerpt(&text, words), at });
+        }
+    }
+    found
+}
+
+/// The messages of an OpenCode session, `messages` newest first as its service gives them
+/// (`opencode::Service::messages`), that hold every word.
+pub fn search_messages(messages: &[Value], words: &[String]) -> Option<Found> {
+    if words.is_empty() {
+        return None;
+    }
+    let mut found: Option<Found> = None;
+    for message in messages.iter().rev() {
+        let texts: Vec<&str> = match message.get("type").and_then(Value::as_str) {
+            Some("user") => message.get("text").and_then(Value::as_str).into_iter().collect(),
+            Some("assistant") => message
+                .get("content")
+                .and_then(Value::as_array)
+                .into_iter()
+                .flatten()
+                .filter(|part| part.get("type").and_then(Value::as_str) == Some("text"))
+                .filter_map(|part| part.get("text").and_then(Value::as_str))
+                .collect(),
+            _ => Vec::new(),
+        };
+        for text in texts.into_iter().filter(|text| typed(text)) {
+            let lower = text.to_lowercase();
+            if !words.iter().all(|word| lower.contains(word.as_str())) {
+                continue;
+            }
+            let at = message.pointer("/time/created").and_then(Value::as_i64).map(|millis| millis / 1000);
+            let matches = found.as_ref().map_or(0, |found| found.matches) + 1;
+            found = Some(Found { matches, excerpt: excerpt(text, words), at });
         }
     }
     found
@@ -214,7 +248,8 @@ mod tests {
         let found = search(&path, Agent::ClaudeCode, &words_of("shop LOGO"), &never).unwrap();
         assert_eq!(found.matches, 2, "the prompt and the last one, not tools, subagents, hooks, notifications or a summary");
         assert_eq!(found.excerpt, "the logo is fine, now the SHOP page");
-        assert_eq!(found.at.as_deref(), Some("2026-11-27T11:00:00.000Z"));
+        assert_eq!(found.at, unix_seconds("2026-11-27T11:00:00.000Z"));
+        assert!(found.at.is_some());
         assert_eq!(search(&path, Agent::ClaudeCode, &words_of("svg"), &never).unwrap().excerpt, "I will draw the logo in SVG.");
         assert_eq!(search(&path, Agent::ClaudeCode, &words_of("logo absent"), &never), None);
         assert_eq!(search(&path, Agent::ClaudeCode, &words_of("  "), &never), None);
@@ -247,6 +282,23 @@ mod tests {
         assert_eq!(search(&path, Agent::Codex, &words_of("one file"), &never).unwrap().matches, 1);
         assert_eq!(search(&path, Agent::OpenCode, &words_of("files"), &never), None);
         std::fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn opencode_messages_come_newest_first_from_the_service() {
+        let messages = [
+            json!({"type": "idle"}),
+            json!({"type": "assistant", "time": {"created": 1_795_341_309_318_i64}, "content": [
+                {"type": "text", "text": "The Logo is drawn"},
+                {"type": "tool", "name": "write", "state": {"input": {"content": "logo"}, "output": "logo written"}}]}),
+            json!({"type": "user", "time": {"created": 1_795_341_300_000_i64}, "text": "draw the logo"}),
+        ];
+        let found = search_messages(&messages, &words_of("LOGO")).unwrap();
+        assert_eq!(found.matches, 2, "the prompt and the answer, not the tool");
+        assert_eq!(found.excerpt, "The Logo is drawn", "the newest is the last found");
+        assert_eq!(found.at, Some(1_795_341_309));
+        assert_eq!(search_messages(&messages, &words_of("written")), None);
+        assert_eq!(search_messages(&messages, &[]), None);
     }
 
     #[test]

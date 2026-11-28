@@ -32,11 +32,11 @@ test("a word with signs of a pattern is looked for as it is", () => {
 
 test("a match of today shows its time, an older one its day", () => {
   const now = new Date(2026, 10, 28, 12, 0);
-  assert.equal(whenOf(new Date(2026, 10, 28, 9, 5).toISOString(), now, "en-GB"), "09:05");
-  assert.equal(whenOf(new Date(2026, 10, 20, 9, 5).toISOString(), now, "en-GB"), "20 Nov");
-  assert.equal(whenOf(new Date(2025, 10, 20, 9, 5).toISOString(), now, "en-GB"), "20 Nov 2025");
+  const seconds = (date) => date.getTime() / 1000;
+  assert.equal(whenOf(seconds(new Date(2026, 10, 28, 9, 5)), now, "en-GB"), "09:05");
+  assert.equal(whenOf(seconds(new Date(2026, 10, 20, 9, 5)), now, "en-GB"), "20 Nov");
+  assert.equal(whenOf(seconds(new Date(2025, 10, 20, 9, 5)), now, "en-GB"), "20 Nov 2025");
   assert.equal(whenOf(null, now), "");
-  assert.equal(whenOf("not a date", now), "");
 });
 
 test("how many messages hold the words", () => {

@@ -24,11 +24,11 @@ export function highlight(text, words) {
     .map((part) => ({ text: part, mark: words.some((word) => word.toLocaleLowerCase() === part.toLocaleLowerCase()) }));
 }
 
-// When a match was written: the time today, else the day, with its year when not this one.
-export function whenOf(iso, now, locale = []) {
-  if (!iso) return "";
-  const then = new Date(iso);
-  if (Number.isNaN(then.getTime())) return "";
+// When a match was written, `seconds` after 1970: the time today, else the day, with its year
+// when not this one.
+export function whenOf(seconds, now, locale = []) {
+  if (seconds === null || seconds === undefined) return "";
+  const then = new Date(seconds * 1000);
   if (then.toDateString() === now.toDateString()) return then.toLocaleTimeString(locale, { hour: "2-digit", minute: "2-digit" });
   const options = { month: "short", day: "numeric" };
   if (then.getFullYear() !== now.getFullYear()) options.year = "numeric";

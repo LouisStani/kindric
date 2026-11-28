@@ -7,7 +7,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use kindric_core::attach::Agent;
 use kindric_core::history::{self, Found};
-use kindric_core::{codex_history, images};
+use kindric_core::{codex_history, images, opencode_history};
 use serde::Serialize;
 
 use crate::view::SessionRow;
@@ -25,7 +25,8 @@ pub struct Hit {
     pub row: SessionRow,
     pub matches: usize,
     pub excerpt: String,
-    pub at: Option<String>,
+    /// Unix seconds.
+    pub at: Option<i64>,
 }
 
 /// The number of the last search the page asked for: an older one sees it changed and stops.
@@ -44,13 +45,15 @@ impl Searches {
     }
 }
 
-/// The file that holds what was said in a session of `row`, in `account_dir`, if one does:
-/// OpenCode keeps its sessions in its service, not in a file.
-fn file_of(account_dir: &Path, row: &SessionRow) -> Option<PathBuf> {
+/// What the session of `row`, of the account in `account_dir`, said that holds every word:
+/// from its transcript, its rollout, or its OpenCode service while it runs (it is not started for
+/// a search).
+fn found_in(account_dir: &Path, row: &SessionRow, words: &[String], stop: &(dyn Fn() -> bool + Sync)) -> Option<Found> {
+    let id = &row.info.session_id;
     match row.info.agent {
-        Agent::ClaudeCode => images::transcript_of(account_dir, &row.info.session_id),
-        Agent::Codex => codex_history::rollout_of(account_dir, &row.info.session_id),
-        Agent::OpenCode => None,
+        Agent::ClaudeCode => history::search(&images::transcript_of(account_dir, id)?, Agent::ClaudeCode, words, stop),
+        Agent::Codex => history::search(&codex_history::rollout_of(account_dir, id)?, Agent::Codex, words, stop),
+        Agent::OpenCode => history::search_messages(&opencode_history::messages_of(account_dir, id)?, words),
     }
 }
 
@@ -70,13 +73,12 @@ pub fn search(rows: Vec<SessionRow>, query: &str, dir_of: &dyn Fn(&str) -> Optio
             .map(|part| {
                 let words = &words;
                 scope.spawn(move || {
-                    // Finding a Codex rollout walks the account's days: in the threads too, and
-                    // given up with the search.
+                    // Finding a Codex rollout walks the account's days, asking OpenCode goes through
+                    // its service: in the threads too, and given up with the search.
                     part.iter()
                         .take_while(|_| !stop())
                         .filter_map(|(row, dir)| {
-                            let file = file_of(dir, row)?;
-                            let Found { matches, excerpt, at } = history::search(&file, row.info.agent, words, stop)?;
+                            let Found { matches, excerpt, at } = found_in(dir, row, words, stop)?;
                             Some(Hit { row: row.clone(), matches, excerpt, at })
                         })
                         .collect::<Vec<_>>()
@@ -93,10 +95,9 @@ pub fn search(rows: Vec<SessionRow>, query: &str, dir_of: &dyn Fn(&str) -> Optio
     hits
 }
 
-/// The last match first; a session whose file gives no time last. Both agents write times in
-/// ISO 8601 in UTC, which sort as text.
+/// The last match first; a session whose agent gives no time last.
 fn order(hits: &mut [Hit]) {
-    hits.sort_by(|a, b| b.at.cmp(&a.at));
+    hits.sort_by_key(|hit| std::cmp::Reverse(hit.at));
 }
 
 #[cfg(test)]
